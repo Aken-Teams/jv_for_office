@@ -11,7 +11,9 @@
  * between an instruction hidden in a downloaded spreadsheet and someone's real
  * data. Do not "streamline" it away.
  */
-import { executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName } from './excelTools.js';
+import {
+  executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, SUPPORTED_TOOLS,
+} from './excelTools.js';
 
 /** Matches PORT in ai-agents-office/.env. Editable on the login screen. */
 const DEFAULT_API_BASE = 'http://localhost:12054';
@@ -260,10 +262,35 @@ function addNote(text, kind = 'note') {
   return el;
 }
 
+/** Office.js quotes sheet names containing spaces: 'SP 分析報告'!A1:F36 → SP 分析報告!A1:F36 */
+function prettyAddress(address) {
+  return String(address).replace(/'/g, '');
+}
+
 /**
- * The confirmation card. Resolves true/false on click, and — importantly — stays
- * in the transcript afterwards showing what was decided, so the user can scroll
- * back and see exactly which writes they approved.
+ * Collapse a decided card into one quiet line.
+ *
+ * A card that has been answered must stop looking like a question. Leaving the
+ * orange warning treatment on resolved cards made the transcript read as a wall
+ * of unresolved alarms, and it also said the same thing three times over (the
+ * summary, the address, and a separate success note underneath). Now the card
+ * reports its own outcome and the note is gone.
+ */
+function resolveCard(card, kind, text) {
+  card.className = `confirm resolved ${kind}`;
+  card.removeAttribute('role');
+  if (kind === 'err') card.setAttribute('role', 'alert');
+  const mark = { ok: '✓', denied: '×', err: '!', running: '' }[kind] ?? '';
+  card.innerHTML = mark
+    ? `<span class="mark">${mark}</span>${escapeHtml(text)}`
+    : `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(text)}`;
+  scrollDown();
+}
+
+/**
+ * The confirmation card. Resolves true/false on click and hands back the element
+ * so the caller can report what actually happened in the same place the user
+ * made the decision.
  */
 function askConfirm(summary, detail) {
   return new Promise((resolve) => {
@@ -280,7 +307,7 @@ function askConfirm(summary, detail) {
         <span class="confirm-title">AI 想要修改這份活頁簿</span>
       </div>
       <div class="confirm-body">${escapeHtml(summary)}</div>
-      ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(detail.address)}</div>` : ''}
+      ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
       <div class="confirm-actions">
         <button class="btn-approve">允許</button>
@@ -290,11 +317,11 @@ function askConfirm(summary, detail) {
     scrollDown();
 
     const done = (ok) => {
-      card.querySelector('.confirm-actions').innerHTML =
-        // ✓ / × rather than emoji: they inherit colour and exist in every font
-        // in the stack, so they render identically on Windows and in dark mode.
-        `<span class="decided">${ok ? '✓ 已允許' : '× 已拒絕'}</span>`;
-      resolve(ok);
+      // ✓ / × rather than emoji: they inherit colour and exist in every font in
+      // the stack, so they render identically on Windows and in dark mode.
+      if (ok) resolveCard(card, 'running', '執行中…');
+      else resolveCard(card, 'denied', `已拒絕：${summary}`);
+      resolve({ approved: ok, card });
     };
     card.querySelector('.btn-approve').addEventListener('click', () => done(true));
     card.querySelector('.btn-deny').addEventListener('click', () => done(false));
@@ -338,6 +365,7 @@ const TOOL_LABEL = {
 async function handleToolRequest(payload) {
   const { callId, tool, args, needsConfirm, summary } = payload;
   setStatus(TOOL_LABEL[tool] || `正在執行 ${tool}…`);
+  let card = null;
 
   if (needsConfirm) {
     // Look before asking: the dialog is only useful if it says what will be lost.
@@ -352,8 +380,9 @@ async function handleToolRequest(payload) {
         return;
       }
     }
-    const approved = await askConfirm(summary, detail);
-    if (!approved) {
+    const decision = await askConfirm(summary, detail);
+    card = decision.card;
+    if (!decision.approved) {
       await postToolResult(state.runId, callId, { ok: false, error: '使用者拒絕了這次操作。請不要重試，改問他想怎麼做。' });
       setStatus('');
       return;
@@ -364,8 +393,18 @@ async function handleToolRequest(payload) {
   if (result.snapshot) {
     state.undoStack.push(result.snapshot);
     updateUndoButton();
-    addNote(`已寫入 ${result.snapshot.sheet}!${result.snapshot.address}`, 'ok');
   }
+
+  // The outcome lands back in the card the user just answered, instead of a
+  // separate line below it — same information, one place, and the card stops
+  // looking like an open question.
+  if (card) {
+    if (result.ok === false) resolveCard(card, 'err', result.error || '執行失敗');
+    else resolveCard(card, 'ok', result.content || summary);
+  } else if (result.ok === false) {
+    addNote(result.error || '執行失敗', 'err');
+  }
+
   await postToolResult(state.runId, callId, result);
   setStatus('思考中…');
 }
@@ -419,6 +458,10 @@ async function send(message) {
         sessionId: state.sessionId || undefined,
         workbookName: state.workbookName || undefined,
         workbookContext,
+        // What this build can execute. The server hides everything else from the
+        // model, so a stale pane degrades to "fewer abilities" instead of an
+        // agent looping on 未知的工具.
+        clientTools: SUPPORTED_TOOLS,
       }),
     });
 

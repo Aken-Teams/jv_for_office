@@ -370,7 +370,21 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 @media (prefers-color-scheme: dark) { .btn-approve { color: #10281b; } }
 .btn-deny { border: 1px solid var(--line-strong); color: var(--fg-muted); }
 .btn-deny:hover { background: var(--surface-hover); color: var(--fg); }
-.decided { font-size: 12px; color: var(--fg-muted); font-weight: 500; }
+/* Answered. The card drops the whole alarm treatment and becomes one quiet line
+   in the same visual family as .note — because that is what it now is: a record
+   of something that already happened, not a question waiting on you. */
+.confirm.resolved {
+  display: flex; align-items: baseline; gap: 6px;
+  background: none; box-shadow: none; border-radius: 0;
+  border-width: 0 0 0 2px; border-left-color: var(--line-strong);
+  padding: 1px 0 1px 9px; margin-bottom: 14px;
+  font-size: 12px; color: var(--fg-muted);
+}
+.confirm.resolved .mark { font-weight: 700; flex: none; }
+.confirm.resolved.ok { border-left-color: var(--ok); color: var(--ok); }
+.confirm.resolved.err { border-left-color: var(--danger); color: var(--danger); }
+.confirm.resolved.running { border-left-color: var(--accent); }
+.confirm.resolved .dots { align-self: center; }
 
 /* ── Thinking indicator (rendered inside the transcript) ────────────────── */
 

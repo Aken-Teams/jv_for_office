@@ -16,6 +16,30 @@
  *     token budget, in that order.
  */
 
+/**
+ * The tools THIS build of the pane can actually execute.
+ *
+ * Sent to the server on every chat so it can hide from the model anything this
+ * client doesn't implement. Without it, a pane running older code answers
+ * "未知的工具：excel_manage_sheet" and the agent just retries in a loop — which is
+ * exactly what happened, and it is not a rare edge case: the manifest declares
+ * SharedRuntime with lifetime="long", so closing and reopening the task pane does
+ * NOT reload this file. Only a full Excel restart does. Any user who updates the
+ * add-in without quitting Excel lands here.
+ */
+export const SUPPORTED_TOOLS = [
+  'excel_get_overview',
+  'excel_get_selection',
+  'excel_read_range',
+  'excel_search',
+  'excel_write_range',
+  'excel_manage_sheet',
+  'excel_format_range',
+  'excel_create_chart',
+  'excel_structure_op',
+  'excel_table_ops',
+];
+
 /** Hard ceiling per read. ~20k cells of typical data lands near 100-200KB of CSV. */
 const MAX_READ_CELLS = 20000;
 /** Second ceiling, on characters — one column of long text can be small in cells but huge in bytes. */
@@ -469,10 +493,16 @@ async function formatRange(args) {
 
     await ctx.sync();
 
-    // autofit has to run after the content-affecting changes land, or it measures
-    // the old text.
+    // Autofit runs after the content-affecting changes land, or it measures the
+    // old text.
+    //
+    // getEntireColumn() matters: Range.format.autofitColumns() measures ONLY the
+    // cells inside the given range. Autofitting a header row alone therefore sizes
+    // every column to its 2-3 character title, and the numbers underneath collapse
+    // into ###. Measuring the whole column is what "自動調整欄寬" means in Excel's
+    // own UI, so that is what this does.
     if (args.autofit_columns) {
-      r.format.autofitColumns();
+      r.getEntireColumn().format.autofitColumns();
       await ctx.sync();
       applied.push('自動欄寬');
     }
