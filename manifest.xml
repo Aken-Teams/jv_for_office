@@ -26,13 +26,13 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>b7e4f2a1-9c3d-4e58-8f21-6a0d5c4b7e93</Id>
-  <Version>1.0.0.0</Version>
+  <Version>1.0.14.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="JVision for Excel" />
   <Description DefaultValue="在 Excel 側邊欄直接問 AI：讀懂公式、追溯假設、修正錯誤、填寫模型。" />
   <IconUrl DefaultValue="https://localhost:3443/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/icon-80.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/icon-64.png" />
   <SupportUrl DefaultValue="https://localhost:3443/" />
 
   <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。 -->
@@ -114,7 +114,7 @@
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="JVisionGroup.Label" DefaultValue="JVision" />
-        <bt:String id="TaskpaneButton.Label" DefaultValue="JVision 助手" />
+        <bt:String id="TaskpaneButton.Label" DefaultValue="JVision" />
         <bt:String id="GetStarted.Title" DefaultValue="JVision for Excel 已安裝" />
       </bt:ShortStrings>
       <bt:LongStrings>

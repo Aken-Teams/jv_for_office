@@ -138,5 +138,5 @@ if ($excel) {
   Write-Host "  增益集按鈕才會出現。" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "開啟 Excel 後，在「常用」分頁最右邊會看到「JVision 助手」。"
+Write-Host "開啟 Excel 後，在「常用」分頁最右邊會看到「JVision」。"
 Write-Host ""

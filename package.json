@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "node tools/dev-server.mjs",
     "icons": "node tools/make-icons.mjs",
+    "bump": "node tools/bump-version.mjs",
+    "refresh": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/refresh-addin.ps1",
+    "clear-cache": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/clear-office-cache.ps1",
     "validate": "office-addin-manifest validate manifest.xml"
   },
   "devDependencies": {

@@ -100,6 +100,13 @@ body {
 
 /* ── Brand ──────────────────────────────────────────────────────────────── */
 
+/* The real logo is 254x176 — wider than tall — so it is sized by HEIGHT with
+   width:auto. Forcing it into the square .ic box would either squash it or
+   surround it with dead space that makes it look smaller than everything else. */
+.brand-mark { height: 20px; width: auto; display: block; flex: none; }
+.brand-mark-lg { height: 34px; }
+.brand-mark-xl { height: 40px; margin: 0 auto 12px; }
+
 .brand { display: flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; }
 .brand-name { font-weight: 600; font-size: 14px; color: var(--fg); letter-spacing: -.01em; }
 .brand-lg .brand-name { font-size: 20px; }

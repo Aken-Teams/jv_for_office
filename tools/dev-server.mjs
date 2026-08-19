@@ -30,6 +30,27 @@ if (!devCerts.isCaCertificateInstalled() || !devCerts.verifyCertificates()) {
   process.exit(1);
 }
 
+/**
+ * Request log — to console AND to a file.
+ *
+ * When Excel draws a generic ribbon icon there is no way to tell "Office never
+ * asked for the image" from "Office asked and rejected it" except by watching
+ * the wire. The file copy exists because the console output lives in whichever
+ * terminal happens to be running the server, which is not always the one where
+ * the question gets asked. The User-Agent separates the task pane's WebView from
+ * Office's own fetcher (manifest, ribbon icons).
+ */
+const LOG_FILE = path.join(ROOT, 'devserver.log');
+const NL = '\n';
+try {
+  fs.writeFileSync(LOG_FILE, `--- 啟動 ${new Date().toISOString()} ---${NL}`);
+} catch { /* non-fatal */ }
+
+function log(line) {
+  console.log(line);
+  try { fs.appendFileSync(LOG_FILE, line + NL); } catch { /* non-fatal */ }
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -50,8 +71,16 @@ const server = https.createServer(await devCerts.getHttpsServerOptions(), (req, 
   // Path traversal guard: a dev server still shouldn't hand out the whole disk.
   if (!file.startsWith(ROOT)) { res.writeHead(403).end('Forbidden'); return; }
 
+  const ua = (req.headers['user-agent'] || '').slice(0, 70);
+  const stamp = new Date().toISOString().slice(11, 23);
+
   fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404).end('Not found'); return; }
+    if (err) {
+      log(`${stamp}  404  ${rel}  [${ua}]`);
+      res.writeHead(404).end('Not found');
+      return;
+    }
+    log(`${stamp}  200  ${rel}  ${data.length}B  [${ua}]`);
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       // The pane is edited constantly during development and Excel's WebView
