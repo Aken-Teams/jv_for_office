@@ -30,6 +30,21 @@ const state = {
   workbookName: '',
   /** Snapshots of everything we've overwritten this session, newest last. */
   undoStack: [],
+  /** Which cross-source MCPs the server says this user COULD mount. */
+  available: { email: false, km: false },
+  /** Why they aren't available, shown on the disabled toggle. */
+  sourceHint: '正在確認可用的資料來源…',
+  /** 'ad' | 'email' — which sign-in form is showing. */
+  loginMode: 'email',
+  /** Where the web app lives, for first-time AD setup. */
+  webUrl: '',
+  /**
+   * Which ones are switched ON right now. Off by default and held only in
+   * memory: the pane runs in a SharedRuntime, so this survives closing and
+   * reopening the pane but resets when Excel is quit. Reaching someone's mailbox
+   * should expire with the session, not persist quietly in localStorage.
+   */
+  sources: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -309,6 +324,7 @@ function askConfirm(summary, detail) {
       <div class="confirm-body">${escapeHtml(summary)}</div>
       ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
+      ${state.sources.length ? `<div class="confirm-src">此對話可讀取：${escapeHtml(sourceLabel(state.sources))}。寫入內容可能包含這些來源的資料。</div>` : ''}
       <div class="confirm-actions">
         <button class="btn-approve">允許</button>
         <button class="btn-deny">拒絕</button>
@@ -462,6 +478,7 @@ async function send(message) {
         // model, so a stale pane degrades to "fewer abilities" instead of an
         // agent looping on 未知的工具.
         clientTools: SUPPORTED_TOOLS,
+        dataSources: state.sources,
       }),
     });
 
@@ -504,6 +521,8 @@ async function send(message) {
             void handleToolRequest(ev.data);
           } else if (ev.type === 'session_id') {
             state.sessionId = ev.data;
+          } else if (ev.type === 'info') {
+            addNote(typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data), 'note');
           } else if (ev.type === 'error') {
             addNote(typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data), 'err');
           } else if (ev.type === 'done') {
@@ -536,6 +555,61 @@ async function login(email, password, apiBase) {
   return body.token;
 }
 
+/**
+ * AD sign-in — the primary path in pro-panjit.
+ *
+ * Worth knowing: this is also what acquires the user's Outlook token
+ * (authenticateOutlook runs server-side on success), so signing in with AD is
+ * what makes the 郵件 data source light up. Email/password sign-in never does.
+ *
+ * First-time AD users get a setup wizard instead of a token. That flow is
+ * several screens of account claiming and is not something to reimplement in a
+ * 350px pane — we send them to the web app once and they come back.
+ */
+async function loginAd(username, password, domain, apiBase) {
+  const res = await fetch(`${apiBase}/api/auth/ad/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, domain: domain || undefined }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `登入失敗 (${res.status})`);
+  if (body.firstLogin) {
+    throw new Error(
+      '這是你第一次用 AD 帳號登入，請先到 AI Agents Office 網頁版'
+      + (state.webUrl ? `（${state.webUrl}）` : '')
+      + '完成首次設定，再回來登入。',
+    );
+  }
+  return body.token;
+}
+
+/** Draw the sign-in form the server actually accepts. */
+function setLoginMode(mode) {
+  state.loginMode = mode;
+  $('fields-ad').hidden = mode !== 'ad';
+  $('fields-email').hidden = mode !== 'email';
+  for (const tab of document.querySelectorAll('#login-tabs .tab')) {
+    tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
+  }
+}
+
+/**
+ * Ask which sign-in methods exist before drawing the form. In pro-panjit,
+ * email/password is whitelist-only — showing it as the default hands a PANJIT
+ * employee a form that can only ever answer 帳號或密碼錯誤.
+ */
+async function loadAuthMode() {
+  let mode = { adLogin: false, emailLogin: true };
+  try {
+    const res = await fetch(`${state.apiBase}/api/auth/mode`);
+    if (res.ok) mode = await res.json();
+  } catch { /* unreachable server: fall back to email + let them fix the URL */ }
+  state.webUrl = mode.webUrl || '';
+  $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
+  setLoginMode(mode.adLogin ? 'ad' : 'email');
+}
+
 function logout(reason) {
   state.token = '';
   state.sessionId = null;
@@ -548,12 +622,73 @@ function showLogin(msg) {
   $('chat').classList.remove('show');
   $('login-error').textContent = msg || '';
   $('api-base').value = state.apiBase;
+  void loadAuthMode();
 }
 
 function showChat() {
   $('login').classList.remove('show');
   $('chat').classList.add('show');
   updateUndoButton();
+  updateSourceToggle();
+  void loadDataSources();
+}
+
+const SOURCE_NAMES = { email: '郵件', km: 'KM' };
+const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
+
+/**
+ * Reflect the toggle's state.
+ *
+ * Always visible, disabled when nothing is mountable — with the reason on the
+ * control. The first version hid it instead, which just moved the confusion:
+ * a control you cannot find is indistinguishable from a feature that does not
+ * exist, and the honest answer ("KM 未設定 / 尚未連結 Outlook") is short enough
+ * to simply say.
+ */
+function updateSourceToggle() {
+  const btn = $('sources');
+  btn.hidden = false;
+  const keys = Object.keys(SOURCE_NAMES).filter(k => state.available[k]);
+
+  if (!keys.length) {
+    btn.disabled = true;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.title = state.sourceHint || '這個環境沒有可用的外部資料來源';
+    $('sources-label').textContent = '郵件／KM 未連結';
+    return;
+  }
+
+  btn.disabled = false;
+  const on = state.sources.length > 0;
+  btn.setAttribute('aria-pressed', String(on));
+  btn.title = on
+    ? `這個對話可以讀取${sourceLabel(state.sources)}（唯讀）。點一下關閉。`
+    : `點一下讓這個對話也能讀取${sourceLabel(keys)}（唯讀）。`;
+  $('sources-label').textContent = on ? `${sourceLabel(state.sources)} 已開啟` : sourceLabel(keys);
+}
+
+/** Ask the server which cross-source MCPs this user could actually mount. */
+async function loadDataSources() {
+  try {
+    const res = await fetch(`${state.apiBase}/api/excel/ping`, {
+      headers: { Authorization: `Bearer ${state.token}` },
+    });
+    if (!res.ok) {
+      state.sourceHint = `無法向伺服器確認資料來源（HTTP ${res.status}）。`;
+    } else {
+      const body = await res.json();
+      if (!body.dataSources) {
+        // An older server build that predates this endpoint's response shape.
+        state.sourceHint = '伺服器尚未套用更新，請重新啟動 server 後再試。';
+      } else {
+        state.available = body.dataSources;
+        state.sourceHint = body.dataSources.hint || '';
+      }
+    }
+  } catch (e) {
+    state.sourceHint = `連不上伺服器（${e.message}）。`;
+  }
+  updateSourceToggle();
 }
 
 /** Grow the composer with the text, up to the CSS max-height, then let it scroll. */
@@ -573,12 +708,21 @@ Office.onReady(async (info) => {
   try { state.workbookName = await getWorkbookName(); } catch { /* non-fatal */ }
   $('wb-name').textContent = state.workbookName || '（未命名活頁簿）';
 
+  for (const tab of document.querySelectorAll('#login-tabs .tab')) {
+    tab.addEventListener('click', () => {
+      $('login-error').textContent = '';
+      setLoginMode(tab.dataset.mode);
+    });
+  }
+
   $('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('login-error').textContent = '';
     const apiBase = $('api-base').value.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
     try {
-      const token = await login($('email').value.trim(), $('password').value, apiBase);
+      const token = state.loginMode === 'ad'
+        ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value.trim(), apiBase)
+        : await login($('email').value.trim(), $('password').value, apiBase);
       state.token = token; state.apiBase = apiBase;
       localStorage.setItem(LS_TOKEN, token);
       localStorage.setItem(LS_API, apiBase);
@@ -630,6 +774,18 @@ Office.onReady(async (info) => {
     } catch (e) {
       addNote(`復原失敗：${e.message}`, 'err');
     }
+  });
+
+  $('sources').addEventListener('click', () => {
+    const keys = Object.keys(SOURCE_NAMES).filter(k => state.available[k]);
+    // One switch for all available sources: a per-source menu in a 350px bar is
+    // more UI than the decision deserves — the question is "can it leave this
+    // workbook", not "which of the two".
+    state.sources = state.sources.length ? [] : keys;
+    updateSourceToggle();
+    addNote(state.sources.length
+      ? `已開啟${sourceLabel(state.sources)}存取，這個對話可以讀取它們（唯讀）。`
+      : '已關閉外部資料來源，這個對話只看得到活頁簿。', 'note');
   });
 
   $('logout').addEventListener('click', () => logout(''));

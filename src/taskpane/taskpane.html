@@ -38,6 +38,12 @@
         <path d="M10 16V4.5M10 4.5L5 9.5M10 4.5l5 5"
               fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
       </g>
+      <g id="i-link">
+        <path d="M8.5 11.5a3.2 3.2 0 004.6 0l2.4-2.4a3.25 3.25 0 10-4.6-4.6l-1 1"
+              fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M11.5 8.5a3.2 3.2 0 00-4.6 0l-2.4 2.4a3.25 3.25 0 104.6 4.6l1-1"
+              fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </g>
       <g id="i-warn">
         <path d="M10 3.2L18 16.8H2L10 3.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
         <path d="M10 8v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -57,16 +63,41 @@
         </div>
       </div>
       <p class="lead">登入你的 AI Agents Office 帳號，開始對這份活頁簿提問。</p>
+
+      <!-- Which tabs appear depends on GET /api/auth/mode. In pro-panjit the AD
+           tab is the default, because email/password is whitelist-only there and
+           would just reject everyone with "帳號或密碼錯誤". -->
+      <div id="login-tabs" class="tabs" role="tablist" hidden>
+        <button type="button" class="tab" data-mode="ad" role="tab">AD 帳號</button>
+        <button type="button" class="tab" data-mode="email" role="tab">電子信箱</button>
+      </div>
+
       <form id="login-form" novalidate>
         <label>伺服器
           <input id="api-base" type="text" placeholder="http://localhost:12054" autocomplete="off" spellcheck="false" />
         </label>
-        <label>電子信箱
-          <input id="email" type="email" required autocomplete="username" spellcheck="false" />
-        </label>
-        <label>密碼
-          <input id="password" type="password" required autocomplete="current-password" />
-        </label>
+
+        <div id="fields-ad" hidden>
+          <label>工號
+            <input id="ad-username" type="text" autocomplete="username" spellcheck="false" />
+          </label>
+          <label>密碼
+            <input id="ad-password" type="password" autocomplete="current-password" />
+          </label>
+          <label>網域<span class="opt">（可留空）</span>
+            <input id="ad-domain" type="text" placeholder="PANJIT" autocomplete="off" spellcheck="false" />
+          </label>
+        </div>
+
+        <div id="fields-email" hidden>
+          <label>電子信箱
+            <input id="email" type="email" autocomplete="username" spellcheck="false" />
+          </label>
+          <label>密碼
+            <input id="password" type="password" autocomplete="current-password" />
+          </label>
+        </div>
+
         <button type="submit" class="btn-primary">登入</button>
         <div id="login-error" class="err-text" role="alert"></div>
       </form>
@@ -91,9 +122,16 @@
       </div>
     </header>
 
-    <div class="wb-bar" title="目前開啟的活頁簿">
+    <div class="wb-bar">
       <svg class="ic ic-sm" viewBox="0 0 18 18" aria-hidden="true"><use href="#i-sheet"/></svg>
-      <span id="wb-name"></span>
+      <span id="wb-name" title="目前開啟的活頁簿"></span>
+      <!-- Hidden unless the server says this user actually has a mail token /
+           KM access. Off by default, every Excel session. -->
+      <button id="sources" class="src-toggle" hidden aria-pressed="false"
+              title="讓這個對話也能讀取你的郵件與 KM 文件（唯讀）">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-link"/></svg>
+        <span id="sources-label">郵件／KM</span>
+      </button>
     </div>
 
     <div id="log">
