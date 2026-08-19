@@ -121,10 +121,25 @@ pnpm run dev:server
 要移除就雙擊 [installer/解除安裝.cmd](installer/解除安裝.cmd)，或到 Windows 的
 「應用程式和功能」找 JVision for Excel。
 
-**⑤ 登入**
+**⑤ 設定 API 位址**
 
-側邊欄會問伺服器位址（預設 `http://localhost:12054`，對應 ai-agents-office 的 `PORT`）
-和你的帳號密碼，拿到的 JWT 存在窗格自己的 localStorage。
+```bash
+cp .env.example .env      # 首次
+# 編輯 .env 裡的 API_BASE，對應 ai-agents-office 的 PORT
+```
+
+`npm run dev` 啟動時會把 `.env` 轉成 `config.json`，任務窗格開場讀它。
+**使用者看不到也不用輸入伺服器位址**——那是部署設定，不是使用者偏好，
+打錯字造成的登入失敗看起來會跟密碼錯誤一模一樣。
+
+連不上設定的伺服器時，登入畫面才會把「伺服器」欄位放出來讓人當場修正，
+輸入的值存成明確覆寫（跟設定值分開，所以之後改 `config.json` 不會被舊快取蓋掉）。
+
+正式部署時直接改主機上的 `config.json` 即可，不用重新產生或重新部署其他東西。
+
+**⑥ 登入**
+
+用 AD 工號或電子信箱登入（見下方「登入方式」），拿到的 JWT 存在窗格自己的 localStorage。
 
 ## 要怎麼發給使用者
 

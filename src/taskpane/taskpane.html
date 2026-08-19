@@ -68,7 +68,11 @@
       </div>
 
       <form id="login-form" novalidate>
-        <label>伺服器
+        <!-- Deployment configuration, not a user preference: the address comes
+             from config.json (generated from .env). Revealed only when the
+             configured server can't be reached, so a wrong address is
+             self-serviceable without making everyone else read it. -->
+        <label id="api-base-field" hidden>伺服器
           <input id="api-base" type="text" placeholder="http://localhost:12054" autocomplete="off" spellcheck="false" />
         </label>
 

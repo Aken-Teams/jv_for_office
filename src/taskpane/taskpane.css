@@ -75,6 +75,14 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute comes from the UA stylesheet, and ANY author rule that
+   sets `display` beats it regardless of specificity. Every element here that
+   gets hidden also has a layout rule (label→flex, button→flex, div→block), so
+   without this line `hidden` silently does nothing. It has bitten this file
+   twice — the data-source toggle and the server field — so it lives at the top
+   as one rule rather than as a patch per selector. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI",
@@ -121,7 +129,6 @@ body {
 
 #login-form { display: flex; flex-direction: column; gap: 13px; }
 #fields-ad, #fields-email { display: flex; flex-direction: column; gap: 13px; }
-#fields-ad[hidden], #fields-email[hidden], #login-tabs[hidden] { display: none; }
 .opt { color: var(--fg-subtle); font-weight: 400; }
 
 .tabs { display: flex; gap: 2px; margin-bottom: 16px; padding: 2px; background: var(--surface); border-radius: var(--radius-sm); }
@@ -214,10 +221,6 @@ header .actions { display: flex; gap: 2px; flex: none; }
   color: var(--fg-muted); font-size: 11.5px;
   transition: background var(--speed), border-color var(--speed), color var(--speed);
 }
-/* The `hidden` attribute is powerless against a class rule that sets `display`
-   at equal specificity — this is what kept the toggle on screen when it had
-   nothing to offer. Anything that sets `display` needs this line. */
-.src-toggle[hidden] { display: none; }
 .src-toggle:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-subtle); }
 .src-toggle:disabled { opacity: .5; border-style: dashed; }
 .src-toggle[aria-pressed="true"] {

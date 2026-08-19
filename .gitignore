@@ -1,3 +1,5 @@
 node_modules/
 *.log
 devserver.log
+.env
+config.json

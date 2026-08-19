@@ -15,13 +15,18 @@ import {
   executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
 } from './excelTools.js';
 
-/** Matches PORT in ai-agents-office/.env. Editable on the login screen. */
+/** Last-resort fallback if config.json is missing or unreadable. */
 const DEFAULT_API_BASE = 'http://localhost:12054';
 const LS_TOKEN = 'jv_excel_token';
-const LS_API = 'jv_excel_api';
+/**
+ * Only set when someone typed an address into the revealed 伺服器 field. Kept
+ * separate from the configured value so a deployment that changes config.json
+ * isn't silently overridden by whatever happened to be cached in this pane.
+ */
+const LS_API_OVERRIDE = 'jv_excel_api_override';
 
 const state = {
-  apiBase: localStorage.getItem(LS_API) || DEFAULT_API_BASE,
+  apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
   token: localStorage.getItem(LS_TOKEN) || '',
   /** Claude CLI session — echoed back each turn so the agent keeps its context. */
   sessionId: null,
@@ -598,6 +603,37 @@ function setLoginMode(mode) {
 }
 
 /**
+ * Read the deployed configuration.
+ *
+ * The API address is deployment configuration, not a user preference — nobody
+ * outside this repo knows where the server lives, and a typo produces a login
+ * failure that looks exactly like a wrong password. So it comes from
+ * config.json (generated from .env) and the field stays hidden.
+ *
+ * An explicit override wins: it only gets set when someone typed an address
+ * after a connection failure, which is precisely the case where config.json is
+ * the thing that's wrong.
+ */
+async function loadConfig() {
+  const override = localStorage.getItem(LS_API_OVERRIDE);
+  if (override) { state.apiBase = override; return; }
+  try {
+    const res = await fetch('../../config.json', { cache: 'no-store' });
+    if (res.ok) {
+      const cfg = await res.json();
+      if (cfg.apiBase) state.apiBase = String(cfg.apiBase).replace(/\/+$/, '');
+    }
+  } catch { /* fall back to the default */ }
+}
+
+/** Reveal the server field so a wrong address can be fixed without a redeploy. */
+function revealServerField(msg) {
+  $('api-base-field').hidden = false;
+  $('api-base').value = state.apiBase;
+  if (msg) $('login-error').textContent = msg;
+}
+
+/**
  * Ask which sign-in methods exist before drawing the form. In pro-panjit,
  * email/password is whitelist-only — showing it as the default hands a PANJIT
  * employee a form that can only ever answer 帳號或密碼錯誤.
@@ -607,7 +643,11 @@ async function loadAuthMode() {
   try {
     const res = await fetch(`${state.apiBase}/api/auth/mode`);
     if (res.ok) mode = await res.json();
-  } catch { /* unreachable server: fall back to email + let them fix the URL */ }
+  } catch {
+    // The configured server didn't answer. Show the field so it can be corrected
+    // here rather than requiring someone to redeploy config.json.
+    revealServerField(`連不上伺服器 ${state.apiBase}，請確認位址或聯繫管理者。`);
+  }
   state.webUrl = mode.webUrl || '';
   $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
   setLoginMode(mode.adLogin ? 'ad' : 'email');
@@ -625,7 +665,7 @@ function showLogin(msg) {
   $('chat').classList.remove('show');
   $('login-error').textContent = msg || '';
   $('api-base').value = state.apiBase;
-  void loadAuthMode();
+  void (async () => { await loadConfig(); await loadAuthMode(); })();
 }
 
 function showChat() {
@@ -721,14 +761,15 @@ Office.onReady(async (info) => {
   $('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('login-error').textContent = '';
-    const apiBase = $('api-base').value.trim().replace(/\/+$/, '') || DEFAULT_API_BASE;
+    const typed = $('api-base-field').hidden ? '' : $('api-base').value.trim().replace(/\/+$/, '');
+    const apiBase = typed || state.apiBase || DEFAULT_API_BASE;
     try {
       const token = state.loginMode === 'ad'
         ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value.trim(), apiBase)
         : await login($('email').value.trim(), $('password').value, apiBase);
       state.token = token; state.apiBase = apiBase;
       localStorage.setItem(LS_TOKEN, token);
-      localStorage.setItem(LS_API, apiBase);
+      if (typed) localStorage.setItem(LS_API_OVERRIDE, typed);
       showChat();
     } catch (err) {
       $('login-error').textContent = err.message;
