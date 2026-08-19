@@ -1,0 +1,16 @@
+{
+  "name": "jv-for-excel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JVision for Excel — 任務窗格增益集，讓 AI 直接讀寫使用者當下開啟的活頁簿。",
+  "scripts": {
+    "dev": "node tools/dev-server.mjs",
+    "icons": "node tools/make-icons.mjs",
+    "validate": "office-addin-manifest validate manifest.xml"
+  },
+  "devDependencies": {
+    "office-addin-dev-certs": "^1.13.3",
+    "office-addin-manifest": "^1.13.6"
+  }
+}
