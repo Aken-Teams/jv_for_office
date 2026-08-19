@@ -676,6 +676,36 @@ function showChat() {
   void loadDataSources();
 }
 
+/**
+ * AD 組織清單。
+ *
+ * 同一份清單也在網頁版登入頁 client/src/app/login/page.tsx (AD_DOMAINS)。
+ * 兩邊要一起改 —— 值是送給 /api/auth/ad/login 的 domain，打錯會登入失敗。
+ * 之後如果組織會常變動，比較好的做法是讓 /api/auth/mode 回傳這份清單，
+ * 這樣改組織就不用重新部署增益集。
+ */
+const AD_DOMAINS = [
+  { value: 'PANJIT', label: 'PANJIT（台灣）' },
+  { value: 'PYNMAX', label: 'PYNMAX（璟茂）' },
+  { value: 'WXPJ',   label: 'WXPJ（無錫強茂）' },
+  { value: 'PJWS',   label: 'PJWS（強茂深圳）' },
+  { value: 'GDPJ',   label: 'GDPJ（蘇州群鑫）' },
+  { value: 'PJXZ',   label: 'PJXZ（強茂徐州）' },
+  { value: 'PJSD',   label: 'PJSD（山東強茂）' },
+];
+
+/** Remembered per pane so a returning user doesn't re-pick their own company. */
+const LS_DOMAIN = 'jv_excel_ad_domain';
+
+function fillDomainOptions() {
+  const sel = $('ad-domain');
+  sel.innerHTML = AD_DOMAINS
+    .map(d => `<option value="${d.value}">${escapeHtml(d.label)}</option>`)
+    .join('');
+  const saved = localStorage.getItem(LS_DOMAIN);
+  sel.value = AD_DOMAINS.some(d => d.value === saved) ? saved : AD_DOMAINS[0].value;
+}
+
 const SOURCE_NAMES = { email: '郵件', km: 'KM' };
 const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
 
@@ -748,6 +778,8 @@ Office.onReady(async (info) => {
     return;
   }
 
+  fillDomainOptions();
+
   try { state.workbookName = await getWorkbookName(); } catch { /* non-fatal */ }
   $('wb-name').textContent = state.workbookName || '（未命名活頁簿）';
 
@@ -765,11 +797,12 @@ Office.onReady(async (info) => {
     const apiBase = typed || state.apiBase || DEFAULT_API_BASE;
     try {
       const token = state.loginMode === 'ad'
-        ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value.trim(), apiBase)
+        ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value, apiBase)
         : await login($('email').value.trim(), $('password').value, apiBase);
       state.token = token; state.apiBase = apiBase;
       localStorage.setItem(LS_TOKEN, token);
       if (typed) localStorage.setItem(LS_API_OVERRIDE, typed);
+      if (state.loginMode === 'ad') localStorage.setItem(LS_DOMAIN, $('ad-domain').value);
       showChat();
     } catch (err) {
       $('login-error').textContent = err.message;

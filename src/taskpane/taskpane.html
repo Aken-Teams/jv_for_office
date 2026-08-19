@@ -76,15 +76,17 @@
           <input id="api-base" type="text" placeholder="http://localhost:12054" autocomplete="off" spellcheck="false" />
         </label>
 
+        <!-- 組織 first, matching the web login: you pick who you are before you
+             say which account. Options are filled in from AD_DOMAINS in app.js. -->
         <div id="fields-ad" hidden>
+          <label>組織
+            <select id="ad-domain"></select>
+          </label>
           <label>工號
             <input id="ad-username" type="text" autocomplete="username" spellcheck="false" />
           </label>
           <label>密碼
             <input id="ad-password" type="password" autocomplete="current-password" />
-          </label>
-          <label>網域<span class="opt">（可留空）</span>
-            <input id="ad-domain" type="text" placeholder="PANJIT" autocomplete="off" spellcheck="false" />
           </label>
         </div>
 

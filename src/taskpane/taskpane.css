@@ -141,7 +141,7 @@ body {
 .tab[aria-selected="true"] { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: var(--shadow); }
 label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--fg-muted); }
 
-input, textarea {
+input, textarea, select {
   font: inherit;
   color: var(--fg);
   background: var(--bg);
@@ -151,11 +151,31 @@ input, textarea {
   width: 100%;
   transition: border-color var(--speed), box-shadow var(--speed);
 }
-input:hover, textarea:hover { border-color: var(--fg-subtle); }
-input:focus, textarea:focus {
+input:hover, textarea:hover, select:hover { border-color: var(--fg-subtle); }
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* Native select chrome differs per platform and never matches the inputs beside
+   it, so the arrow is drawn as a background image and the OS one removed. The
+   arrow is inline SVG in a data URI — currentColor doesn't apply to background
+   images, hence the literal stroke colour, redefined for dark mode below. */
+select {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23605e5c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+@media (prefers-color-scheme: dark) {
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23b3b0ad' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  /* The dropdown list itself is OS-rendered; without this it opens white-on-white. */
+  select option { background: var(--bg); color: var(--fg); }
 }
 
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
