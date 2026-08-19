@@ -462,6 +462,26 @@ async function manageSheet(args) {
   });
 }
 
+/**
+ * Excel's UI shows column width in CHARACTERS (default 8.43). Office.js
+ * `format.columnWidth` is in POINTS (default ~64). Everyone — including the
+ * model — thinks in the UI's units, so `column_width` is accepted as characters
+ * and converted here.
+ *
+ * Getting this wrong is not subtle: "set the width to 12" meant 12 points, i.e.
+ * about 1.5 characters, which turns a table into one letter per line with very
+ * tall rows. The tool description used to say 字元數 while the code passed the
+ * number straight through as points.
+ *
+ * The formula is Excel's own: width = chars × (width of '0') + padding, which for
+ * the default Calibri 11 is ≈ 7px per character plus 5px of cell padding.
+ */
+const charsToPoints = (chars) => Math.round(Number(chars) * 7 + 5);
+
+/** Floor and ceiling for anything that sets a column width, autofit included. */
+const MIN_COL_POINTS = 30;    // ≈ 3.5 characters — narrower than this is unreadable
+const MAX_COL_POINTS = 400;   // ≈ 56 characters — one long cell shouldn't span the screen
+
 const BORDER_EDGES = {
   all: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight', 'InsideHorizontal', 'InsideVertical'],
   outline: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'],
@@ -481,6 +501,11 @@ async function formatRange(args) {
     if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
 
     const r = sheet.getRange(String(args.range));
+    // Needed by the autofit clamp below, which walks the range column by column.
+    const range = r;
+    range.load('rowIndex,columnIndex,columnCount');
+    await ctx.sync();
+
     const applied = [];
 
     if (args.number_format !== undefined) { r.numberFormat = [[args.number_format]]; applied.push('數字格式'); }
@@ -496,7 +521,11 @@ async function formatRange(args) {
     if (args.h_align !== undefined) { r.format.horizontalAlignment = String(args.h_align); applied.push('水平對齊'); }
     if (args.v_align !== undefined) { r.format.verticalAlignment = String(args.v_align); applied.push('垂直對齊'); }
     if (args.wrap_text !== undefined) { r.format.wrapText = !!args.wrap_text; applied.push('自動換行'); }
-    if (args.column_width !== undefined) { r.format.columnWidth = Number(args.column_width); applied.push('欄寬'); }
+    if (args.column_width !== undefined) {
+      const pts = Math.min(MAX_COL_POINTS, Math.max(MIN_COL_POINTS, charsToPoints(args.column_width)));
+      r.format.columnWidth = pts;
+      applied.push('欄寬');
+    }
     if (args.row_height !== undefined) { r.format.rowHeight = Number(args.row_height); applied.push('列高'); }
 
     if (args.borders !== undefined) {
@@ -529,7 +558,38 @@ async function formatRange(args) {
     if (args.autofit_columns) {
       r.getEntireColumn().format.autofitColumns();
       await ctx.sync();
-      applied.push('自動欄寬');
+
+      // Autofit alone is not enough. Excel refuses to widen a column whose cells
+      // have wrapText on — it grows the row instead — so a wrapped column can be
+      // left at whatever narrow width it already had. And a column holding one
+      // 500-character note autofits to something absurd. Clamp both ends.
+      const cols = [];
+      for (let i = 0; i < Math.min(range.columnCount, 60); i++) {
+        const c = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex + i, 1, 1).getEntireColumn();
+        c.load('format/columnWidth');
+        cols.push(c);
+      }
+      await ctx.sync();
+
+      let clamped = 0;
+      for (const c of cols) {
+        const w = c.format.columnWidth;
+        if (typeof w !== 'number') continue;
+        const fixed = Math.min(MAX_COL_POINTS, Math.max(MIN_COL_POINTS, w));
+        if (fixed !== w) { c.format.columnWidth = fixed; clamped++; }
+      }
+      if (clamped) await ctx.sync();
+      applied.push(clamped ? `自動欄寬（${clamped} 欄超出範圍已調整）` : '自動欄寬');
+    }
+
+    // Rows last, and after the columns are final: row height depends on how wide
+    // the columns ended up, so autofitting rows first measures the wrong layout.
+    // Without this a wrapped column leaves rows stuck at the height they needed
+    // when the column was narrow — the "one row is half the screen" look.
+    if (args.autofit_rows) {
+      r.getEntireRow().format.autofitRows();
+      await ctx.sync();
+      applied.push('自動列高');
     }
 
     return applied.length
