@@ -196,10 +196,18 @@ header .actions { display: flex; gap: 2px; flex: none; }
 /* Replaces the dead space with the fastest path to a first question. The chips
    are real prompts, not decoration — one click sends. */
 
-.empty { text-align: center; padding: 26px 4px 8px; color: var(--accent); }
+/* Centred vertically only while the empty state is the sole content. Reverts to
+   normal block flow the moment a message arrives, so nothing about the message
+   layout depends on this. Degrades to top-aligned where :has() is unsupported. */
+#log:has(#empty) { display: flex; flex-direction: column; justify-content: center; }
+
+.empty { text-align: center; padding: 8px 4px 24px; color: var(--accent); }
 .empty .ic-xl { margin: 0 auto 12px; opacity: .85; }
 .empty-title { margin: 0 0 6px; font-size: 15px; font-weight: 600; color: var(--fg); }
-.empty-sub { margin: 0 0 18px; font-size: 12.5px; color: var(--fg-muted); line-height: 1.5; }
+.empty-sub {
+  margin: 0 auto 18px; max-width: 250px;
+  font-size: 12.5px; color: var(--fg-muted); line-height: 1.55;
+}
 
 .chips { display: flex; flex-direction: column; gap: 7px; }
 .chip {
@@ -233,10 +241,25 @@ header .actions { display: flex; gap: 2px; flex: none; }
   white-space: pre-wrap;
 }
 
-/* Assistant: no bubble. Answers here are long and contain tables and lists —
-   a bubble would waste the width they need. */
+/* Assistant: a bubble too. The first version left these as bare text to give
+   tables the full column width, but without a boundary you cannot tell where one
+   answer ends and the next begins — especially mid-stream. 12px of padding is a
+   cheap price for knowing whose words you are reading. */
+.bubble.ai {
+  background: var(--bg-chrome);
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 14px 4px;
+  padding: 10px 12px;
+  margin-right: 12px;
+}
 .bubble.ai > *:first-child { margin-top: 0; }
 .bubble.ai > *:last-child { margin-bottom: 0; }
+
+/* Same bubble, so the answer visibly grows out of the spot the indicator held. */
+.bubble.ai.thinking {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--fg-muted); font-size: 12.5px;
+}
 .bubble p { margin: 0 0 9px; }
 .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
   margin: 16px 0 7px; font-size: 13px; font-weight: 600; color: var(--fg);
@@ -254,18 +277,44 @@ header .actions { display: flex; gap: 2px; flex: none; }
 }
 .bubble pre code { background: none; padding: 0; }
 
+/* A white card inside the tinted assistant bubble — the table needs its own
+   ground or the header row and zebra striping vanish against the bubble. */
 .tablewrap {
   overflow-x: auto; margin: 0 0 10px;
   border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg);
 }
 .bubble table { border-collapse: collapse; font-size: 12px; width: 100%; }
+
+/* Cells WRAP. The obvious choice is nowrap so numbers line up, but the tables the
+   model actually produces are mostly two columns of prose — and nowrap silently
+   pushed all of the second column off the right edge where nobody would find it.
+   min-width keeps the other case honest: a genuinely wide numeric table exceeds
+   the pane and the wrapper scrolls, instead of collapsing into unreadable slivers. */
 .bubble th, .bubble td {
-  padding: 5px 9px; text-align: left; white-space: nowrap;
+  padding: 5px 9px; text-align: left;
+  white-space: normal; overflow-wrap: break-word; min-width: 4.5em;
   border-bottom: 1px solid var(--line);
 }
-.bubble th { background: var(--bg-chrome); font-weight: 600; position: sticky; top: 0; }
+.bubble th { background: var(--surface); font-weight: 600; position: sticky; top: 0; }
 .bubble tbody tr:last-child td { border-bottom: none; }
 .bubble tbody tr:nth-child(even) { background: var(--bg-chrome); }
+
+/* A rule between sections, not a divider slammed across the pane: inset, hairline,
+   generous space above and below. The model emits these constantly. */
+.bubble hr {
+  border: none; border-top: 1px solid var(--line-strong);
+  margin: 16px 2px;
+}
+
+.bubble blockquote {
+  margin: 0 0 10px; padding: 2px 0 2px 11px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--fg-muted);
+}
+
+a.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+a.link:hover { text-decoration-thickness: 2px; }
 
 /* Citations — styled as cell references, because that is what they are. The
    monospace chip makes them scannable in a wall of prose, and clicking one
@@ -276,7 +325,7 @@ a.cite {
   font-size: 11.5px; line-height: 1.5;
   padding: 0 5px;
   border: 1px solid var(--line-strong); border-radius: 4px;
-  background: var(--bg-chrome);
+  background: var(--bg);
   color: var(--accent);
   text-decoration: none;
   transition: background var(--speed), border-color var(--speed);
@@ -323,15 +372,7 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .btn-deny:hover { background: var(--surface-hover); color: var(--fg); }
 .decided { font-size: 12px; color: var(--fg-muted); font-weight: 500; }
 
-/* ── Status / thinking ──────────────────────────────────────────────────── */
-
-#status {
-  display: none; align-items: center; gap: 8px;
-  padding: 7px 12px; font-size: 12px; color: var(--fg-muted);
-  border-top: 1px solid var(--line); background: var(--bg-chrome);
-  flex: none;
-}
-#status.on { display: flex; }
+/* ── Thinking indicator (rendered inside the transcript) ────────────────── */
 
 .dots { display: inline-flex; gap: 3px; }
 .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: blink 1.2s infinite ease-in-out; }

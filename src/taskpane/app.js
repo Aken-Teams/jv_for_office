@@ -53,71 +53,152 @@ function linkCitations(html) {
   );
 }
 
+/**
+ * Inline formatting.
+ *
+ * Code spans are pulled out into placeholders BEFORE the other rules run, then
+ * put back at the end — otherwise `**not bold**` inside a code span would get
+ * bolded, which is exactly backwards.
+ */
 function inlineMd(s) {
-  let out = escapeHtml(s);
-  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  out = out.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
-  return linkCitations(out);
+  const codes = [];
+  // NUL as the delimiter, not spaces or brackets: it cannot occur in model
+  // output, so the restore pass can never collide with a number in the prose.
+  let out = escapeHtml(s).replace(/`([^`]+)`/g, (_m, c) => `\u0000${codes.push(c) - 1}\u0000`);
+
+  // [text](url). Only http(s) and mailto survive as links — the text of a message
+  // can originate in a spreadsheet cell, so `javascript:` must never become an
+  // href here. Anything else degrades to plain text.
+  out = out.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, text, url) =>
+    /^(https?:|mailto:)/i.test(url) ? `<a class="link" href="${url}">${text}</a>` : text);
+
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  out = linkCitations(out);
+  return out.replace(/\u0000(\d+)\u0000/g, (_m, i) => `<code>${codes[i]}</code>`);
 }
 
+const RE_FENCE = /^\s*```/;
+const RE_HR = /^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/;
+const RE_HEAD = /^(#{1,6})\s+(.*)$/;
+const RE_QUOTE = /^\s{0,3}>\s?(.*)$/;
+const RE_ROW = /^\s*\|.*\|\s*$/;
+const RE_SEP = /^\s*\|?[\s:|-]+\|?\s*$/;
+const RE_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+
+/** Nested lists from indentation. Two levels is all a 350px column can show. */
+function renderList(items) {
+  let html = '';
+  const stack = [];
+  const close = () => { html += `</${stack.pop()}>`; };
+  for (const it of items) {
+    while (stack.length > it.level + 1) close();
+    if (stack.length === it.level + 1 && stack[stack.length - 1] !== it.type) close();
+    while (stack.length < it.level + 1) { html += `<${it.type}>`; stack.push(it.type); }
+    html += `<li>${inlineMd(it.text)}</li>`;
+  }
+  while (stack.length) close();
+  return html;
+}
+
+function renderTable(rows) {
+  const cells = rows
+    .filter(r => !RE_SEP.test(r))                    // drop the |---|---| separator row
+    .map(r => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim()));
+  if (!cells.length) return '';
+  const head = cells.shift();
+  return '<div class="tablewrap"><table><thead><tr>'
+    + head.map(c => `<th>${inlineMd(c)}</th>`).join('')
+    + '</tr></thead><tbody>'
+    + cells.map(r => `<tr>${r.map(c => `<td>${inlineMd(c)}</td>`).join('')}</tr>`).join('')
+    + '</tbody></table></div>';
+}
+
+/**
+ * Block-level markdown → HTML.
+ *
+ * A deliberate subset, but a complete one for what the model actually emits:
+ * headings, paragraphs, lists (nested), tables, fenced code, block quotes,
+ * horizontal rules. Written as a line scanner rather than regex-over-the-whole-
+ * string because this runs on every streamed chunk — dozens of times per answer.
+ */
 function renderMarkdown(src) {
   const lines = src.split('\n');
-  const html = [];
-  let inCode = false, codeBuf = [];
-  let listType = null, listBuf = [];
-  let tableBuf = [];
+  const out = [];
+  let i = 0;
 
-  const flushList = () => {
-    if (!listBuf.length) return;
-    html.push(`<${listType}>${listBuf.map(li => `<li>${inlineMd(li)}</li>`).join('')}</${listType}>`);
-    listBuf = []; listType = null;
-  };
-  const flushTable = () => {
-    if (!tableBuf.length) return;
-    const rows = tableBuf
-      .filter(r => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r))          // drop the |---|---| separator
-      .map(r => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim()));
-    if (rows.length) {
-      const head = rows.shift();
-      html.push(
-        '<div class="tablewrap"><table><thead><tr>'
-        + head.map(c => `<th>${inlineMd(c)}</th>`).join('')
-        + '</tr></thead><tbody>'
-        + rows.map(r => `<tr>${r.map(c => `<td>${inlineMd(c)}</td>`).join('')}</tr>`).join('')
-        + '</tbody></table></div>',
-      );
-    }
-    tableBuf = [];
-  };
+  while (i < lines.length) {
+    const line = lines[i];
 
-  for (const line of lines) {
-    if (/^```/.test(line)) {
-      if (inCode) { html.push(`<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`); codeBuf = []; }
-      inCode = !inCode;
+    // Fenced code. An unterminated fence still renders — during streaming we are
+    // usually looking at a half-arrived block, and showing it beats showing nothing.
+    if (RE_FENCE.test(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !RE_FENCE.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
       continue;
     }
-    if (inCode) { codeBuf.push(line); continue; }
 
-    if (/^\s*\|.*\|\s*$/.test(line)) { flushList(); tableBuf.push(line); continue; }
-    flushTable();
+    if (!line.trim()) { i++; continue; }
 
-    const h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { flushList(); html.push(`<h${h[1].length + 2}>${inlineMd(h[2])}</h${h[1].length + 2}>`); continue; }
+    if (RE_HR.test(line)) { out.push('<hr>'); i++; continue; }
 
-    const ul = line.match(/^\s*[-*]\s+(.*)$/);
-    if (ul) { if (listType !== 'ul') { flushList(); listType = 'ul'; } listBuf.push(ul[1]); continue; }
+    const h = line.match(RE_HEAD);
+    if (h) {
+      // h1/h2 in a 350px pane would be comically large, so the whole scale is
+      // shifted down two levels.
+      const level = Math.min(6, h[1].length + 2);
+      out.push(`<h${level}>${inlineMd(h[2])}</h${level}>`);
+      i++;
+      continue;
+    }
 
-    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ol) { if (listType !== 'ol') { flushList(); listType = 'ol'; } listBuf.push(ol[1]); continue; }
+    if (RE_QUOTE.test(line)) {
+      const buf = [];
+      while (i < lines.length && RE_QUOTE.test(lines[i])) buf.push(lines[i++].match(RE_QUOTE)[1]);
+      out.push(`<blockquote>${inlineMd(buf.join(' '))}</blockquote>`);
+      continue;
+    }
 
-    flushList();
-    if (line.trim() === '') continue;
-    html.push(`<p>${inlineMd(line)}</p>`);
+    if (RE_ROW.test(line)) {
+      const buf = [];
+      while (i < lines.length && RE_ROW.test(lines[i])) buf.push(lines[i++]);
+      out.push(renderTable(buf));
+      continue;
+    }
+
+    if (RE_ITEM.test(line)) {
+      const items = [];
+      let m;
+      while (i < lines.length && (m = lines[i].match(RE_ITEM))) {
+        items.push({
+          level: Math.min(1, Math.floor(m[1].replace(/\t/g, '  ').length / 2)),
+          type: /\d/.test(m[2]) ? 'ol' : 'ul',
+          text: m[3],
+        });
+        i++;
+      }
+      out.push(renderList(items));
+      continue;
+    }
+
+    // Paragraph: consume until a blank line or the start of another block.
+    // Single newlines become <br> rather than spaces — models use them as real
+    // line breaks, and collapsing them loses the structure the model intended.
+    const buf = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim() || RE_FENCE.test(l) || RE_HR.test(l) || RE_HEAD.test(l)
+          || RE_QUOTE.test(l) || RE_ROW.test(l) || RE_ITEM.test(l)) break;
+      buf.push(l);
+      i++;
+    }
+    out.push(`<p>${buf.map(inlineMd).join('<br>')}</p>`);
   }
-  flushList(); flushTable();
-  if (inCode && codeBuf.length) html.push(`<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`);
-  return html.join('');
+
+  return out.join('');
 }
 
 // ── Chat rendering ────────────────────────────────────────────────────────────
@@ -143,10 +224,28 @@ function addBubble(role, text) {
   return el;
 }
 
+/**
+ * The "working on it" indicator lives IN the transcript, at the end, where the
+ * answer is about to appear — not pinned to the bottom of the pane. When it sat
+ * down by the composer there was no way to tell which part of the log it belonged
+ * to, or whether the text above it was finished.
+ *
+ * It is always the last element, so a tool call that happens mid-answer shows up
+ * below the text so far, in the order things actually happened.
+ */
+let thinkingEl = null;
+
 function setStatus(text) {
-  const s = $('status');
-  $('status-text').textContent = text || '';
-  s.classList.toggle('on', !!text);
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+  if (!text) return;
+  clearEmptyState();
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'bubble ai thinking';
+  thinkingEl.setAttribute('role', 'status');
+  thinkingEl.innerHTML =
+    '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'
+    + `<span>${escapeHtml(text)}</span>`;
+  $('log').appendChild(thinkingEl);
   scrollDown();
 }
 
@@ -192,7 +291,9 @@ function askConfirm(summary, detail) {
 
     const done = (ok) => {
       card.querySelector('.confirm-actions').innerHTML =
-        `<span class="decided">${ok ? '✓ 已允許' : '✕ 已拒絕'}</span>`;
+        // ✓ / × rather than emoji: they inherit colour and exist in every font
+        // in the stack, so they render identically on Windows and in dark mode.
+        `<span class="decided">${ok ? '✓ 已允許' : '× 已拒絕'}</span>`;
       resolve(ok);
     };
     card.querySelector('.btn-approve').addEventListener('click', () => done(true));
@@ -227,6 +328,11 @@ const TOOL_LABEL = {
   excel_read_range: '正在讀取資料…',
   excel_search: '正在搜尋…',
   excel_write_range: '等待你確認寫入…',
+  excel_manage_sheet: '正在調整工作表…',
+  excel_format_range: '正在套用格式…',
+  excel_create_chart: '正在建立圖表…',
+  excel_structure_op: '等待你確認結構變更…',
+  excel_table_ops: '正在整理表格…',
 };
 
 async function handleToolRequest(payload) {
@@ -235,12 +341,16 @@ async function handleToolRequest(payload) {
 
   if (needsConfirm) {
     // Look before asking: the dialog is only useful if it says what will be lost.
+    // Only cell writes can be inspected this way — for a sheet delete or a sort
+    // there is no "target range" to count, so those fall back to the summary line.
     let detail = null;
-    try { detail = await inspectWrite(args); } catch { /* fall back to the plain summary */ }
-    if (detail && detail.ok === false) {
-      await postToolResult(state.runId, callId, { ok: false, error: detail.error });
-      setStatus('');
-      return;
+    if (tool === 'excel_write_range') {
+      try { detail = await inspectWrite(args); } catch { /* fall back to the plain summary */ }
+      if (detail && detail.ok === false) {
+        await postToolResult(state.runId, callId, { ok: false, error: detail.error });
+        setStatus('');
+        return;
+      }
     }
     const approved = await askConfirm(summary, detail);
     if (!approved) {
@@ -283,6 +393,23 @@ async function send(message) {
   let text = '';
 
   try {
+    // Prefetch the workbook structure on the first turn and ship it WITH the
+    // question.
+    //
+    // Measured on this stack: the bridge round trip is ~140ms, but the model
+    // round trip that precedes it is 7-9 SECONDS (CLI spawn → ToolSearch to load
+    // the deferred MCP tools → decide to call excel_get_overview). Since the
+    // agent opens essentially every conversation by asking for exactly this, we
+    // can hand it over for free and skip that entire leg. Simple questions can
+    // then be answered with no tool call at all.
+    //
+    // First turn only: later turns resume the CLI session, which already has it.
+    let workbookContext;
+    if (!state.sessionId) {
+      const r = await executeTool('excel_get_overview', { preview_rows: 5 });
+      if (r.ok) workbookContext = r.content;
+    }
+
     const res = await fetch(`${state.apiBase}/api/excel/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
@@ -291,6 +418,7 @@ async function send(message) {
         runId: state.runId,
         sessionId: state.sessionId || undefined,
         workbookName: state.workbookName || undefined,
+        workbookContext,
       }),
     });
 
@@ -320,6 +448,8 @@ async function send(message) {
           try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
           if (ev.type === 'text') {
+            // Drop the indicator BEFORE creating the bubble, so the bubble takes
+            // its place at the end of the log rather than appearing above it.
             setStatus('');
             text += ev.data;
             if (!bubble) bubble = addBubble('ai', '');
@@ -469,6 +599,15 @@ Office.onReady(async (info) => {
     e.preventDefault();
     const ok = await selectCell(a.dataset.sheet, a.dataset.addr);
     if (!ok) addNote(`找不到工作表「${a.dataset.sheet}」`, 'err');
+  });
+
+  // External links open in the real browser. Letting one navigate the pane would
+  // replace the add-in with a web page and there is no back button in here.
+  $('log').addEventListener('click', (e) => {
+    const a = e.target.closest('a.link');
+    if (!a) return;
+    e.preventDefault();
+    window.open(a.href, '_blank');
   });
 
   if (state.token) showChat(); else showLogin('');

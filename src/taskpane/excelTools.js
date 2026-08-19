@@ -347,6 +347,298 @@ async function writeRange(args) {
   });
 }
 
+// ── Structure, formatting, charts ─────────────────────────────────────────────
+
+/** Resolve "工作表!A1:C9" or a bare "A1:C9" against a default sheet. */
+function resolveRange(ctx, defaultSheet, ref) {
+  const i = String(ref).lastIndexOf('!');
+  if (i < 0) return ctx.workbook.worksheets.getItem(defaultSheet).getRange(String(ref));
+  const name = String(ref).slice(0, i).replace(/^'|'$/g, '');
+  return ctx.workbook.worksheets.getItem(name).getRange(String(ref).slice(i + 1));
+}
+
+async function manageSheet(args) {
+  const op = String(args.op || '');
+  return Excel.run(async (ctx) => {
+    const sheets = ctx.workbook.worksheets;
+
+    if (op === 'add') {
+      const name = String(args.name || '').trim();
+      if (name) {
+        const dup = sheets.getItemOrNullObject(name);
+        dup.load('isNullObject');
+        await ctx.sync();
+        if (!dup.isNullObject) return `錯誤：已經有一張叫「${name}」的工作表了。改個名字，或直接寫進現有那張。`;
+      }
+      const s = name ? sheets.add(name) : sheets.add();
+      if (typeof args.position === 'number') s.position = args.position;
+      s.activate();
+      s.load('name,position');
+      await ctx.sync();
+      return `已新增工作表「${s.name}」並切換過去（位置 ${s.position}）。`;
+    }
+
+    const target = sheets.getItemOrNullObject(String(args.name || ''));
+    target.load('isNullObject,name');
+    await ctx.sync();
+    if (target.isNullObject) {
+      sheets.load('items/name');
+      await ctx.sync();
+      return `錯誤：找不到工作表「${args.name}」。現有的：${sheets.items.map(s => s.name).join('、')}`;
+    }
+
+    if (op === 'rename') {
+      const from = target.name;
+      target.name = String(args.new_name || '');
+      await ctx.sync();
+      return `已把「${from}」改名為「${args.new_name}」。`;
+    }
+    if (op === 'delete') {
+      const n = target.name;
+      target.delete();
+      await ctx.sync();
+      return `已刪除工作表「${n}」。`;
+    }
+    if (op === 'activate') {
+      target.activate();
+      await ctx.sync();
+      return `已切換到「${target.name}」。`;
+    }
+    if (op === 'move') {
+      target.position = Number(args.position) || 0;
+      await ctx.sync();
+      return `已把「${target.name}」移到位置 ${args.position}。`;
+    }
+    return `錯誤：未知的 op「${op}」。`;
+  });
+}
+
+const BORDER_EDGES = {
+  all: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight', 'InsideHorizontal', 'InsideVertical'],
+  outline: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'],
+  bottom: ['EdgeBottom'],
+};
+
+/**
+ * Apply only the properties that were supplied — everything omitted keeps its
+ * current value. Deliberately NOT snapshotted for undo: formatting can't lose
+ * data, and a half-correct format restore is worse than none.
+ */
+async function formatRange(args) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    const r = sheet.getRange(String(args.range));
+    const applied = [];
+
+    if (args.number_format !== undefined) { r.numberFormat = [[args.number_format]]; applied.push('數字格式'); }
+    if (args.bold !== undefined) { r.format.font.bold = !!args.bold; applied.push(args.bold ? '粗體' : '取消粗體'); }
+    if (args.italic !== undefined) { r.format.font.italic = !!args.italic; applied.push('斜體'); }
+    if (args.font_size !== undefined) { r.format.font.size = Number(args.font_size); applied.push('字級'); }
+    if (args.font_color !== undefined) { r.format.font.color = String(args.font_color); applied.push('字色'); }
+    if (args.fill_color !== undefined) {
+      if (String(args.fill_color).toLowerCase() === 'none') r.format.fill.clear();
+      else r.format.fill.color = String(args.fill_color);
+      applied.push('底色');
+    }
+    if (args.h_align !== undefined) { r.format.horizontalAlignment = String(args.h_align); applied.push('水平對齊'); }
+    if (args.v_align !== undefined) { r.format.verticalAlignment = String(args.v_align); applied.push('垂直對齊'); }
+    if (args.wrap_text !== undefined) { r.format.wrapText = !!args.wrap_text; applied.push('自動換行'); }
+    if (args.column_width !== undefined) { r.format.columnWidth = Number(args.column_width); applied.push('欄寬'); }
+    if (args.row_height !== undefined) { r.format.rowHeight = Number(args.row_height); applied.push('列高'); }
+
+    if (args.borders !== undefined) {
+      const edges = BORDER_EDGES[String(args.borders)] || [];
+      if (String(args.borders) === 'none') {
+        for (const e of BORDER_EDGES.all) r.format.borders.getItem(e).style = 'None';
+      } else {
+        for (const e of edges) {
+          const b = r.format.borders.getItem(e);
+          b.style = 'Continuous';
+          b.weight = 'Thin';
+        }
+      }
+      applied.push('框線');
+    }
+
+    if (args.merge === true) { r.merge(false); applied.push('合併'); }
+    else if (args.merge === false) { r.unmerge(); applied.push('取消合併'); }
+
+    await ctx.sync();
+
+    // autofit has to run after the content-affecting changes land, or it measures
+    // the old text.
+    if (args.autofit_columns) {
+      r.format.autofitColumns();
+      await ctx.sync();
+      applied.push('自動欄寬');
+    }
+
+    return applied.length
+      ? `已設定 ${args.sheet}!${args.range} 的${applied.join('、')}。`
+      : '沒有指定任何要改的格式屬性。';
+  });
+}
+
+async function createChart(args) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    const data = resolveRange(ctx, String(args.sheet), args.data_range);
+    data.load('rowIndex,columnIndex,rowCount,columnCount,address');
+    await ctx.sync();
+
+    const chart = sheet.charts.add(String(args.chart_type), data, String(args.series_by || 'Auto'));
+    if (args.title) { chart.title.text = String(args.title); chart.title.visible = true; }
+
+    // Default placement: just to the right of the source data, so a chart never
+    // lands on top of the numbers it came from.
+    const anchor = args.anchor_cell
+      ? sheet.getRange(String(args.anchor_cell))
+      : sheet.getRangeByIndexes(data.rowIndex, data.columnIndex + data.columnCount + 1, 1, 1);
+    chart.setPosition(anchor);
+    chart.width = Number(args.width) || 360;
+    chart.height = Number(args.height) || 220;
+
+    chart.load('name');
+    await ctx.sync();
+    return `已在「${args.sheet}」建立${args.chart_type}圖表「${chart.name}」，資料來源 ${bareAddress(data.address)}。`;
+  });
+}
+
+const CLEAR_APPLY_TO = { contents: 'Contents', formats: 'Formats', all: 'All' };
+
+async function structureOp(args) {
+  const op = String(args.op || '');
+  const count = Math.max(1, Number(args.count) || 1);
+  const index = Math.max(1, Number(args.index) || 1);
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    if (op === 'clear') {
+      if (!args.range) return '錯誤：clear 需要 range。';
+      sheet.getRange(String(args.range)).clear(CLEAR_APPLY_TO[String(args.clear_what || 'contents')] || 'Contents');
+      await ctx.sync();
+      return `已清除 ${args.sheet}!${args.range}。`;
+    }
+
+    // index is 1-based for humans; getRangeByIndexes is 0-based.
+    const isRow = op.endsWith('_rows');
+    const band = isRow
+      ? sheet.getRangeByIndexes(index - 1, 0, count, 1).getEntireRow()
+      : sheet.getRangeByIndexes(0, index - 1, 1, count).getEntireColumn();
+
+    if (op === 'insert_rows') band.insert('Down');
+    else if (op === 'delete_rows') band.delete('Up');
+    else if (op === 'insert_columns') band.insert('Right');
+    else if (op === 'delete_columns') band.delete('Left');
+    else return `錯誤：未知的 op「${op}」。`;
+
+    await ctx.sync();
+    const unit = isRow ? '列' : '欄';
+    const verb = op.startsWith('insert') ? '插入' : '刪除';
+    return `已在「${args.sheet}」第 ${index} ${unit}${verb} ${count} ${unit}。`;
+  });
+}
+
+async function tableOps(args) {
+  const op = String(args.op || '');
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    const hasHeaders = args.has_headers !== false;
+
+    if (op === 'sort') {
+      if (!args.range) return '錯誤：sort 需要 range。';
+      sheet.getRange(String(args.range)).sort.apply(
+        [{ key: Number(args.sort_column) || 0, ascending: args.ascending !== false }],
+        false, hasHeaders,
+      );
+      await ctx.sync();
+      return `已依第 ${Number(args.sort_column) || 0} 欄${args.ascending === false ? '降冪' : '升冪'}排序 ${args.range}。`;
+    }
+
+    if (op === 'autofilter') {
+      if (!args.range) return '錯誤：autofilter 需要 range。';
+      sheet.autoFilter.apply(sheet.getRange(String(args.range)), Number(args.filter_column) || 0, {
+        filterOn: 'Values',
+        values: (args.filter_values || []).map(String),
+      });
+      await ctx.sync();
+      return `已在 ${args.range} 第 ${Number(args.filter_column) || 0} 欄套用篩選。`;
+    }
+
+    if (op === 'create_table') {
+      if (!args.range) return '錯誤：create_table 需要 range。';
+      const t = sheet.tables.add(String(args.range), hasHeaders);
+      if (args.table_name) t.name = String(args.table_name);
+      t.load('name');
+      await ctx.sync();
+      return `已把 ${args.range} 轉成表格「${t.name}」。`;
+    }
+
+    if (op === 'freeze_panes') {
+      const rows = Number(args.freeze_rows) || 0;
+      const cols = Number(args.freeze_columns) || 0;
+      if (rows && cols) sheet.freezePanes.freezeAt(sheet.getRangeByIndexes(0, 0, rows, cols));
+      else if (rows) sheet.freezePanes.freezeRows(rows);
+      else if (cols) sheet.freezePanes.freezeColumns(cols);
+      else sheet.freezePanes.removeFrozenPanes();
+      await ctx.sync();
+      return `已凍結前 ${rows} 列、前 ${cols} 欄。`;
+    }
+
+    if (op === 'conditional_format') {
+      if (!args.range) return '錯誤：conditional_format 需要 range。';
+      const r = sheet.getRange(String(args.range));
+      const type = String(args.format_type || 'ColorScale');
+
+      if (type === 'ColorScale') {
+        const cf = r.conditionalFormats.add('ColorScale');
+        cf.colorScale.criteria = {
+          minimum: { formula: null, type: 'LowestValue', color: '#F8696B' },
+          midpoint: { formula: '50', type: 'Percentile', color: '#FFEB84' },
+          maximum: { formula: null, type: 'HighestValue', color: '#63BE7B' },
+        };
+      } else if (type === 'DataBar') {
+        r.conditionalFormats.add('DataBar');
+      } else if (type === 'GreaterThan' || type === 'LessThan') {
+        const cf = r.conditionalFormats.add('CellValue');
+        cf.cellValue.rule = { formula1: String(args.threshold ?? 0), operator: type };
+        cf.cellValue.format.font.color = type === 'GreaterThan' ? '#006100' : '#9C0006';
+        cf.cellValue.format.fill.color = type === 'GreaterThan' ? '#C6EFCE' : '#FFC7CE';
+      } else if (type === 'ContainsText') {
+        const cf = r.conditionalFormats.add('ContainsText');
+        cf.textComparison.rule = { operator: 'Contains', text: String(args.text || '') };
+        cf.textComparison.format.fill.color = '#FFEB9C';
+      } else if (type === 'TopBottom') {
+        const cf = r.conditionalFormats.add('TopBottom');
+        cf.topBottom.rule = { rank: Number(args.threshold) || 10, type: 'TopItems' };
+        cf.topBottom.format.fill.color = '#C6EFCE';
+      } else {
+        return `錯誤：不支援的 format_type「${type}」。`;
+      }
+      await ctx.sync();
+      return `已在 ${args.range} 套用${type}條件式格式。`;
+    }
+
+    return `錯誤：未知的 op「${op}」。`;
+  });
+}
+
 /** Put a snapshot back. Restoring formulas covers both constants and formulas. */
 export async function restoreSnapshot(snapshot) {
   return Excel.run(async (ctx) => {
@@ -399,6 +691,11 @@ export async function executeTool(tool, args) {
         const r = await writeRange(args || {});
         return { ok: true, content: r.text, snapshot: r.snapshot };
       }
+      case 'excel_manage_sheet':   return { ok: true, content: await manageSheet(args || {}) };
+      case 'excel_format_range':   return { ok: true, content: await formatRange(args || {}) };
+      case 'excel_create_chart':   return { ok: true, content: await createChart(args || {}) };
+      case 'excel_structure_op':   return { ok: true, content: await structureOp(args || {}) };
+      case 'excel_table_ops':      return { ok: true, content: await tableOps(args || {}) };
       default:
         return { ok: false, error: `未知的工具：${tool}` };
     }
