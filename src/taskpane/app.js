@@ -12,7 +12,7 @@
  * data. Do not "streamline" it away.
  */
 import {
-  executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, SUPPORTED_TOOLS,
+  executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
 } from './excelTools.js';
 
 /** Matches PORT in ai-agents-office/.env. Editable on the login screen. */
@@ -376,6 +376,8 @@ const TOOL_LABEL = {
   excel_create_chart: '正在建立圖表…',
   excel_structure_op: '等待你確認結構變更…',
   excel_table_ops: '正在整理表格…',
+  excel_create_pivot: '等待你確認建立樞紐…',
+  excel_trace_precedents: '正在追蹤公式來源…',
 };
 
 async function handleToolRequest(payload) {
@@ -477,7 +479,8 @@ async function send(message) {
         // What this build can execute. The server hides everything else from the
         // model, so a stale pane degrades to "fewer abilities" instead of an
         // agent looping on 未知的工具.
-        clientTools: SUPPORTED_TOOLS,
+        // Computed per host: pivot tables drop out on builds below ExcelApi 1.12.
+        clientTools: supportedTools(),
         dataSources: state.sources,
       }),
     });

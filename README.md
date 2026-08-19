@@ -45,12 +45,24 @@ Claude CLI ──stdio──> excelMcp.ts（獨立 subprocess）
 | `excel_create_chart` | 直條／橫條／折線／圓餅／散佈／區域／雷達圖 | |
 | `excel_structure_op` | 插入刪除整列整欄、清除範圍 | ✔ |
 | `excel_table_ops` | 排序、篩選、轉表格、凍結窗格、條件式格式 | 排序 |
+| `excel_create_pivot` | 建立真的樞紐分析表（可自己拖欄位的活物件） | ✔ |
+| `excel_trace_precedents` | 追一格公式是從哪些儲存格算出來的 | |
 
 儲存格引用 `[[工作表!C42]]` 會渲染成可點的連結，點了跳到那一格。
 寫入前會存快照，「復原上一步」拿得回來。
 
-**還沒有的：** 追蹤公式前導參照（`trace_precedents`）、樞紐分析表、巨集／VBA。
-前兩個是之後要補的，巨集是 Office.js 本身就不支援。
+**還沒有的：** 巨集／VBA —— Office.js 本身就不支援，沒有繞道。
+
+### 需要較新的 Excel 版本
+
+| 功能 | 需要 | 版本不夠時 |
+|---|---|---|
+| 樞紐分析表 | ExcelApi **1.12** | 工具不會出現在模型眼前，改用算好的彙總表 |
+| 追蹤公式（直接參照） | ExcelApi **1.12** | 退回解析公式字串，只找得到直接參照 |
+| 追蹤公式（追到底、跨表） | ExcelApi **1.14** | 退回只追直接參照 |
+
+版本偵測用 `Office.context.requirements.isSetSupported()`，結果會併進送給伺服器的
+`clientTools`——所以舊版 Excel 上模型根本看不到樞紐工具，不會呼叫了才失敗。
 
 ### 確認閘門的界線
 

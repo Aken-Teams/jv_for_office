@@ -27,7 +27,7 @@
  * NOT reload this file. Only a full Excel restart does. Any user who updates the
  * add-in without quitting Excel lands here.
  */
-export const SUPPORTED_TOOLS = [
+const BASE_TOOLS = [
   'excel_get_overview',
   'excel_get_selection',
   'excel_read_range',
@@ -38,7 +38,32 @@ export const SUPPORTED_TOOLS = [
   'excel_create_chart',
   'excel_structure_op',
   'excel_table_ops',
+  // Native precedent tracing needs ExcelApi 1.12, but there is a formula-parsing
+  // fallback that works on any build, so this one is always offered.
+  'excel_trace_precedents',
 ];
+
+/** Cheap and synchronous; Office.js answers from a local table. */
+export function hasApi(version) {
+  try {
+    return Office.context.requirements.isSetSupported('ExcelApi', version);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Tools this build can execute ON THIS HOST.
+ *
+ * Pivot tables need ExcelApi 1.12 to place fields into rows/columns/values —
+ * `pivotTables.add()` alone is 1.8, but a pivot with no fields in it is useless.
+ * Rather than let the agent call it and fail on older builds, the tool is simply
+ * not offered: the server already filters what the model sees by this list, so an
+ * unsupported host degrades to "fewer abilities" with no confusing retries.
+ */
+export function supportedTools() {
+  return hasApi('1.12') ? [...BASE_TOOLS, 'excel_create_pivot'] : [...BASE_TOOLS];
+}
 
 /** Hard ceiling per read. ~20k cells of typical data lands near 100-200KB of CSV. */
 const MAX_READ_CELLS = 20000;
@@ -669,6 +694,179 @@ async function tableOps(args) {
   });
 }
 
+// ── Pivot tables ──────────────────────────────────────────────────────────────
+
+const PIVOT_AREAS = [
+  ['rows', 'rowHierarchies'],
+  ['columns', 'columnHierarchies'],
+  ['filters', 'filterHierarchies'],
+];
+
+async function createPivot(args) {
+  if (!hasApi('1.12')) {
+    return '錯誤：這個 Excel 版本不支援用程式建立樞紐分析表（需要 ExcelApi 1.12）。'
+      + '改用 excel_write_range 直接寫一份算好的彙總表給使用者。';
+  }
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    const existing = ctx.workbook.pivotTables.getItemOrNullObject(String(args.name));
+    existing.load('isNullObject');
+    await ctx.sync();
+    if (!existing.isNullObject) return `錯誤：已經有一個叫「${args.name}」的樞紐分析表，換個名字。`;
+
+    const source = resolveRange(ctx, String(args.sheet), args.source_range);
+    const dest = sheet.getRange(String(args.destination_cell));
+    const pivot = sheet.pivotTables.add(String(args.name), source, dest);
+
+    // Field names come from the source header row. Load them first so a typo gets
+    // a list of what IS available instead of a bare ItemNotFound.
+    pivot.hierarchies.load('items/name');
+    await ctx.sync();
+    const fields = pivot.hierarchies.items.map(h => h.name);
+
+    const wanted = [
+      ...PIVOT_AREAS.flatMap(([key]) => (args[key] || [])),
+      ...((args.values || []).map(v => v.field)),
+    ].map(String);
+    const unknown = wanted.filter(f => !fields.includes(f));
+    if (unknown.length) {
+      pivot.delete();
+      await ctx.sync();
+      return `錯誤：來源資料裡沒有「${unknown.join('、')}」這些欄位。可用的欄位：${fields.join('、')}`;
+    }
+
+    for (const [key, collection] of PIVOT_AREAS) {
+      for (const f of args[key] || []) pivot[collection].add(pivot.hierarchies.getItem(String(f)));
+    }
+    for (const v of args.values || []) {
+      const dh = pivot.dataHierarchies.add(pivot.hierarchies.getItem(String(v.field)));
+      dh.summarizeBy = v.summarize_by || 'Sum';
+    }
+    await ctx.sync();
+
+    const parts = PIVOT_AREAS
+      .map(([key]) => (args[key] || []).length ? `${key}：${args[key].join('、')}` : null)
+      .filter(Boolean);
+    if ((args.values || []).length) {
+      parts.push(`值：${args.values.map(v => `${v.field}(${v.summarize_by || 'Sum'})`).join('、')}`);
+    }
+    return `已在 ${args.sheet}!${args.destination_cell} 建立樞紐分析表「${args.name}」。${parts.join('；')}`;
+  });
+}
+
+// ── Formula precedents ────────────────────────────────────────────────────────
+
+/**
+ * Pull cell references out of a formula string.
+ *
+ * The fallback for hosts without ExcelApi 1.12. Only finds DIRECT references and
+ * can't follow named ranges, so it says so in the output rather than quietly
+ * pretending to be the real thing. The lookbehind stops it matching the "G10"
+ * inside a function name like LOG10.
+ */
+const FORMULA_REF = /(?<![A-Za-z0-9_$])(?:('[^']+'|[A-Za-z_一-鿿][\w一-鿿.]*)!)?(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)(?![\w(])/g;
+
+function parseFormulaRefs(formula, defaultSheet) {
+  const out = [];
+  for (const m of String(formula).matchAll(FORMULA_REF)) {
+    const sheet = (m[1] || defaultSheet).replace(/^'|'$/g, '');
+    const addr = m[2];
+    const key = `${sheet}!${addr}`;
+    if (!out.some(r => r.key === key)) out.push({ key, sheet, addr });
+  }
+  return out;
+}
+
+const MAX_PRECEDENTS = 30;
+
+async function tracePrecedents(args) {
+  const sheetName = String(args.sheet || '');
+  const cell = String(args.cell || '');
+  const all = args.mode === 'all';
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${sheetName}」。`;
+
+    const target = sheet.getRange(cell);
+    target.load('address,values,formulas,numberFormat');
+    await ctx.sync();
+
+    const formula = target.formulas[0][0];
+    const value = target.values[0][0];
+    const head = `${sheetName}!${bareAddress(target.address)} 目前的值是 ${JSON.stringify(value)}`;
+
+    if (typeof formula !== 'string' || !formula.startsWith('=')) {
+      return `${head}，它是直接輸入的常數，沒有公式，也就沒有前導參照。`;
+    }
+
+    // getPrecedents (all levels) needs 1.14; getDirectPrecedents needs 1.12.
+    // Both throw ItemNotFound when a formula references nothing (e.g. =TODAY()).
+    const canAll = hasApi('1.14');
+    const canDirect = hasApi('1.12');
+    let addresses = null;
+    let native = false;
+
+    if ((all && canAll) || canDirect) {
+      try {
+        const areas = all && canAll ? target.getPrecedents() : target.getDirectPrecedents();
+        areas.load('addresses');
+        await ctx.sync();
+        addresses = areas.addresses;
+        native = true;
+      } catch {
+        addresses = [];
+        native = true;
+      }
+    }
+
+    let refs;
+    let note = '';
+    if (native) {
+      refs = (addresses || []).slice(0, MAX_PRECEDENTS).map(a => {
+        const i = a.lastIndexOf('!');
+        return { sheet: i < 0 ? sheetName : a.slice(0, i).replace(/^'|'$/g, ''), addr: i < 0 ? a : a.slice(i + 1) };
+      });
+      if (all && !canAll) note = '（這個 Excel 版本只支援直接參照，沒有一路追到底）';
+    } else {
+      refs = parseFormulaRefs(formula, sheetName).slice(0, MAX_PRECEDENTS);
+      note = '（這個 Excel 版本不支援原生追蹤，以下是直接從公式字串解析出來的，不含具名範圍與間接參照）';
+    }
+
+    if (!refs.length) return `${head}\n公式：${formula}\n這個公式沒有參照其他儲存格。`;
+
+    // One batch load for every precedent, not one round trip each.
+    const loaded = refs.map(r => {
+      const s = ctx.workbook.worksheets.getItemOrNullObject(r.sheet);
+      const rr = s.getRange(r.addr);
+      rr.load('address,values,formulas');
+      return { ref: r, sheet: s, range: rr };
+    });
+    loaded.forEach(l => l.sheet.load('isNullObject'));
+    await ctx.sync();
+
+    const lines = loaded.map(({ ref, sheet: s, range }) => {
+      if (s.isNullObject) return `${ref.sheet}!${ref.addr}\t(找不到工作表)`;
+      const v = range.values[0]?.[0];
+      const f = range.formulas[0]?.[0];
+      const isFormula = typeof f === 'string' && f.startsWith('=');
+      return `${ref.sheet}!${ref.addr}\t${JSON.stringify(v)}\t${isFormula ? f : ''}`;
+    });
+
+    return `${head}\n公式：${formula}\n\n前導參照（${all ? '全部層級' : '直接'}）${note}：\n`
+      + `位址\t值\t它自己的公式\n${lines.join('\n')}`
+      + (addresses && addresses.length > MAX_PRECEDENTS
+        ? `\n（共 ${addresses.length} 個，只列出前 ${MAX_PRECEDENTS} 個）` : '');
+  });
+}
+
 /** Put a snapshot back. Restoring formulas covers both constants and formulas. */
 export async function restoreSnapshot(snapshot) {
   return Excel.run(async (ctx) => {
@@ -726,6 +924,8 @@ export async function executeTool(tool, args) {
       case 'excel_create_chart':   return { ok: true, content: await createChart(args || {}) };
       case 'excel_structure_op':   return { ok: true, content: await structureOp(args || {}) };
       case 'excel_table_ops':      return { ok: true, content: await tableOps(args || {}) };
+      case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
+      case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       default:
         return { ok: false, error: `未知的工具：${tool}` };
     }
