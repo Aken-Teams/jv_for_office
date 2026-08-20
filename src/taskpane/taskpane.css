@@ -488,22 +488,40 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    element allowed to break the neutral palette. */
 
 .confirm {
-  border: 1px solid var(--warn-line);
-  background: var(--warn-bg);
+  /* A card, not an alert box. The old full-amber wash shouted on every routine
+     write, and in a 350px pane a few of them stacked read like an error log.
+     Colour now lives in a 3px left edge and the icon — enough to mark "this needs
+     an answer", quiet enough that the sentence inside is what you look at. */
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn-line);
+  background: var(--bg);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: 12px 13px;
   margin-bottom: 18px;
   box-shadow: var(--shadow);
   animation: rise 180ms ease-out;
 }
-.confirm-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--warn-fg); }
-.confirm-title { font-weight: 600; font-size: 13px; }
-.confirm-body { font-size: 13px; margin-bottom: 5px; }
+.confirm-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--warn-line); }
+.confirm-title { font-weight: 600; font-size: 12.5px; letter-spacing: .01em; color: var(--fg); }
+.confirm-body { font-size: 13px; line-height: 1.55; color: var(--fg); margin-bottom: 4px; }
+/* How it will be done, under what it does. Small and muted on purpose: it is
+   there for someone who wants it, and out of the way of the sentence that
+   actually carries the decision. */
+.confirm-meta { font-size: 11px; color: var(--fg-subtle); margin-top: 3px; }
 .confirm-addr {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 11.5px; color: var(--fg-muted);
 }
 .confirm .risk { margin-top: 8px; font-size: 12px; color: var(--danger); font-weight: 500; }
+
+/* Irreversible. The amber card means "a decision"; this one means "there is no
+   undo for this". If every write looked equally alarming, neither would. */
+.confirm.danger { border-left-color: var(--danger); }
+.confirm.danger .confirm-head { color: var(--danger); }
+.confirm.danger .confirm-title { color: var(--danger); }
+.confirm.danger .confirm-src { border-top-color: var(--danger); color: var(--danger); }
+.confirm.danger .btn-approve { background: var(--danger); color: #fff; }
+.confirm.danger .btn-approve:hover { filter: brightness(1.12); }
 
 /* Provenance. The dialog can say how many cells will change but not what is in
    them — so when the run could reach mail or KM, say so here. Otherwise someone
@@ -517,20 +535,20 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    separate step — and full width, because 「改用 IFS，不要巢狀 IF」 has to be
    typeable without the field scrolling. */
 .confirm-say {
-  display: block; width: 100%; margin: 10px 0 0;
-  padding: 6px 9px; border-radius: var(--radius-sm);
+  display: block; width: 100%; margin: 11px 0 0;
+  padding: 7px 9px; border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong); background: var(--bg);
   color: var(--fg); font-size: 12px; font-family: inherit;
 }
 .confirm-say::placeholder { color: var(--fg-subtle); }
-.confirm-say:focus { outline: none; border-color: var(--accent); }
+.confirm-say:focus { outline: none; border-color: var(--fg-subtle); }
 
-.confirm-actions { display: flex; gap: 8px; margin-top: 12px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
 .confirm-actions button { border-radius: var(--radius-sm); padding: 7px 14px; font-weight: 600; font-size: 13px; transition: background var(--speed); }
 .btn-approve { background: var(--accent); color: #fff; }
 .btn-approve:hover { background: var(--accent-hover); }
 @media (prefers-color-scheme: dark) { .btn-approve { color: #10281b; } }
-.btn-deny { border: 1px solid var(--line-strong); color: var(--fg-muted); }
+.btn-deny { border: 1px solid var(--line-strong); color: var(--fg); background: var(--bg); }
 .btn-deny:hover { background: var(--surface-hover); color: var(--fg); }
 /* Answered. The card drops the whole alarm treatment and becomes one quiet line
    in the same visual family as .note — because that is what it now is: a record

@@ -459,11 +459,14 @@ function autoApprovedCard(summary) {
  *
  * Resolves { approved, card, note }.
  */
-function askConfirm(summary, detail) {
+function askConfirm(summary, detail, meta, highRisk) {
   return new Promise((resolve) => {
     clearEmptyState();
     const card = document.createElement('div');
-    card.className = 'confirm';
+    // Two levels, because a font change and a sheet deletion should not shout
+    // with the same voice. Everything reaching this card mutates the workbook;
+    // `danger` is reserved for the ones the undo button cannot take back.
+    card.className = highRisk ? 'confirm danger' : 'confirm';
     card.setAttribute('role', 'alertdialog');
     const risk = detail && detail.occupied
       ? `<div class="risk">目標範圍已有 ${detail.occupied} 格有內容${detail.hadFormula ? `（其中 ${detail.hadFormula} 格是公式）` : ''}，會被覆蓋。</div>`
@@ -471,14 +474,15 @@ function askConfirm(summary, detail) {
     card.innerHTML = `
       <div class="confirm-head">
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
-        <span class="confirm-title">AI 想要修改這份活頁簿</span>
+        <span class="confirm-title">${highRisk ? '這個動作沒辦法復原' : 'AI 想要修改這份活頁簿'}</span>
       </div>
       <div class="confirm-body">${escapeHtml(summary)}</div>
+      ${meta ? `<div class="confirm-meta">${escapeHtml(meta)}</div>` : ''}
       ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
       ${state.sources.length ? `<div class="confirm-src">此對話可讀取：${escapeHtml(sourceLabel(state.sources))}。寫入內容可能包含這些來源的資料。</div>` : ''}
       <input class="confirm-say" type="text" autocomplete="off"
-             placeholder="想改成什麼？留著空白就直接允許或拒絕" aria-label="給 AI 的說明（選填）" />
+             placeholder="想改成什麼？（選填）" aria-label="給 AI 的說明（選填）" />
       <div class="confirm-actions">
         <button class="btn-approve">允許</button>
         <button class="btn-deny">拒絕</button>
@@ -576,7 +580,7 @@ function preparingLabel(name) {
 const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} 字元`);
 
 async function handleToolRequest(payload) {
-  const { callId, tool, args, needsConfirm, summary } = payload;
+  const { callId, tool, args, needsConfirm, summary, meta } = payload;
   // Prefer the server's specific description ("讀取 工作表1!A1:AZ375") over the
   // generic per-tool label — it is the same line the confirmation card shows, so
   // the trace and the dialog agree about what happened.
@@ -604,7 +608,7 @@ async function handleToolRequest(payload) {
     if (state.autoApprove && !alwaysAsk(tool, args)) {
       card = autoApprovedCard(summary);
     } else {
-      const decision = await askConfirm(summary, detail);
+      const decision = await askConfirm(summary, detail, meta, alwaysAsk(tool, args));
       card = decision.card;
       userNote = decision.note || '';
       if (!decision.approved) {
