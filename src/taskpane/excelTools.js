@@ -1027,6 +1027,72 @@ export async function selectCell(sheetName, address) {
   });
 }
 
+// ── The user's current selection ──────────────────────────────────────────────
+
+/**
+ * Cells previewed with a selection. Enough for a row, a header, a handful of
+ * cells — the shapes people actually point at — without putting a whole screen
+ * of data into every message.
+ */
+const MAX_SELECTION_PREVIEW_CELLS = 60;
+
+/**
+ * What the user has selected right now, in two forms.
+ *
+ * `label` goes on the chip above the composer; `context` is what rides along with
+ * the message. This exists because "which column is wrong?" is a question people
+ * often cannot answer — not out of carelessness, but because the thing that looks
+ * wrong to them has no name. They can always point at it, though.
+ *
+ * Returns null when nothing useful is selected.
+ */
+export async function getSelectionRef() {
+  return Excel.run(async (ctx) => {
+    const r = ctx.workbook.getSelectedRange();
+    const sh = ctx.workbook.worksheets.getActiveWorksheet();
+    r.load('address,rowCount,columnCount,values');
+    sh.load('name');
+    await ctx.sync();
+
+    // `address` already carries the sheet ("缺料警示!A4:L4"); strip it for the chip
+    // so a long sheet name doesn't push the useful half out of a 350px bar.
+    const full = String(r.address || '');
+    const local = full.includes('!') ? full.slice(full.indexOf('!') + 1) : full;
+    if (!local) return null;
+
+    const cells = r.rowCount * r.columnCount;
+    const size = `${r.rowCount} 列 × ${r.columnCount} 欄`;
+    const head = `使用者在側邊欄提問時選取的範圍：${sh.name}!${local}（${size}）`;
+
+    if (cells > MAX_SELECTION_PREVIEW_CELLS) {
+      return { label: local, sheet: sh.name, context: `${head}\n（範圍較大，內容請自己用 excel_read_range 讀）` };
+    }
+    return { label: local, sheet: sh.name, context: `${head}\n內容：\n${toCsv(r.values)}` };
+  });
+}
+
+/**
+ * Call `onChange` when the selection moves.
+ *
+ * Debounced: dragging across a range fires this per cell, and the chip only needs
+ * to settle. Failure is non-fatal — the chip then only refreshes when a message is
+ * sent, which is still useful.
+ */
+export async function watchSelection(onChange) {
+  let timer = null;
+  try {
+    await Excel.run(async (ctx) => {
+      ctx.workbook.onSelectionChanged.add(async () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try { onChange(await getSelectionRef()); } catch { /* ignore */ }
+        }, 150);
+      });
+      await ctx.sync();
+    });
+  } catch { /* older host: no live tracking */ }
+}
+
 export async function getWorkbookName() {
   return Excel.run(async (ctx) => {
     ctx.workbook.load('name');

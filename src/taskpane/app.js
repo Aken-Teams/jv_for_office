@@ -13,7 +13,7 @@
  */
 import {
   executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
-  getActiveSheetName, watchActiveSheet,
+  getActiveSheetName, watchActiveSheet, getSelectionRef, watchSelection,
 } from './excelTools.js';
 
 /** Last-resort fallback if config.json is missing or unreadable. */
@@ -45,6 +45,10 @@ const state = {
   workbookName: '',
   /** The sheet the user is on — shown so it is clear where the agent is working. */
   sheetName: '',
+  /** Live selection, or null. Rides along with the next message unless dropped. */
+  selection: null,
+  /** Set by the × on the chip: skip the selection for THIS message only. */
+  selectionDropped: false,
   /** Snapshots of everything we've overwritten this session, newest last. */
   undoStack: [],
   /** Which cross-source MCPs the server says this user COULD mount. */
@@ -800,6 +804,10 @@ async function send(message) {
         // model, so a stale pane degrades to "fewer abilities" instead of an
         // agent looping on 未知的工具.
         // Computed per host: pivot tables drop out on builds below ExcelApi 1.12.
+        // Where the user was pointing when they asked. This is the whole answer to
+        // 「畫面怪怪的，幫我看看」 — they cannot always name the column, but the
+        // selection says which one they mean.
+        selection: (!state.selectionDropped && state.selection) ? state.selection.context : undefined,
         clientTools: supportedTools(),
         dataSources: state.sources,
       }),
@@ -896,6 +904,8 @@ async function send(message) {
   } finally {
     state.streaming = false;
     state.runId = null;
+    state.selectionDropped = false;
+    void getSelectionRef().then(setSelection).catch(() => {});
     $('send').disabled = !$('input').value.trim();
     progressDone(false);
   }
@@ -1071,6 +1081,32 @@ const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
  * to simply say.
  */
 /**
+ * The selection chip above the composer.
+ *
+ * Hidden when a single cell is selected and it is empty-ish, because the cursor
+ * is always somewhere — showing 「A1」 on every message would be noise, and worse,
+ * it would attach a meaningless reference to questions that have nothing to do
+ * with any cell.
+ */
+function renderSelChip() {
+  const chip = $('sel-chip');
+  const sel = state.selection;
+  const show = !!sel && !state.selectionDropped;
+  chip.hidden = !show;
+  if (show) {
+    $('sel-label').textContent = sel.sheet ? `${sel.sheet}!${sel.label}` : sel.label;
+    chip.title = `這則訊息會一起送出你選取的 ${sel.label}，讓 AI 知道你指的是哪裡。點 × 可以不帶。`;
+  }
+}
+
+function setSelection(sel) {
+  state.selection = sel;
+  // Moving the selection is a fresh intent — re-arm the chip the user dismissed.
+  state.selectionDropped = false;
+  renderSelChip();
+}
+
+/**
  * Show which worksheet the agent is looking at.
  *
  * Hidden rather than blank when unknown: an empty chevron next to the filename
@@ -1175,6 +1211,9 @@ Office.onReady(async (info) => {
   // 「這一段」 and excel_get_selection refer to, and the bar should say so.
   void watchActiveSheet(setSheetName);
 
+  try { setSelection(await getSelectionRef()); } catch { /* non-fatal */ }
+  void watchSelection(setSelection);
+
   for (const tab of document.querySelectorAll('#login-tabs .tab')) {
     tab.addEventListener('click', () => {
       $('login-error').textContent = '';
@@ -1255,6 +1294,12 @@ Office.onReady(async (info) => {
     addNote(state.sources.length
       ? `已開啟${sourceLabel(state.sources)}存取，這個對話可以讀取它們（唯讀）。`
       : '已關閉外部資料來源，這個對話只看得到活頁簿。', 'note');
+  });
+
+  $('sel-drop').addEventListener('click', () => {
+    state.selectionDropped = true;
+    renderSelChip();
+    $('input').focus();
   });
 
   $('approve-mode').addEventListener('click', () => {
