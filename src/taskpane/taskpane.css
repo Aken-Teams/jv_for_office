@@ -667,6 +667,41 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .input-shell textarea:hover, .input-shell textarea:focus { border: none; box-shadow: none; }
 .input-shell textarea::placeholder { color: var(--fg-subtle); }
 
+/* The composer footer carries the keyboard hint on the left and the model on the
+   right, so the model reads as a property of the message you are about to send
+   rather than a global setting buried in a header. */
+.composer-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.composer-foot .hint-row { flex: 1; margin: 0; }
+.model-wrap { position: relative; flex: none; }
+.model-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 2px 4px 2px 7px; border-radius: 6px;
+  font-size: 11.5px; color: var(--fg-muted);
+  transition: background var(--speed), color var(--speed);
+}
+.model-btn:hover, .model-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--fg); }
+.model-btn .ic-sm { width: 14px; height: 14px; }
+
+/* Opens upward and right-aligned — it sits in the last row of the pane, and a
+   menu opening downward or leftward would leave the pane. */
+.model-menu {
+  position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 30;
+  width: max-content; max-width: 250px; padding: 5px;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.model-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 9px; border-radius: 7px;
+  transition: background var(--speed);
+}
+.model-item:hover { background: var(--surface-hover); }
+.model-item .m-name { display: block; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.model-item .m-note { display: block; font-size: 11px; color: var(--fg-muted); line-height: 1.4; margin-top: 1px; }
+.model-item[aria-checked="true"] .m-name { color: var(--accent); }
+.model-item[aria-checked="true"] .m-name::after { content: " ✓"; }
+
 .plus-btn {
   display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: none; margin-left: -4px;
@@ -681,6 +716,41 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   content: ""; position: absolute; top: 3px; right: 3px;
   width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
 }
+/* The composer footer carries the keyboard hint on the left and the model on the
+   right, so the model reads as a property of the message you are about to send
+   rather than a global setting buried in a header. */
+.composer-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.composer-foot .hint-row { flex: 1; margin: 0; }
+.model-wrap { position: relative; flex: none; }
+.model-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 2px 4px 2px 7px; border-radius: 6px;
+  font-size: 11.5px; color: var(--fg-muted);
+  transition: background var(--speed), color var(--speed);
+}
+.model-btn:hover, .model-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--fg); }
+.model-btn .ic-sm { width: 14px; height: 14px; }
+
+/* Opens upward and right-aligned — it sits in the last row of the pane, and a
+   menu opening downward or leftward would leave the pane. */
+.model-menu {
+  position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 30;
+  width: max-content; max-width: 250px; padding: 5px;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.model-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 9px; border-radius: 7px;
+  transition: background var(--speed);
+}
+.model-item:hover { background: var(--surface-hover); }
+.model-item .m-name { display: block; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.model-item .m-note { display: block; font-size: 11px; color: var(--fg-muted); line-height: 1.4; margin-top: 1px; }
+.model-item[aria-checked="true"] .m-name { color: var(--accent); }
+.model-item[aria-checked="true"] .m-name::after { content: " ✓"; }
+
 .plus-btn { position: relative; }
 
 /* Opens upward from the composer. Full width rather than a narrow dropdown:

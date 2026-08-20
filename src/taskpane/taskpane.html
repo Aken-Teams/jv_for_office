@@ -58,6 +58,10 @@
         <path d="M4 4.4h5a2 2 0 012 2v9a1.6 1.6 0 00-1.6-1.6H4z" fill="none" stroke="currentColor" stroke-width="1.3"/>
         <path d="M16 4.4h-5a2 2 0 00-2 2v9a1.6 1.6 0 011.6-1.6H16z" fill="none" stroke="currentColor" stroke-width="1.3"/>
       </g>
+      <g id="i-chev">
+        <path d="M6.4 8.2l3.6 3.6 3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
       <g id="i-plus">
         <path d="M10 4.6v10.8M4.6 10h10.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
       </g>
@@ -236,7 +240,16 @@
           <svg id="send-ic" class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-send"/></svg>
         </button>
       </div>
-      <div class="hint-row">Enter 送出 · Shift+Enter 換行</div>
+      <div class="composer-foot">
+        <span class="hint-row">Enter 送出 · Shift+Enter 換行</span>
+        <div class="model-wrap">
+          <button type="button" id="model-btn" class="model-btn" aria-haspopup="true" aria-expanded="false">
+            <span id="model-label">Opus 5</span>
+            <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-chev"/></svg>
+          </button>
+          <div id="model-menu" class="model-menu" hidden role="menu"></div>
+        </div>
+      </div>
     </form>
   </section>
 

@@ -34,6 +34,8 @@ const LS_API_OVERRIDE = 'jv_excel_api_override';
  * a warning whenever it is on, and why irreversible operations still ask.
  */
 const LS_AUTO_APPROVE = 'jv_excel_auto_approve';
+/** Chosen model. A working preference, so it survives restarts. */
+const LS_MODEL = 'jv_excel_model';
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
@@ -47,6 +49,10 @@ const state = {
   workbookName: '',
   /** The sheet the user is on — shown so it is clear where the agent is working. */
   sheetName: '',
+  /** Chosen model id, or '' for whatever the server defaults to. */
+  model: localStorage.getItem(LS_MODEL) || '',
+  /** Catalogue from the server — includes any local models this deployment has. */
+  models: [],
   /** Live selection, or null. Rides along with the next message unless dropped. */
   selection: null,
   /** Set by the × on the chip: skip the selection for THIS message only. */
@@ -855,6 +861,7 @@ async function send(message) {
         // 「畫面怪怪的，幫我看看」 — they cannot always name the column, but the
         // selection says which one they mean.
         selection: (!state.selectionDropped && state.selection) ? state.selection.context : undefined,
+        model: state.model || undefined,
         clientTools: supportedTools(),
         dataSources: state.sources,
       }),
@@ -1086,6 +1093,7 @@ function showChat() {
   $('chat').classList.add('show');
   updateUndoButton();
   updateApproveToggle();
+  renderModelMenu();
   renderSourceMenu();
   void loadDataSources();
 }
@@ -1218,6 +1226,41 @@ function renderSourceMenu() {
     : '開啟後，這個對話可以讀取這些來源（唯讀）。';
 }
 
+/**
+ * The model picker.
+ *
+ * The catalogue comes from the server, so a deployment that gains a local model
+ * gets it here without an add-in update — which matters more than usual, because
+ * SharedRuntime means every add-in update costs everyone a full Excel restart.
+ *
+ * A stored id that the server no longer offers falls back silently to the
+ * default rather than erroring: a model can be retired between sessions, and
+ * that is not the user's problem to solve.
+ */
+function renderModelMenu() {
+  const list = state.models;
+  const wrap = document.querySelector('.model-wrap');
+  // One model on offer is not a choice worth a control.
+  if (!list.length || list.length < 2) { if (wrap) wrap.hidden = true; return; }
+  if (wrap) wrap.hidden = false;
+
+  const current = list.find(m => m.id === state.model) || list.find(m => m.default) || list[0];
+  $('model-label').textContent = current.label;
+  $('model-menu').innerHTML = list.map(m => `
+    <button type="button" class="model-item" role="menuitemradio" data-id="${escapeHtml(m.id)}"
+            aria-checked="${m.id === current.id}">
+      <span class="m-name">${escapeHtml(m.label)}</span>
+      <span class="m-note">${escapeHtml(m.note || '')}</span>
+    </button>`).join('');
+}
+
+function toggleModelMenu(show) {
+  const menu = $('model-menu');
+  const open = show === undefined ? menu.hidden : show;
+  menu.hidden = !open;
+  $('model-btn').setAttribute('aria-expanded', String(open));
+}
+
 function toggleSourceMenu(show) {
   const menu = $('src-menu');
   const open = show === undefined ? menu.hidden : show;
@@ -1241,6 +1284,9 @@ async function loadDataSources() {
         state.sourceHint = '伺服器尚未套用更新，請重新啟動 server 後再試。';
       } else {
         state.available = body.dataSources;
+        // Older servers do not send this; the picker then hides itself rather
+        // than offering a list the server would ignore.
+        state.models = Array.isArray(body.models) ? body.models : [];
         state.sourceHint = body.dataSources.hint || '';
       }
     }
@@ -1248,6 +1294,7 @@ async function loadDataSources() {
     state.sourceHint = `連不上伺服器（${e.message}）。`;
   }
   renderSourceMenu();
+  renderModelMenu();
 }
 
 /** Grow the composer with the text, up to the CSS max-height, then let it scroll. */
@@ -1323,6 +1370,7 @@ Office.onReady(async (info) => {
     if (e.key !== 'Escape') return;
     // The menu first: Esc should back out of whatever is on top, and closing a
     // menu is not what someone means when they are trying to call off a run.
+    if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
   });
@@ -1360,7 +1408,20 @@ Office.onReady(async (info) => {
     }
   });
 
-  $('plus').addEventListener('click', () => toggleSourceMenu());
+  $('model-btn').addEventListener('click', () => { toggleSourceMenu(false); toggleModelMenu(); });
+
+  $('model-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('.model-item');
+    if (!item) return;
+    state.model = item.dataset.id;
+    localStorage.setItem(LS_MODEL, state.model);
+    renderModelMenu();
+    toggleModelMenu(false);
+    const m = state.models.find(x => x.id === state.model);
+    addNote(`已改用 ${m ? m.label : state.model}。${m && m.note ? m.note + '。' : ''}`, 'note');
+  });
+
+  $('plus').addEventListener('click', () => { toggleModelMenu(false); toggleSourceMenu(); });
 
   $('src-menu').addEventListener('click', (e) => {
     const item = e.target.closest('.src-item');
@@ -1380,6 +1441,9 @@ Office.onReady(async (info) => {
   // Click-away closes it. A menu that can only be dismissed by the button that
   // opened it is one people leave open by accident.
   document.addEventListener('click', (e) => {
+    if (!$('model-menu').hidden && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
+      toggleModelMenu(false);
+    }
     if ($('src-menu').hidden) return;
     if (e.target.closest('#src-menu') || e.target.closest('#plus')) return;
     toggleSourceMenu(false);
@@ -1395,6 +1459,7 @@ Office.onReady(async (info) => {
     state.autoApprove = !state.autoApprove;
     localStorage.setItem(LS_AUTO_APPROVE, state.autoApprove ? '1' : '0');
     updateApproveToggle();
+  renderModelMenu();
     // Spelled out in the transcript, not just the tooltip. Someone turning this
     // on should read once what they are turning off; someone scrolling back
     // should be able to see when it changed.
