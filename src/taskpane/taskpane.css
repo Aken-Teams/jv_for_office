@@ -318,13 +318,17 @@ button:disabled { cursor: default; }
    receipt, not a result, and it should read as available rather than as part
    of what the assistant said. */
 .card-more {
-  display: block; margin-top: 7px; padding: 0;
+  flex: 0 0 100%;
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 6px; padding: 0;
   font-size: 11.5px; color: var(--fg-subtle);
-  text-decoration: underline; text-underline-offset: 2px;
 }
 .card-more:hover { color: var(--fg-muted); }
+.card-more .ic { transition: transform var(--speed); }
+.card-more[aria-expanded="true"] .ic { transform: rotate(180deg); }
 .card-raw {
-  margin-top: 7px; padding: 8px 10px;
+  flex: 0 0 100%;
+  margin-top: 6px; padding: 8px 10px;
   max-height: 190px; overflow: auto;
   border-radius: var(--radius-sm); background: var(--surface);
   font-family: Consolas, "Cascadia Mono", monospace;
@@ -580,7 +584,7 @@ header .actions { display: flex; gap: 2px; flex: none; }
 /* One line per step: marker, label, elapsed. The elapsed column is right-aligned
    and tabular so the digits don't jitter as it ticks. */
 .step { display: flex; align-items: center; gap: 7px; }
-.step .mark { color: var(--ok); font-weight: 700; width: 12px; flex: none; text-align: center; }
+.step .mark { color: var(--ok); width: 12px; height: 12px; flex: none; align-self: center; }
 .step .dots { width: 12px; flex: none; justify-content: center; }
 .step-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-ms {
@@ -606,7 +610,7 @@ header .actions { display: flex; gap: 2px; flex: none; }
    this is history rather than something the person has to act on. Red here is
    reserved for the things that genuinely need them — a lost connection, an
    expired login. */
-.step.fail .mark { color: var(--fg-subtle); font-weight: 600; }
+.step.fail .mark { color: var(--fg-subtle); }
 .step.fail .step-label { color: var(--fg-subtle); }
 
 /* Finished steps recede — the running one is what you're waiting on. */
@@ -784,13 +788,13 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    in the same visual family as .note — because that is what it now is: a record
    of something that already happened, not a question waiting on you. */
 .confirm.resolved {
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
   background: none; box-shadow: none; border-radius: 0;
   border-width: 0 0 0 2px; border-left-color: var(--line-strong);
   padding: 1px 0 1px 9px; margin-bottom: 14px;
   font-size: 12px; color: var(--fg-muted);
 }
-.confirm.resolved .mark { font-weight: 700; flex: none; }
+.confirm.resolved .mark { width: 13px; height: 13px; flex: none; align-self: center; }
 .confirm.resolved.ok { border-left-color: var(--ok); color: var(--ok); }
 .confirm.resolved.err { border-left-color: var(--danger); color: var(--danger); }
 /* An approved action Excel rejected. Grey, because the agent goes on to work

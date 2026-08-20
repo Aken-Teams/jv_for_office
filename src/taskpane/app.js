@@ -328,9 +328,9 @@ function renderProgress() {
     const done = st.t1 !== undefined;
     const ms = (done ? st.t1 : now) - st.t0;
     const mark = st.fail
-      ? '<span class="mark">✕</span>'
+      ? '<svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>'
       : done
-        ? '<span class="mark">✓</span>'
+        ? '<svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>'
         : '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
     const hint = st.hint ? ` title="${escapeHtml(st.hint)}"` : '';
     return `<div class="step${done ? ' done' : ''}${st.fail ? ' fail' : ''}"${hint}>${mark}`
@@ -476,9 +476,9 @@ function resolveCard(card, kind, text, hint, raw) {
   if (kind === 'err') card.setAttribute('role', 'alert');
   else card.removeAttribute('aria-live');
   if (hint) card.title = hint; else card.removeAttribute('title');
-  const mark = { ok: '✓', denied: '×', err: '!', retry: '✕', running: '' }[kind] ?? '';
+  const mark = { ok: 'i-check', denied: 'i-stop', err: 'i-warn', retry: 'i-warn' }[kind];
   card.innerHTML = mark
-    ? `<span class="mark">${mark}</span>${escapeHtml(text)}`
+    ? `<svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><use href="#${mark}"/></svg>${escapeHtml(text)}`
     : `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(text)}`;
   if (raw) attachRaw(card, raw);
   scrollDown();
@@ -498,7 +498,9 @@ function attachRaw(card, raw) {
   btn.type = 'button';
   btn.className = 'card-more';
   btn.setAttribute('aria-expanded', 'false');
-  btn.textContent = t('詳細內容');
+  // A chevron that turns says open/closed without a second word for it, and it
+  // says the same thing in every language.
+  btn.innerHTML = `<svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-chev"/></svg><span>${escapeHtml(t('詳細內容'))}</span>`;
 
   const pre = document.createElement('pre');
   pre.className = 'card-raw';
@@ -508,7 +510,6 @@ function attachRaw(card, raw) {
   btn.addEventListener('click', () => {
     pre.hidden = !pre.hidden;
     btn.setAttribute('aria-expanded', String(!pre.hidden));
-    btn.textContent = pre.hidden ? t('詳細內容') : t('收合');
     if (!pre.hidden) scrollDown();
   });
 
