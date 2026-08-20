@@ -42,6 +42,8 @@ const state = {
   sessionId: null,
   runId: null,
   streaming: false,
+  /** Lets the person call off a run that is taking too long. See stopRun(). */
+  abort: null,
   workbookName: '',
   /** The sheet the user is on — shown so it is clear where the agent is working. */
   sheetName: '',
@@ -331,10 +333,22 @@ function progressDetail(text) {
 
 /** Caption the running step with the model's latest line of reasoning. */
 function progressThinking(chunk) {
+  // Reaching here means the CLI is up and the model is working, so a step still
+  // labelled 「AI 啟動中…」 is now a lie — and a lie that reads as "hung", which is
+  // exactly what a 400-second wait under that label looked like.
+  const cur = progress.steps[progress.steps.length - 1];
+  if (cur && cur.t1 === undefined && (cur.label === 'AI 啟動中…' || cur.label === '連線到伺服器…')) {
+    progressStep('思考中…');
+  }
   progress.think = (progress.think + String(chunk || '')).slice(-400);
   const parts = progress.think.split(/[\n。．.!?！？]+/).map(s => s.trim()).filter(Boolean);
   const last = parts[parts.length - 1] || '';
-  progressDetail(last.length > 64 ? `${last.slice(0, 64)}…` : last);
+  // Prefixed, even though the step above already says 思考中. The model narrates its
+  // reasoning in the first person present tense —「Mapping out the grid now…」— which
+  // reads as a report of work being done, and someone watching an empty spreadsheet
+  // reasonably concludes it must be writing cells. It is not: nothing has happened
+  // yet. Redundant labelling is worth it to kill that misreading.
+  progressDetail('正在想：' + (last.length > 60 ? last.slice(0, 60) + '…' : last));
 }
 
 /**
@@ -761,11 +775,43 @@ function updateUndoButton() {
 
 // ── The chat stream ───────────────────────────────────────────────────────────
 
+/**
+ * Flip the composer button between 送出 and 停止.
+ *
+ * Dropping the connection is enough on its own: the server's res.on('close')
+ * kills the CLI process and fails every tool call still in flight, so there is
+ * no separate "cancel" endpoint to call and nothing left running behind us.
+ */
+function setSendMode(mode) {
+  const btn = $('send');
+  const ic = $('send-ic');
+  if (mode === 'stop') {
+    btn.disabled = false;
+    btn.classList.add('stopping');
+    btn.title = '停止（Esc）';
+    btn.setAttribute('aria-label', '停止 AI 工作');
+    ic.innerHTML = '<use href="#i-stop"/>';
+  } else {
+    btn.classList.remove('stopping');
+    btn.disabled = !$('input').value.trim();
+    btn.title = '送出（Enter）';
+    btn.setAttribute('aria-label', '送出');
+    ic.innerHTML = '<use href="#i-send"/>';
+  }
+}
+
+function stopRun() {
+  if (!state.streaming || !state.abort) return;
+  progressStep('停止中…');
+  try { state.abort.abort(); } catch { /* already gone */ }
+}
+
 async function send(message) {
   if (state.streaming) return;
   state.streaming = true;
   state.runId = crypto.randomUUID();
-  $('send').disabled = true;
+  state.abort = new AbortController();
+  setSendMode('stop');
 
   addBubble('user', message);
   progressStep('連線到伺服器…');
@@ -792,6 +838,7 @@ async function send(message) {
     }
 
     const res = await fetch(`${state.apiBase}/api/excel/chat`, {
+      signal: state.abort.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
       body: JSON.stringify({
@@ -900,13 +947,18 @@ async function send(message) {
       }
     }
   } catch (e) {
-    addNote(`連線失敗：${e.message}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 ${location.origin}。`, 'err');
+    if (e && e.name === 'AbortError') {
+      addNote('已停止。已經做完的部分留在活頁簿裡，需要的話可以用上方的復原鍵退回。', 'note');
+    } else {
+      addNote(`連線失敗：${e.message}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 ${location.origin}。`, 'err');
+    }
   } finally {
     state.streaming = false;
     state.runId = null;
+    state.abort = null;
+    setSendMode('send');
     state.selectionDropped = false;
     void getSelectionRef().then(setSelection).catch(() => {});
-    $('send').disabled = !$('input').value.trim();
     progressDone(false);
   }
 }
@@ -1034,7 +1086,7 @@ function showChat() {
   $('chat').classList.add('show');
   updateUndoButton();
   updateApproveToggle();
-  updateSourceToggle();
+  renderSourceMenu();
   void loadDataSources();
 }
 
@@ -1068,7 +1120,9 @@ function fillDomainOptions() {
   sel.value = AD_DOMAINS.some(d => d.value === saved) ? saved : AD_DOMAINS[0].value;
 }
 
-const SOURCE_NAMES = { email: '郵件', km: 'KM' };
+const SOURCE_NAMES = { web: '搜尋網路', email: '郵件', km: 'KM' };
+/** Sources that need no account link, so the menu never greys them out. */
+const ALWAYS_AVAILABLE = new Set(['web']);
 const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
 
 /**
@@ -1140,26 +1194,36 @@ function updateApproveToggle() {
   btn.setAttribute('aria-label', on ? '目前是自動允許，點一下改回每次確認' : '目前是每次確認，點一下改成自動允許');
 }
 
-function updateSourceToggle() {
-  const btn = $('sources');
-  btn.hidden = false;
-  const keys = Object.keys(SOURCE_NAMES).filter(k => state.available[k]);
-
-  if (!keys.length) {
-    btn.disabled = true;
-    btn.setAttribute('aria-pressed', 'false');
-    btn.title = state.sourceHint || '這個環境沒有可用的外部資料來源';
-    $('sources-label').textContent = '郵件／KM 未連結';
-    return;
+/**
+ * The 「＋」 menu.
+ *
+ * One row per source rather than the single all-or-nothing pill this replaces:
+ * with three of them, and web search available to everyone while mail and KM
+ * depend on an account link, "can it leave this workbook" is no longer one
+ * question. Unavailable rows stay visible but disabled — knowing KM exists and
+ * needs setting up is more useful than an item that silently isn't there.
+ */
+function renderSourceMenu() {
+  for (const item of document.querySelectorAll('.src-item')) {
+    const key = item.dataset.src;
+    const usable = ALWAYS_AVAILABLE.has(key) || !!state.available[key];
+    item.disabled = !usable;
+    item.setAttribute('aria-checked', String(usable && state.sources.includes(key)));
+    item.title = usable ? '' : (state.sourceHint || `${SOURCE_NAMES[key]} 尚未連結`);
   }
-
-  btn.disabled = false;
   const on = state.sources.length > 0;
-  btn.setAttribute('aria-pressed', String(on));
-  btn.title = on
-    ? `這個對話可以讀取${sourceLabel(state.sources)}（唯讀）。點一下關閉。`
-    : `點一下讓這個對話也能讀取${sourceLabel(keys)}（唯讀）。`;
-  $('sources-label').textContent = on ? `${sourceLabel(state.sources)} 已開啟` : sourceLabel(keys);
+  $('plus').classList.toggle('has-src', on);
+  $('src-note').textContent = on
+    ? `這個對話可以讀取：${sourceLabel(state.sources)}（唯讀）。`
+    : '開啟後，這個對話可以讀取這些來源（唯讀）。';
+}
+
+function toggleSourceMenu(show) {
+  const menu = $('src-menu');
+  const open = show === undefined ? menu.hidden : show;
+  menu.hidden = !open;
+  $('plus').setAttribute('aria-expanded', String(open));
+  if (open) renderSourceMenu();
 }
 
 /** Ask the server which cross-source MCPs this user could actually mount. */
@@ -1183,7 +1247,7 @@ async function loadDataSources() {
   } catch (e) {
     state.sourceHint = `連不上伺服器（${e.message}）。`;
   }
-  updateSourceToggle();
+  renderSourceMenu();
 }
 
 /** Grow the composer with the text, up to the CSS max-height, then let it scroll. */
@@ -1242,6 +1306,8 @@ Office.onReady(async (info) => {
 
   $('composer').addEventListener('submit', (e) => {
     e.preventDefault();
+    // Same button, two jobs — while a run is in flight it stops it.
+    if (state.streaming) { stopRun(); return; }
     const input = $('input');
     const msg = input.value.trim();
     if (!msg) return;
@@ -1249,6 +1315,16 @@ Office.onReady(async (info) => {
     input.style.height = 'auto';
     $('send').disabled = true;
     void send(msg);
+  });
+
+  // Esc stops a run from anywhere in the pane. Someone watching a spinner for two
+  // minutes should not have to find the button.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    // The menu first: Esc should back out of whatever is on top, and closing a
+    // menu is not what someone means when they are trying to call off a run.
+    if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
+    if (state.streaming) { e.preventDefault(); stopRun(); }
   });
 
   $('input').addEventListener('input', (e) => {
@@ -1284,16 +1360,29 @@ Office.onReady(async (info) => {
     }
   });
 
-  $('sources').addEventListener('click', () => {
-    const keys = Object.keys(SOURCE_NAMES).filter(k => state.available[k]);
-    // One switch for all available sources: a per-source menu in a 350px bar is
-    // more UI than the decision deserves — the question is "can it leave this
-    // workbook", not "which of the two".
-    state.sources = state.sources.length ? [] : keys;
-    updateSourceToggle();
-    addNote(state.sources.length
-      ? `已開啟${sourceLabel(state.sources)}存取，這個對話可以讀取它們（唯讀）。`
-      : '已關閉外部資料來源，這個對話只看得到活頁簿。', 'note');
+  $('plus').addEventListener('click', () => toggleSourceMenu());
+
+  $('src-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('.src-item');
+    if (!item || item.disabled) return;
+    const key = item.dataset.src;
+    state.sources = state.sources.includes(key)
+      ? state.sources.filter(k => k !== key)
+      : [...state.sources, key];
+    renderSourceMenu();
+    // In the transcript as well as the menu: this changes what the agent can
+    // reach, and someone scrolling back should be able to see when it changed.
+    addNote(state.sources.includes(key)
+      ? `已開啟${SOURCE_NAMES[key]}，這個對話可以讀取它（唯讀）。`
+      : `已關閉${SOURCE_NAMES[key]}。`, 'note');
+  });
+
+  // Click-away closes it. A menu that can only be dismissed by the button that
+  // opened it is one people leave open by accident.
+  document.addEventListener('click', (e) => {
+    if ($('src-menu').hidden) return;
+    if (e.target.closest('#src-menu') || e.target.closest('#plus')) return;
+    toggleSourceMenu(false);
   });
 
   $('sel-drop').addEventListener('click', () => {

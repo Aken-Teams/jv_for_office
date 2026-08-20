@@ -45,6 +45,29 @@
         <path d="M7.4 9.9l1.9 1.9 3.4-3.6" fill="none" stroke="currentColor" stroke-width="1.5"
               stroke-linecap="round" stroke-linejoin="round"/>
       </g>
+      <g id="i-globe">
+        <circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.35"/>
+        <path d="M2.9 10h14.2M10 2.8c1.9 2 2.9 4.5 2.9 7.2s-1 5.2-2.9 7.2c-1.9-2-2.9-4.5-2.9-7.2s1-5.2 2.9-7.2z"
+              fill="none" stroke="currentColor" stroke-width="1.35"/>
+      </g>
+      <g id="i-mail">
+        <rect x="2.6" y="4.8" width="14.8" height="10.4" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.35"/>
+        <path d="M3.2 6l6.8 4.6L16.8 6" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+      </g>
+      <g id="i-book">
+        <path d="M4 4.4h5a2 2 0 012 2v9a1.6 1.6 0 00-1.6-1.6H4z" fill="none" stroke="currentColor" stroke-width="1.3"/>
+        <path d="M16 4.4h-5a2 2 0 00-2 2v9a1.6 1.6 0 011.6-1.6H16z" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      </g>
+      <g id="i-plus">
+        <path d="M10 4.6v10.8M4.6 10h10.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      </g>
+      <g id="i-check">
+        <path d="M4.5 10.4l3.6 3.6 7.4-8" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <g id="i-stop">
+        <rect x="6" y="6" width="8" height="8" rx="1.6" fill="currentColor"/>
+      </g>
       <g id="i-select">
         <rect x="3" y="4.5" width="14" height="11" rx="1.5" fill="none" stroke="currentColor"
               stroke-width="1.3" stroke-dasharray="2.6 2"/>
@@ -155,14 +178,8 @@
            called 工作表1 / 工作表5 / 缺料警示 the sheet is the part that tells you
            anything. -->
       <span id="wb-sheet" hidden></span>
-      <!-- Hidden unless the server says this user actually has a mail token /
-           KM access. Off by default, every Excel session. -->
-      <button id="sources" class="src-toggle" hidden aria-pressed="false"
-              title="讓這個對話也能讀取你的郵件與 KM 文件（唯讀）">
-        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-link"/></svg>
-        <span id="sources-label">郵件／KM</span>
-      </button>
     </div>
+
 
     <div id="log">
       <div id="empty" class="empty">
@@ -186,12 +203,37 @@
       <span id="sel-label"></span>
       <button type="button" id="sel-drop" class="sel-drop" aria-label="這則訊息不要帶選取範圍">×</button>
     </div>
-
     <form id="composer">
+      <!-- Opens upward: the composer is pinned to the bottom of the pane, so a
+           menu below it would be off-screen. Moved out of the workbook bar,
+           which now has to fit both the workbook and the worksheet name. -->
+      <div id="src-menu" class="src-menu" hidden role="menu" aria-labelledby="plus">
+        <button type="button" class="src-item" data-src="web" role="menuitemcheckbox" aria-checked="false">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-globe"/></svg>
+          <span class="src-name">搜尋網路</span>
+          <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>
+        <button type="button" class="src-item" data-src="email" role="menuitemcheckbox" aria-checked="false">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-mail"/></svg>
+          <span class="src-name">郵件</span>
+          <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>
+        <button type="button" class="src-item" data-src="km" role="menuitemcheckbox" aria-checked="false">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg>
+          <span class="src-name">KM 文件</span>
+          <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>
+        <div id="src-note" class="src-note">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
+      </div>
+
       <div class="input-shell">
+        <button type="button" id="plus" class="plus-btn" aria-haspopup="true" aria-expanded="false"
+                aria-label="外部資料來源">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
+        </button>
         <textarea id="input" rows="1" placeholder="對這份活頁簿提問…" aria-label="訊息"></textarea>
         <button id="send" type="submit" class="send-btn" disabled title="送出（Enter）" aria-label="送出">
-          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-send"/></svg>
+          <svg id="send-ic" class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-send"/></svg>
         </button>
       </div>
       <div class="hint-row">Enter 送出 · Shift+Enter 換行</div>

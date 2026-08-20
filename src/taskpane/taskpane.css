@@ -391,7 +391,11 @@ header .actions { display: flex; gap: 2px; flex: none; }
    step label, dimmed and italic so it reads as commentary rather than as another
    step, and clipped to two lines: it updates several times a second, and a block
    that changes height on every tick makes the whole panel jump. */
+/* Quoted, because it is the model talking to itself rather than a record of
+   anything that happened. The left rule is the same signal a blockquote uses. */
 .step-detail {
+  border-left: 2px solid var(--line);
+  padding-left: 7px;
   margin: 1px 0 5px 19px;
   font-size: 11px; line-height: 1.45; font-style: italic;
   color: var(--fg-subtle);
@@ -608,6 +612,13 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 /* What the user has selected in Excel, riding along with the next message.
    Sits directly on top of the composer and shares its inset, so it reads as part
    of the message being written rather than as another piece of status. */
+/* Stop. Red rather than the send green, because it does the opposite thing and
+   a button that changes job without changing colour gets pressed by accident. */
+.send-btn.stopping {
+  background: var(--danger); color: #fff;
+}
+.send-btn.stopping:hover { filter: brightness(1.12); }
+
 .sel-chip {
   /* A filled pill, not bare text. As plain grey it was easy to miss entirely —
      and this is the one label that changes what the message means, so it has to
@@ -655,6 +666,50 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 }
 .input-shell textarea:hover, .input-shell textarea:focus { border: none; box-shadow: none; }
 .input-shell textarea::placeholder { color: var(--fg-subtle); }
+
+.plus-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none; margin-left: -4px;
+  border-radius: 50%; color: var(--fg-muted);
+  transition: background var(--speed), color var(--speed);
+}
+.plus-btn:hover, .plus-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--fg); }
+/* A source is switched on. The menu is shut most of the time, so without this
+   the only place that state is visible is inside the thing you have to open. */
+.plus-btn.has-src { color: var(--accent); }
+.plus-btn.has-src::after {
+  content: ""; position: absolute; top: 3px; right: 3px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.plus-btn { position: relative; }
+
+/* Opens upward from the composer. Full width rather than a narrow dropdown:
+   these are switches with consequences, not a list of commands, so each one gets
+   a whole row and room for its name. */
+.src-menu {
+  margin: 0 0 8px; padding: 5px;
+  border: 1px solid var(--line-strong); border-radius: 12px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.src-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 8px 9px; border-radius: 8px;
+  font-size: 12.5px; color: var(--fg); text-align: left;
+  transition: background var(--speed);
+}
+.src-item:hover:not(:disabled) { background: var(--surface-hover); }
+.src-item:disabled { opacity: .45; }
+.src-item .ic-sm { color: var(--fg-muted); flex: none; }
+.src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The tick is the whole state indicator, so it holds its space either way —
+   a row that changes width when toggled makes the list twitch. */
+.src-item .src-tick { color: var(--accent); visibility: hidden; }
+.src-item[aria-checked="true"] .src-tick { visibility: visible; }
+.src-item[aria-checked="true"] .ic-sm:first-child { color: var(--accent); }
+.src-note {
+  padding: 4px 9px 3px; font-size: 11px; color: var(--fg-subtle); line-height: 1.4;
+}
 
 .send-btn {
   display: flex; align-items: center; justify-content: center;

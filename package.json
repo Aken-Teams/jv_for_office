@@ -11,7 +11,9 @@
     "bump": "node tools/bump-version.mjs",
     "refresh": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/refresh-addin.ps1",
     "clear-cache": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/clear-office-cache.ps1",
-    "validate": "office-addin-manifest validate manifest.xml"
+    "validate": "office-addin-manifest validate manifest.xml",
+    "installer:icon": "node tools/make-installer-icon.mjs",
+    "installer:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1"
   },
   "devDependencies": {
     "office-addin-dev-certs": "^1.13.3",
