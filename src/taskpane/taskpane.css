@@ -44,6 +44,8 @@
   --radius: 8px;
   --radius-sm: 6px;
   --shadow: 0 1px 2px rgba(0, 0, 0, .07), 0 3px 8px rgba(0, 0, 0, .05);
+  --tip-bg: #1f1f1f;
+  --tip-fg: #f7f7f7;
   --speed: 150ms;
 }
 
@@ -70,6 +72,8 @@
     --ok: #56b47f;
 
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 3px 8px rgba(0, 0, 0, .3);
+    --tip-bg: #e8e8e8;
+    --tip-fg: #1a1a1a;
   }
 }
 
@@ -210,6 +214,49 @@ header .actions { display: flex; gap: 2px; flex: none; }
 .icon-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--fg); }
 .icon-btn:disabled { opacity: .35; }
 
+/* Auto-approve is ON. Warning colours, not accent colours: this is a guard that
+   has been switched OFF, and it should never read as a feature that is happily
+   enabled. It is the one control whose "on" state is the riskier one. */
+.icon-btn[aria-pressed="true"] {
+  background: var(--warn-bg); color: var(--warn-fg);
+  box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.icon-btn[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--warn-bg); color: var(--warn-fg);
+}
+
+
+/* Tooltips for the header icon buttons.
+
+   Built in CSS rather than left to the native `title` attribute: the native one
+   waits about a second, renders in the OS style, and cannot wrap — which makes it
+   useless for the shield button, whose whole job is to explain a mode in a
+   sentence.
+
+   Opens to the LEFT of the button, vertically centred on it. The two obvious
+   placements both fail here: above is clipped away entirely (the header is the
+   first element on the page, so there is no room over it — verified, the tooltip
+   simply does not render), and below drops the panel over the workbook/worksheet
+   bar, hiding the very names someone is usually checking. Sideways is the only
+   direction with space, and it keeps the tooltip up in the header row.
+   The text is kept to one short clause for the same reason: a task pane can be
+   dragged narrower than its default, and a paragraph-length tip clipped off the
+   left edge is worse than no tip. The full explanation goes into the transcript
+   when the mode is toggled, where it has room. `title` is removed from these buttons so the native
+   tooltip does not stack on top of this one. */
+.icon-btn[data-tip]:hover::after,
+.icon-btn[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute; right: calc(100% + 8px); top: 50%; transform: translateY(-50%);
+  z-index: 30; width: max-content; max-width: 168px;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  background: var(--tip-bg); color: var(--tip-fg);
+  font-size: 11.5px; line-height: 1.45; font-weight: 400;
+  white-space: normal; text-align: left;
+  box-shadow: var(--shadow); pointer-events: none;
+}
+/* No tooltip on a disabled control — undo with nothing to undo has nothing to say. */
+.icon-btn:disabled::after { display: none; }
 /* Undo count rides on the button instead of taking a whole label's width —
    in a 350px header, "復原上一步 (3)" crowds out the product name. */
 .badge {
@@ -229,6 +276,11 @@ header .actions { display: flex; gap: 2px; flex: none; }
   flex: none;
 }
 .wb-bar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+/* The active worksheet. flex:none so the WORKBOOK name is what gets truncated
+   when the bar is tight — in a file with 工作表1 / 工作表5 / 缺料警示, the sheet
+   is the half that tells you where the agent is working. */
+#wb-sheet { flex: none; max-width: 46%; color: var(--fg); font-weight: 600; }
+#wb-sheet::before { content: "›"; margin: 0 4px 0 2px; color: var(--fg-subtle); font-weight: 400; }
 
 /* Cross-source access, off by default. Deliberately styled as OFF-by-default and
    loud when ON: this toggle is the difference between "the AI can see this
@@ -460,6 +512,19 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--warn-line);
   font-size: 11.5px; color: var(--warn-fg);
 }
+/* Optional instruction to the agent, on the confirmation card. Sits between the
+   description and the buttons because it is read as part of deciding, not as a
+   separate step — and full width, because 「改用 IFS，不要巢狀 IF」 has to be
+   typeable without the field scrolling. */
+.confirm-say {
+  display: block; width: 100%; margin: 10px 0 0;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--bg);
+  color: var(--fg); font-size: 12px; font-family: inherit;
+}
+.confirm-say::placeholder { color: var(--fg-subtle); }
+.confirm-say:focus { outline: none; border-color: var(--accent); }
+
 .confirm-actions { display: flex; gap: 8px; margin-top: 12px; }
 .confirm-actions button { border-radius: var(--radius-sm); padding: 7px 14px; font-weight: 600; font-size: 13px; transition: background var(--speed); }
 .btn-approve { background: var(--accent); color: #fff; }

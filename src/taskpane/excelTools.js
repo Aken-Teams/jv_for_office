@@ -1031,6 +1031,40 @@ export async function getWorkbookName() {
     return ctx.workbook.name;
   });
 }
+/**
+ * The worksheet the user is currently on.
+ *
+ * Shown in the pane so it is never a mystery which sheet the agent is talking
+ * about — "這一段" and excel_get_selection both resolve against this one, and a
+ * workbook with 工作表1 / 工作表5 / 缺料警示 gives no other clue which is in play.
+ */
+export async function getActiveSheetName() {
+  return Excel.run(async (ctx) => {
+    const sh = ctx.workbook.worksheets.getActiveWorksheet();
+    sh.load('name');
+    await ctx.sync();
+    return sh.name;
+  });
+}
+
+/**
+ * Call `onChange` whenever the user switches sheets.
+ *
+ * Registered once; Office.js keeps the handler alive for the pane's lifetime.
+ * Failure is non-fatal — the name simply stops tracking, which is better than a
+ * broken pane on a host that lacks the event (it needs ExcelApi 1.7).
+ */
+export async function watchActiveSheet(onChange) {
+  try {
+    await Excel.run(async (ctx) => {
+      ctx.workbook.worksheets.onActivated.add(async () => {
+        try { onChange(await getActiveSheetName()); } catch { /* ignore */ }
+      });
+      await ctx.sync();
+    });
+  } catch { /* older host: no live tracking */ }
+}
+
 
 /**
  * Scratch space shared across script calls, for the pane's lifetime.

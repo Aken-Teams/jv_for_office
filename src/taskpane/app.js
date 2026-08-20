@@ -13,6 +13,7 @@
  */
 import {
   executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
+  getActiveSheetName, watchActiveSheet,
 } from './excelTools.js';
 
 /** Last-resort fallback if config.json is missing or unreadable. */
@@ -24,6 +25,15 @@ const LS_TOKEN = 'jv_excel_token';
  * isn't silently overridden by whatever happened to be cached in this pane.
  */
 const LS_API_OVERRIDE = 'jv_excel_api_override';
+/**
+ * Whether writes execute without a click. Persisted, unlike `sources`: this one
+ * is a standing preference about how someone wants to work, and re-arming it
+ * every time Excel restarts would just train them to switch it on without
+ * reading. The cost of persisting it is that a forgotten setting is exactly how
+ * an injected instruction lands — which is why the header button is coloured as
+ * a warning whenever it is on, and why irreversible operations still ask.
+ */
+const LS_AUTO_APPROVE = 'jv_excel_auto_approve';
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
@@ -33,6 +43,8 @@ const state = {
   runId: null,
   streaming: false,
   workbookName: '',
+  /** The sheet the user is on — shown so it is clear where the agent is working. */
+  sheetName: '',
   /** Snapshots of everything we've overwritten this session, newest last. */
   undoStack: [],
   /** Which cross-source MCPs the server says this user COULD mount. */
@@ -50,6 +62,8 @@ const state = {
    * should expire with the session, not persist quietly in localStorage.
    */
   sources: [],
+  /** true = destructive tools run without a click. See LS_AUTO_APPROVE. */
+  autoApprove: localStorage.getItem(LS_AUTO_APPROVE) === '1',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -401,6 +415,50 @@ function resolveCard(card, kind, text) {
  * so the caller can report what actually happened in the same place the user
  * made the decision.
  */
+/**
+ * Operations that ask even in 自動允許 mode.
+ *
+ * The undo button restores overwritten cells from a snapshot taken before the
+ * write. Deleting a sheet, rows or columns has nothing to snapshot — the tool
+ * spec says so outright ("刪除之後沒辦法用「復原上一步」救回來"). Auto-approving
+ * something reversible is a convenience trade; auto-approving something
+ * irreversible is a different kind of decision, so this short list keeps asking.
+ *
+ * If you want 自動允許 to mean literally everything, delete this function and the
+ * `!alwaysAsk(...)` test below — it is deliberately one line to remove.
+ */
+function alwaysAsk(tool, args) {
+  const op = (args && args.op) || '';
+  if (tool === 'excel_manage_sheet') return op === 'delete';
+  if (tool === 'excel_structure_op') return op === 'delete_rows' || op === 'delete_columns';
+  return false;
+}
+
+/** A card in the log for something that ran without being asked about. */
+function autoApprovedCard(summary) {
+  clearEmptyState();
+  const card = document.createElement('div');
+  card.className = 'confirm';
+  $('log').appendChild(card);
+  // Still rendered, still in the transcript, still undoable. 自動允許 removes the
+  // click, not the record — otherwise nobody could tell afterwards what the agent
+  // had done on its own.
+  resolveCard(card, 'running', `自動允許：${summary}`);
+  scrollDown();
+  return card;
+}
+
+/**
+ * The confirmation card.
+ *
+ * Three ways out, not two. "拒絕" alone tells the agent nothing except to stop,
+ * so it comes back and asks what to do instead — a whole extra round trip to
+ * learn something the person already knew when they clicked. The text field
+ * carries that intent with the answer: type "改用 IFS，不要巢狀 IF" and the
+ * refusal arrives WITH the correction, so the next call is the corrected one.
+ *
+ * Resolves { approved, card, note }.
+ */
 function askConfirm(summary, detail) {
   return new Promise((resolve) => {
     clearEmptyState();
@@ -419,6 +477,8 @@ function askConfirm(summary, detail) {
       ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
       ${state.sources.length ? `<div class="confirm-src">此對話可讀取：${escapeHtml(sourceLabel(state.sources))}。寫入內容可能包含這些來源的資料。</div>` : ''}
+      <input class="confirm-say" type="text" autocomplete="off"
+             placeholder="想改成什麼？留著空白就直接允許或拒絕" aria-label="給 AI 的說明（選填）" />
       <div class="confirm-actions">
         <button class="btn-approve">允許</button>
         <button class="btn-deny">拒絕</button>
@@ -426,15 +486,30 @@ function askConfirm(summary, detail) {
     $('log').appendChild(card);
     scrollDown();
 
+    const say = card.querySelector('.confirm-say');
+    const deny = card.querySelector('.btn-deny');
+
+    // The deny button relabels itself once there is something to say: with an
+    // instruction attached it is no longer "no", it is "do it this way instead",
+    // and the label should say which one the click will do.
+    const syncLabel = () => { deny.textContent = say.value.trim() ? '改成這樣' : '拒絕'; };
+    say.addEventListener('input', syncLabel);
+
     const done = (ok) => {
+      const note = say.value.trim();
       // ✓ / × rather than emoji: they inherit colour and exist in every font in
       // the stack, so they render identically on Windows and in dark mode.
       if (ok) resolveCard(card, 'running', '執行中…');
-      else resolveCard(card, 'denied', `已拒絕：${summary}`);
-      resolve({ approved: ok, card });
+      else resolveCard(card, 'denied', note ? `改成這樣：${note}` : `已拒絕：${summary}`);
+      resolve({ approved: ok, card, note });
     };
     card.querySelector('.btn-approve').addEventListener('click', () => done(true));
-    card.querySelector('.btn-deny').addEventListener('click', () => done(false));
+    deny.addEventListener('click', () => done(false));
+    // Enter sends the instruction rather than approving. Someone who has just
+    // typed 「不要這樣做」 pressing Enter must not have it executed.
+    say.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && say.value.trim()) { e.preventDefault(); done(false); }
+    });
   });
 }
 
@@ -507,6 +582,8 @@ async function handleToolRequest(payload) {
   // the trace and the dialog agree about what happened.
   setStatus(summary || TOOL_LABEL[tool] || `正在執行 ${tool}…`);
   let card = null;
+  /** Anything the person typed on the confirmation card. */
+  let userNote = '';
 
   if (needsConfirm) {
     // Look before asking: the dialog is only useful if it says what will be lost.
@@ -521,16 +598,40 @@ async function handleToolRequest(payload) {
         return;
       }
     }
-    const decision = await askConfirm(summary, detail);
-    card = decision.card;
-    if (!decision.approved) {
-      await postToolResult(state.runId, callId, { ok: false, error: '使用者拒絕了這次操作。請不要重試，改問他想怎麼做。' });
-      setStatus('');
-      return;
+    // 自動允許 skips the click, but only after the same inspection: the snapshot
+    // that inspectWrite triggers is what makes the write undoable, so it still
+    // runs and a broken target still fails here rather than mid-write.
+    if (state.autoApprove && !alwaysAsk(tool, args)) {
+      card = autoApprovedCard(summary);
+    } else {
+      const decision = await askConfirm(summary, detail);
+      card = decision.card;
+      userNote = decision.note || '';
+      if (!decision.approved) {
+        // A refusal that carries the person's own instruction is worth far more
+        // than a bare "no": the agent can act on it immediately instead of
+        // spending a round trip asking what they wanted.
+        await postToolResult(state.runId, callId, {
+          ok: false,
+          error: userNote
+            ? `使用者不同意這樣做，他的說明是：「${userNote}」。請照他說的調整，不要重複同一個呼叫。`
+            : '使用者拒絕了這次操作。請不要重試，改問他想怎麼做。',
+        });
+        setStatus('');
+        return;
+      }
     }
   }
 
   const result = await executeTool(tool, args);
+  // Approving WITH a note means "do this, and here is something you should know".
+  // Riding it back on the tool result gets it to the agent within the same turn,
+  // instead of the person having to repeat themselves in the next message.
+  if (userNote && result.ok !== false) {
+    result.content = `${result.content || ''}
+
+【使用者補充】${userNote}`;
+  }
   if (result.snapshot) {
     state.undoStack.push(result.snapshot);
     updateUndoButton();
@@ -833,6 +934,7 @@ function showChat() {
   $('login').classList.remove('show');
   $('chat').classList.add('show');
   updateUndoButton();
+  updateApproveToggle();
   updateSourceToggle();
   void loadDataSources();
 }
@@ -879,6 +981,40 @@ const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
  * exist, and the honest answer ("KM 未設定 / 尚未連結 Outlook") is short enough
  * to simply say.
  */
+/**
+ * Show which worksheet the agent is looking at.
+ *
+ * Hidden rather than blank when unknown: an empty chevron next to the filename
+ * reads as a rendering bug, and on a host too old for the activation event the
+ * name would simply never arrive.
+ */
+function setSheetName(name) {
+  state.sheetName = name || '';
+  const el = $('wb-sheet');
+  el.textContent = state.sheetName;
+  el.title = state.sheetName ? `目前的工作表：${state.sheetName}` : '';
+  el.hidden = !state.sheetName;
+}
+/**
+ * The 每次確認 / 自動允許 button.
+ *
+ * Both the tooltip and the aria-label spell out the current state AND what a
+ * click does, because the only other signal is colour — and a control that
+ * silently disables the confirmation step should never be ambiguous.
+ */
+function updateApproveToggle() {
+  const btn = $('approve-mode');
+  if (!btn) return;
+  const on = state.autoApprove;
+  btn.setAttribute('aria-pressed', String(on));
+  // Symmetric and short enough to stay on ONE line at the narrowest pane width
+  // anyone is likely to drag to. With only two states, naming the current one and
+  // saying it toggles is unambiguous; what each mode actually means is spelled out
+  // in the transcript the moment it changes.
+  btn.dataset.tip = on ? '自動允許，點一下切換' : '每次確認，點一下切換';
+  btn.setAttribute('aria-label', on ? '目前是自動允許，點一下改回每次確認' : '目前是每次確認，點一下改成自動允許');
+}
+
 function updateSourceToggle() {
   const btn = $('sources');
   btn.hidden = false;
@@ -943,6 +1079,12 @@ Office.onReady(async (info) => {
 
   try { state.workbookName = await getWorkbookName(); } catch { /* non-fatal */ }
   $('wb-name').textContent = state.workbookName || '（未命名活頁簿）';
+  $('wb-name').title = state.workbookName || '';
+
+  try { setSheetName(await getActiveSheetName()); } catch { /* non-fatal */ }
+  // Live, not just at startup: someone clicking to another tab has moved what
+  // 「這一段」 and excel_get_selection refer to, and the bar should say so.
+  void watchActiveSheet(setSheetName);
 
   for (const tab of document.querySelectorAll('#login-tabs .tab')) {
     tab.addEventListener('click', () => {
@@ -1024,6 +1166,18 @@ Office.onReady(async (info) => {
     addNote(state.sources.length
       ? `已開啟${sourceLabel(state.sources)}存取，這個對話可以讀取它們（唯讀）。`
       : '已關閉外部資料來源，這個對話只看得到活頁簿。', 'note');
+  });
+
+  $('approve-mode').addEventListener('click', () => {
+    state.autoApprove = !state.autoApprove;
+    localStorage.setItem(LS_AUTO_APPROVE, state.autoApprove ? '1' : '0');
+    updateApproveToggle();
+    // Spelled out in the transcript, not just the tooltip. Someone turning this
+    // on should read once what they are turning off; someone scrolling back
+    // should be able to see when it changed.
+    addNote(state.autoApprove
+      ? '已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。'
+      : '已改回每次確認：AI 要修改活頁簿前都會先問過你。', 'note');
   });
 
   $('logout').addEventListener('click', () => logout(''));

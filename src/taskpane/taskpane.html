@@ -39,6 +39,12 @@
         <path d="M11.5 8.5a3.2 3.2 0 00-4.6 0l-2.4 2.4a3.25 3.25 0 104.6 4.6l1-1"
               fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </g>
+      <g id="i-shield">
+        <path d="M10 2.6l6 2.2v4.6c0 3.5-2.4 6.4-6 7.9-3.6-1.5-6-4.4-6-7.9V4.8l6-2.2z"
+              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M7.4 9.9l1.9 1.9 3.4-3.6" fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
       <g id="i-warn">
         <path d="M10 3.2L18 16.8H2L10 3.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
         <path d="M10 8v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -113,11 +119,18 @@
         <span class="brand-name">JVision</span>
       </div>
       <div class="actions">
-        <button id="undo" class="icon-btn" disabled title="復原上一步" aria-label="復原上一步">
+        <!-- Whether writes need a click. Lives in the header rather than the
+             workbook bar because it must be visible at all times: when it is on,
+             nothing else stands between an instruction hidden in a downloaded
+             workbook and this spreadsheet. Label and colour both change. -->
+        <button id="approve-mode" class="icon-btn" aria-pressed="false">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg>
+        </button>
+        <button id="undo" class="icon-btn" disabled data-tip="復原上一步 AI 做的修改" aria-label="復原上一步">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-undo"/></svg>
           <span id="undo-count" class="badge" hidden></span>
         </button>
-        <button id="logout" class="icon-btn" title="登出" aria-label="登出">
+        <button id="logout" class="icon-btn" data-tip="登出" aria-label="登出">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-signout"/></svg>
         </button>
       </div>
@@ -126,6 +139,11 @@
     <div class="wb-bar">
       <svg class="ic ic-sm" viewBox="0 0 18 18" aria-hidden="true"><use href="#i-sheet"/></svg>
       <span id="wb-name" title="目前開啟的活頁簿"></span>
+      <!-- Which sheet the agent is actually looking at. flex:none so the workbook
+           name is what gets truncated in a 350px bar, never this — with sheets
+           called 工作表1 / 工作表5 / 缺料警示 the sheet is the part that tells you
+           anything. -->
+      <span id="wb-sheet" hidden></span>
       <!-- Hidden unless the server says this user actually has a mail token /
            KM access. Off by default, every Excel session. -->
       <button id="sources" class="src-toggle" hidden aria-pressed="false"
