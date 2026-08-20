@@ -468,20 +468,7 @@ function prettyAddress(address) {
  * summary, the address, and a separate success note underneath). Now the card
  * reports its own outcome and the note is gone.
  */
-/**
- * A tooltip's worth of a tool result, or nothing.
- *
- * The payload can run to thousands of characters — that is the point of the
- * cap in excelTools.js — and a title attribute that long is a grey rectangle
- * covering the pane. Enough to recognise what came back, no more.
- */
-function briefly(v) {
-  const s = String(v || '').trim();
-  if (!s) return undefined;
-  return s.length > 240 ? s.slice(0, 240) + '…' : s;
-}
-
-function resolveCard(card, kind, text, hint) {
+function resolveCard(card, kind, text, hint, raw) {
   card.className = `confirm resolved ${kind}`;
   card.removeAttribute('role');
   // Only a genuine 'err' is announced to assistive tech. A 'retry' is the agent's
@@ -493,7 +480,49 @@ function resolveCard(card, kind, text, hint) {
   card.innerHTML = mark
     ? `<span class="mark">${mark}</span>${escapeHtml(text)}`
     : `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(text)}`;
+  if (raw) attachRaw(card, raw);
   scrollDown();
+}
+
+/**
+ * Fold a tool's return value away behind a toggle.
+ *
+ * It is written for the model, so it is never the headline — but it is also the
+ * only record of what actually happened, and someone checking the assistant's
+ * work has every right to read it. Collapsed by default, one click to open,
+ * pretty-printed when it is JSON because a single-line array of colour rules is
+ * unreadable at any width, let alone 350px.
+ */
+function attachRaw(card, raw) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'card-more';
+  btn.setAttribute('aria-expanded', 'false');
+  btn.textContent = t('詳細內容');
+
+  const pre = document.createElement('pre');
+  pre.className = 'card-raw';
+  pre.hidden = true;
+  pre.textContent = prettyJson(raw);
+
+  btn.addEventListener('click', () => {
+    pre.hidden = !pre.hidden;
+    btn.setAttribute('aria-expanded', String(!pre.hidden));
+    btn.textContent = pre.hidden ? t('詳細內容') : t('收合');
+    if (!pre.hidden) scrollDown();
+  });
+
+  card.append(btn, pre);
+}
+
+/** Indent it if it parses; leave it exactly as it came if it does not. */
+function prettyJson(v) {
+  const s = String(v || '').trim();
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed && typeof parsed === 'object') return JSON.stringify(parsed, null, 2);
+  } catch { /* not JSON — plain text is already the readable form */ }
+  return s;
 }
 
 /**
@@ -793,7 +822,7 @@ async function handleToolRequest(payload) {
     // line stays; but 「[PivotTableRangeConflict] 操作失敗…」 in red reads as a
     // crash. Grey line, plain words, raw message on hover.
     if (result.ok === false) resolveCard(card, 'retry', t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
-    else resolveCard(card, 'ok', summary || t('完成'), briefly(result.content));
+    else resolveCard(card, 'ok', summary || t('完成'), undefined, result.content);
   } else if (result.ok === false) {
     progressFailed(t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
   }
