@@ -557,6 +557,25 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 @media (prefers-color-scheme: dark) { .btn-approve { color: #10281b; } }
 .btn-deny { border: 1px solid var(--line-strong); color: var(--fg); background: var(--bg); }
 .btn-deny:hover { background: var(--surface-hover); color: var(--fg); }
+/* A choice, not a warning: blue-grey edge and a question mark, because nothing
+   here is risky — the agent is stuck and needs a decision. */
+.confirm.choice { border-left-color: var(--accent); }
+.confirm.choice .confirm-head { color: var(--accent); }
+
+.choice-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+/* Full-width stacked buttons rather than a row: the labels are sentences, and in
+   a 350px pane two of them side by side would each wrap to three lines. */
+.choice-opt {
+  display: flex; flex-direction: column; gap: 2px;
+  width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--bg);
+  transition: background var(--speed), border-color var(--speed);
+}
+.choice-opt:hover { background: var(--accent-soft); border-color: var(--accent); }
+.choice-label { font-size: 12.5px; font-weight: 600; color: var(--fg); line-height: 1.4; }
+.choice-detail { font-size: 11px; color: var(--fg-muted); line-height: 1.45; }
+
 /* Answered. The card drops the whole alarm treatment and becomes one quiet line
    in the same visual family as .note — because that is what it now is: a record
    of something that already happened, not a question waiting on you. */

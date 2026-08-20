@@ -45,6 +45,9 @@ const BASE_TOOLS = [
   // Compute inside Excel instead of hauling the data into the model's context.
   // See runScript below for why this one matters more than all the others.
   'excel_run_script',
+  // Answered by the pane's own UI (see askChoice in app.js), not by Office.js —
+  // listed here so the server offers it to the model.
+  'excel_ask_user',
 ];
 
 /** Cheap and synchronous; Office.js answers from a local table. */

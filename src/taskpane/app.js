@@ -435,6 +435,57 @@ function resolveCard(card, kind, text, hint) {
 }
 
 /**
+ * A question with clickable answers.
+ *
+ * The agent used to write 「1. 清除該列左側資料欄… 2. 先刪掉樞紐分析表… 你要哪個做法？」
+ * as prose, leaving the person to type a reply describing an option that was
+ * already right there. It is a multiple-choice question, so it is rendered as one.
+ *
+ * The free-text row is not a fallback nobody uses: when both offered options are
+ * wrong, being forced to pick one is worse than not asking at all.
+ *
+ * Resolves to the chosen label, or whatever was typed.
+ */
+function askChoice({ question, options }) {
+  return new Promise((resolve) => {
+    clearEmptyState();
+    const list = Array.isArray(options) ? options.filter(o => o && o.label) : [];
+    const card = document.createElement('div');
+    card.className = 'confirm choice';
+    card.setAttribute('role', 'alertdialog');
+    card.innerHTML = `
+      <div class="confirm-head">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
+        <span class="confirm-title">AI 需要你決定</span>
+      </div>
+      <div class="confirm-body">${escapeHtml(String(question || '請你決定一件事'))}</div>
+      <div class="choice-list">
+        ${list.map((o, i) => `
+          <button class="choice-opt" data-i="${i}">
+            <span class="choice-label">${escapeHtml(o.label)}</span>
+            ${o.detail ? `<span class="choice-detail">${escapeHtml(o.detail)}</span>` : ''}
+          </button>`).join('')}
+      </div>
+      <input class="confirm-say" type="text" autocomplete="off"
+             placeholder="都不是？直接告訴它你要怎麼做" aria-label="自己輸入做法" />`;
+    $('log').appendChild(card);
+    scrollDown();
+
+    const say = card.querySelector('.confirm-say');
+    const done = (answer) => {
+      resolveCard(card, 'ok', `你選了：${answer}`);
+      resolve(answer);
+    };
+    for (const btn of card.querySelectorAll('.choice-opt')) {
+      btn.addEventListener('click', () => done(list[Number(btn.dataset.i)].label));
+    }
+    say.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && say.value.trim()) { e.preventDefault(); done(say.value.trim()); }
+    });
+  });
+}
+
+/**
  * The confirmation card. Resolves true/false on click and hands back the element
  * so the caller can report what actually happened in the same place the user
  * made the decision.
@@ -604,6 +655,16 @@ async function handleToolRequest(payload) {
   // generic per-tool label — it is the same line the confirmation card shows, so
   // the trace and the dialog agree about what happened.
   setStatus(summary || TOOL_LABEL[tool] || `正在執行 ${tool}…`);
+
+  // Answered by a person, not by Office.js — so it is handled here and never
+  // reaches executeTool. The bridge gives this call a human-scale timeout.
+  if (tool === 'excel_ask_user') {
+    const answer = await askChoice(args || {});
+    await postToolResult(state.runId, callId, { ok: true, content: answer });
+    setStatus('思考中…');
+    return;
+  }
+
   let card = null;
   /** Anything the person typed on the confirmation card. */
   let userNote = '';
