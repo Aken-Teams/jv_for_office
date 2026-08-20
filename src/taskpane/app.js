@@ -468,6 +468,19 @@ function prettyAddress(address) {
  * summary, the address, and a separate success note underneath). Now the card
  * reports its own outcome and the note is gone.
  */
+/**
+ * A tooltip's worth of a tool result, or nothing.
+ *
+ * The payload can run to thousands of characters — that is the point of the
+ * cap in excelTools.js — and a title attribute that long is a grey rectangle
+ * covering the pane. Enough to recognise what came back, no more.
+ */
+function briefly(v) {
+  const s = String(v || '').trim();
+  if (!s) return undefined;
+  return s.length > 240 ? s.slice(0, 240) + '…' : s;
+}
+
 function resolveCard(card, kind, text, hint) {
   card.className = `confirm resolved ${kind}`;
   card.removeAttribute('role');
@@ -710,7 +723,7 @@ async function handleToolRequest(payload) {
   if (tool === 'excel_ask_user') {
     const answer = await askChoice(args || {});
     await postToolResult(state.runId, callId, { ok: true, content: answer });
-    setStatus('思考中…');
+    setStatus(t('思考中…'));
     return;
   }
 
@@ -780,13 +793,13 @@ async function handleToolRequest(payload) {
     // line stays; but 「[PivotTableRangeConflict] 操作失敗…」 in red reads as a
     // crash. Grey line, plain words, raw message on hover.
     if (result.ok === false) resolveCard(card, 'retry', t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
-    else resolveCard(card, 'ok', result.content || summary);
+    else resolveCard(card, 'ok', summary || t('完成'), briefly(result.content));
   } else if (result.ok === false) {
     progressFailed(t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
   }
 
   await postToolResult(state.runId, callId, result);
-  setStatus('思考中…');
+  setStatus(t('思考中…'));
   // How much came back is the number that matters here. excel_run_script exists so
   // the model gets a CONCLUSION, not a data dump; a result measured in tens of KB
   // means a script is returning raw rows and has quietly reintroduced the very
