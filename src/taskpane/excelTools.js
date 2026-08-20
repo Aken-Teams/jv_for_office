@@ -41,6 +41,10 @@ const BASE_TOOLS = [
   // Native precedent tracing needs ExcelApi 1.12, but there is a formula-parsing
   // fallback that works on any build, so this one is always offered.
   'excel_trace_precedents',
+  'excel_sheet_style',
+  // Compute inside Excel instead of hauling the data into the model's context.
+  // See runScript below for why this one matters more than all the others.
+  'excel_run_script',
 ];
 
 /** Cheap and synchronous; Office.js answers from a local table. */
@@ -486,6 +490,7 @@ const BORDER_EDGES = {
   all: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight', 'InsideHorizontal', 'InsideVertical'],
   outline: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight'],
   bottom: ['EdgeBottom'],
+  top: ['EdgeTop'],
 };
 
 /**
@@ -511,6 +516,8 @@ async function formatRange(args) {
     if (args.number_format !== undefined) { r.numberFormat = [[args.number_format]]; applied.push('數字格式'); }
     if (args.bold !== undefined) { r.format.font.bold = !!args.bold; applied.push(args.bold ? '粗體' : '取消粗體'); }
     if (args.italic !== undefined) { r.format.font.italic = !!args.italic; applied.push('斜體'); }
+    if (args.font_name !== undefined) { r.format.font.name = String(args.font_name); applied.push('字體'); }
+    if (args.indent !== undefined) { r.format.indentLevel = Math.min(15, Math.max(0, Number(args.indent))); applied.push('縮排'); }
     if (args.font_size !== undefined) { r.format.font.size = Number(args.font_size); applied.push('字級'); }
     if (args.font_color !== undefined) { r.format.font.color = String(args.font_color); applied.push('字色'); }
     if (args.fill_color !== undefined) {
@@ -535,8 +542,11 @@ async function formatRange(args) {
       } else {
         for (const e of edges) {
           const b = r.format.borders.getItem(e);
-          b.style = 'Continuous';
-          b.weight = 'Thin';
+          // Style must be set before colour/weight — on a border that is currently
+          // 'None' the other properties have nothing to apply to and are dropped.
+          b.style = String(args.border_style || 'Continuous');
+          b.weight = String(args.border_weight || 'Thin');
+          if (args.border_color) b.color = String(args.border_color);
         }
       }
       applied.push('框線');
@@ -621,6 +631,20 @@ async function createChart(args) {
     chart.width = Number(args.width) || 360;
     chart.height = Number(args.height) || 220;
 
+    // A default Excel chart carries a legend even for a single series, where it
+    // just eats width and says nothing. Let the caller turn it off, label the
+    // points directly, and pick a built-in style.
+    if (args.legend_position !== undefined) {
+      if (String(args.legend_position) === 'None') chart.legend.visible = false;
+      else { chart.legend.visible = true; chart.legend.position = String(args.legend_position); }
+    }
+    if (args.show_data_labels) {
+      chart.dataLabels.showValue = true;
+    }
+    if (args.chart_style !== undefined) {
+      chart.style = Number(args.chart_style);
+    }
+
     chart.load('name');
     await ctx.sync();
     return `已在「${args.sheet}」建立${args.chart_type}圖表「${chart.name}」，資料來源 ${bareAddress(data.address)}。`;
@@ -700,9 +724,12 @@ async function tableOps(args) {
       if (!args.range) return '錯誤：create_table 需要 range。';
       const t = sheet.tables.add(String(args.range), hasHeaders);
       if (args.table_name) t.name = String(args.table_name);
-      t.load('name');
+      // A built-in table style gives banded rows, a styled header and hover
+      // highlighting in one property — far more consistent than painting cells.
+      if (args.table_style) t.style = String(args.table_style);
+      t.load('name,style');
       await ctx.sync();
-      return `已把 ${args.range} 轉成表格「${t.name}」。`;
+      return `已把 ${args.range} 轉成表格「${t.name}」${args.table_style ? `，套用樣式 ${t.style}` : ''}。`;
     }
 
     if (op === 'freeze_panes') {
@@ -751,6 +778,50 @@ async function tableOps(args) {
     }
 
     return `錯誤：未知的 op「${op}」。`;
+  });
+}
+
+/**
+ * Sheet-level appearance.
+ *
+ * `showGridlines = false` is the one that matters. Those grey lines are the
+ * single strongest signal that something is "a spreadsheet"; with them off, the
+ * fills and borders the agent draws stop reading as cell decoration and start
+ * reading as layout. Every Excel dashboard and calendar that looks designed
+ * turns them off first.
+ *
+ * All of this is ExcelApi 1.7 — well below the SharedRuntime floor the manifest
+ * already requires — but each property is set independently so an unexpectedly
+ * old host degrades property by property instead of failing the whole call.
+ */
+async function sheetStyle(args) {
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${args.sheet}」。`;
+
+    const applied = [];
+    if (args.show_gridlines !== undefined) {
+      sheet.showGridlines = !!args.show_gridlines;
+      applied.push(args.show_gridlines ? '顯示格線' : '關閉格線');
+    }
+    if (args.show_headings !== undefined) {
+      sheet.showHeadings = !!args.show_headings;
+      applied.push(args.show_headings ? '顯示欄列標題' : '隱藏欄列標題');
+    }
+    if (args.tab_color !== undefined) {
+      sheet.tabColor = String(args.tab_color);
+      applied.push('分頁顏色');
+    }
+    if (args.standard_width !== undefined) {
+      sheet.standardWidth = charsToPoints(args.standard_width);
+      applied.push('預設欄寬');
+    }
+    if (!applied.length) return '沒有指定任何要改的項目。';
+
+    await ctx.sync();
+    return `已設定工作表「${args.sheet}」：${applied.join('、')}。`;
   });
 }
 
@@ -961,6 +1032,107 @@ export async function getWorkbookName() {
   });
 }
 
+// ── run_script ────────────────────────────────────────────────────────────────
+
+/**
+ * Result cap. A script that returns the raw grid has defeated its own purpose —
+ * that is the exact "10,000 cells into the context window" problem this tool
+ * exists to avoid — so the cap is deliberately tight and says so when it bites.
+ */
+const MAX_SCRIPT_RESULT_CHARS = 20000;
+const MAX_SCRIPT_LOG_LINES = 100;
+/**
+ * Client-side limits, both kept UNDER the server bridge's own timeouts
+ * (45s for reads, 120s for confirmed writes) so a slow script reports itself
+ * with an actionable message instead of the bridge timing out anonymously.
+ */
+const SCRIPT_TIMEOUT_READ_MS = 40000;
+const SCRIPT_TIMEOUT_WRITE_MS = 100000;
+
+function stringifyResult(v, cap, tailNote) {
+  let s;
+  if (typeof v === 'string') s = v;
+  else {
+    try { s = JSON.stringify(v, null, 2); } catch { s = String(v); }
+    if (s === undefined) s = String(v);   // JSON.stringify(undefined) is undefined
+  }
+  return s.length > cap ? s.slice(0, cap) + tailNote : s;
+}
+
+/**
+ * Run model-written JavaScript against the live workbook.
+ *
+ * This is the most important tool in the set, and the reason is context, not
+ * convenience. Reading a 125-item × 26-period sheet through excel_read_range puts
+ * ~10,000 numbers into the model's context and makes the MODEL do the arithmetic,
+ * token by token — measured at 342s and still going on a real sheet. The same
+ * question answered by a script is one round trip and returns three lines.
+ *
+ * `new Function` rather than eval: the body sees exactly the four bindings passed
+ * to it and not this module's scope. That is scope hygiene, NOT a security
+ * sandbox — the code shares the pane's realm and could reach `window` if it tried.
+ * The real gate is upstream: the server marks anything that looks like a write as
+ * needing confirmation (see scriptMutatesWorkbook), and the pane will not run it
+ * until a human clicks.
+ */
+async function runScript(args) {
+  const code = String(args.code || '').trim();
+  if (!code) throw new Error('code 是必要的');
+
+  const logs = [];
+  const log = (...parts) => {
+    if (logs.length >= MAX_SCRIPT_LOG_LINES) return;
+    logs.push(parts.map(p => (typeof p === 'string' ? p : stringifyResult(p, 500, '…'))).join(' '));
+  };
+
+  let body;
+  try {
+    body = new Function(
+      'ctx', 'workbook', 'Excel', 'log',
+      '"use strict"; return (async () => {\n' + code + '\n})();',
+    );
+  } catch (e) {
+    throw new Error(`程式碼語法錯誤：${(e && e.message) || String(e)}`);
+  }
+
+  const limit = String(args.mode || '') === 'write' ? SCRIPT_TIMEOUT_WRITE_MS : SCRIPT_TIMEOUT_READ_MS;
+
+  const run = Excel.run(async (ctx) => {
+    const value = await body(ctx, ctx.workbook, Excel, log);
+    // A script that queued mutations but never synced would silently do nothing;
+    // syncing again here is free when the script already did it.
+    await ctx.sync();
+    return value;
+  });
+
+  // Note: this races the timeout, it does not cancel the script — Excel.run has no
+  // abort. The point is to hand the model a message it can act on rather than let
+  // the bridge time out with no explanation.
+  const value = await Promise.race([
+    run,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error(
+        `程式執行超過 ${Math.round(limit / 1000)} 秒。`
+        + '常見原因是在迴圈裡呼叫 ctx.sync()——改成一次 load 整塊、sync 一次，剩下用純 JS 算。',
+      )),
+      limit,
+    )),
+  ]);
+
+  const parts = [];
+  if (logs.length) parts.push('log:\n' + logs.join('\n'));
+  parts.push(
+    value === undefined
+      ? '（程式沒有 return 任何東西。要拿到結果請用 return。）'
+      : stringifyResult(
+        value,
+        MAX_SCRIPT_RESULT_CHARS,
+        '\n…（結果過長已截斷。請在程式裡先彙總再 return，不要把原始資料整份帶回來。）',
+      ),
+  );
+  return parts.join('\n\n');
+}
+
 /**
  * Dispatch one tool call.
  *
@@ -986,6 +1158,8 @@ export async function executeTool(tool, args) {
       case 'excel_table_ops':      return { ok: true, content: await tableOps(args || {}) };
       case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
+      case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };
+      case 'excel_run_script':     return { ok: true, content: await runScript(args || {}) };
       default:
         return { ok: false, error: `未知的工具：${tool}` };
     }

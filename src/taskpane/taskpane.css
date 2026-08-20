@@ -319,11 +319,25 @@ header .actions { display: flex; gap: 2px; flex: none; }
 .bubble.ai > *:first-child { margin-top: 0; }
 .bubble.ai > *:last-child { margin-bottom: 0; }
 
-/* Same bubble, so the answer visibly grows out of the spot the indicator held. */
+/* Same bubble, so the answer visibly grows out of the spot the panel held. */
 .bubble.ai.thinking {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; gap: 5px;
   color: var(--fg-muted); font-size: 12.5px;
 }
+
+/* One line per step: marker, label, elapsed. The elapsed column is right-aligned
+   and tabular so the digits don't jitter as it ticks. */
+.step { display: flex; align-items: center; gap: 7px; }
+.step .mark { color: var(--ok); font-weight: 700; width: 12px; flex: none; text-align: center; }
+.step .dots { width: 12px; flex: none; justify-content: center; }
+.step-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-ms {
+  flex: none; font-size: 11px; color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+/* Finished steps recede — the running one is what you're waiting on. */
+.step.done { opacity: .6; }
+.step.done .step-label { color: var(--fg-muted); }
 .bubble p { margin: 0 0 9px; }
 .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
   margin: 16px 0 7px; font-size: 13px; font-weight: 600; color: var(--fg);

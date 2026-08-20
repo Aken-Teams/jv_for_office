@@ -247,28 +247,81 @@ function addBubble(role, text) {
 }
 
 /**
- * The "working on it" indicator lives IN the transcript, at the end, where the
- * answer is about to appear — not pinned to the bottom of the pane. When it sat
- * down by the composer there was no way to tell which part of the log it belonged
- * to, or whether the text above it was finished.
+ * Progress panel.
  *
- * It is always the last element, so a tool call that happens mid-answer shows up
- * below the text so far, in the order things actually happened.
+ * The wait here is long and lumpy — measured on this stack, 7-9 seconds pass
+ * between "send" and the first tool call while the CLI process spawns and the
+ * model loads the deferred MCP tools. A single unchanging 「思考中…」 for that
+ * long reads as "hung", so this shows the actual steps as they happen, each with
+ * how long it took.
+ *
+ * Every signal it needs was already arriving on the SSE stream and being
+ * discarded: `spawn_started` fires when the CLI process really starts (i.e. the
+ * concurrency queue let go), and `tool_activity` reports every tool the model
+ * touches, including the ToolSearch call that dominates the opening gap.
  */
-let thinkingEl = null;
+const progress = {
+  el: null,
+  steps: [],     // { label, t0, t1 }
+  timer: null,
+};
 
-function setStatus(text) {
-  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-  if (!text) return;
+const fmtElapsed = (ms) => (ms < 10000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`);
+
+function renderProgress() {
+  if (!progress.el) return;
+  const now = Date.now();
+  progress.el.innerHTML = progress.steps.map((st) => {
+    const done = st.t1 !== undefined;
+    const ms = (done ? st.t1 : now) - st.t0;
+    const mark = done
+      ? '<span class="mark">✓</span>'
+      : '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+    return `<div class="step${done ? ' done' : ''}">${mark}`
+      + `<span class="step-label">${escapeHtml(st.label)}</span>`
+      + `<span class="step-ms">${fmtElapsed(ms)}</span></div>`;
+  }).join('');
+}
+
+/**
+ * Advance to a new step. Repeating the current label is a no-op, so the
+ * 「思考中」 that follows every tool result doesn't pile up duplicates.
+ */
+function progressStep(label) {
+  const current = progress.steps[progress.steps.length - 1];
+  if (current && current.t1 === undefined && current.label === label) return;
+
   clearEmptyState();
-  thinkingEl = document.createElement('div');
-  thinkingEl.className = 'bubble ai thinking';
-  thinkingEl.setAttribute('role', 'status');
-  thinkingEl.innerHTML =
-    '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'
-    + `<span>${escapeHtml(text)}</span>`;
-  $('log').appendChild(thinkingEl);
+  if (!progress.el) {
+    progress.el = document.createElement('div');
+    progress.el.className = 'bubble ai thinking';
+    progress.el.setAttribute('role', 'status');
+    $('log').appendChild(progress.el);
+    progress.timer = setInterval(renderProgress, 250);
+  }
+  if (current && current.t1 === undefined) current.t1 = Date.now();
+  progress.steps.push({ label, t0: Date.now() });
+  renderProgress();
   scrollDown();
+}
+
+/** Tear the panel down and, if it did real work, leave one line behind. */
+function progressDone(summarise) {
+  if (progress.timer) { clearInterval(progress.timer); progress.timer = null; }
+  const steps = progress.steps;
+  if (progress.el) { progress.el.remove(); progress.el = null; }
+  progress.steps = [];
+
+  if (summarise && steps.length > 1) {
+    const total = (steps[steps.length - 1].t1 || Date.now()) - steps[0].t0;
+    addNote(`${steps.length} 個步驟 · 共 ${fmtElapsed(total)}`, 'note');
+  }
+}
+
+/** Kept for callers that just want "show this one thing" / "clear". */
+function setStatus(text) {
+  if (text) progressStep(text);
+  else progressDone(false);
 }
 
 function addNote(text, kind = 'note') {
@@ -383,11 +436,16 @@ const TOOL_LABEL = {
   excel_table_ops: '正在整理表格…',
   excel_create_pivot: '等待你確認建立樞紐…',
   excel_trace_precedents: '正在追蹤公式來源…',
+  excel_sheet_style: '正在調整版面…',
+  excel_run_script: '正在執行程式…',
 };
 
 async function handleToolRequest(payload) {
   const { callId, tool, args, needsConfirm, summary } = payload;
-  setStatus(TOOL_LABEL[tool] || `正在執行 ${tool}…`);
+  // Prefer the server's specific description ("讀取 工作表1!A1:AZ375") over the
+  // generic per-tool label — it is the same line the confirmation card shows, so
+  // the trace and the dialog agree about what happened.
+  setStatus(summary || TOOL_LABEL[tool] || `正在執行 ${tool}…`);
   let card = null;
 
   if (needsConfirm) {
@@ -449,7 +507,7 @@ async function send(message) {
   $('send').disabled = true;
 
   addBubble('user', message);
-  setStatus('思考中…');
+  progressStep('連線到伺服器…');
 
   let bubble = null;
   let text = '';
@@ -515,15 +573,32 @@ async function send(message) {
           let ev;
           try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
 
-          if (ev.type === 'text') {
-            // Drop the indicator BEFORE creating the bubble, so the bubble takes
+          if (ev.type === 'spawn_started') {
+            // The concurrency/auth queue let go and the CLI process actually started.
+            progressStep('AI 啟動中…');
+          } else if (ev.type === 'tool_activity') {
+            // ToolSearch is the CLI loading the deferred MCP tools — it is the
+            // single longest step of the opening gap, so it gets named rather
+            // than hidden behind a generic spinner.
+            const t = ev.data && ev.data.tool;
+            if (t === 'ToolSearch') progressStep('載入 Excel 工具…');
+          } else if (ev.type === 'text') {
+            // Drop the panel BEFORE creating the bubble, so the bubble takes
             // its place at the end of the log rather than appearing above it.
-            setStatus('');
+            progressDone(true);
             text += ev.data;
             if (!bubble) bubble = addBubble('ai', '');
             bubble.innerHTML = renderMarkdown(text);
             scrollDown();
           } else if (ev.type === 'tool_request') {
+            // Close the current bubble. Whatever the model says AFTER this tool
+            // comes back is a new remark, not a continuation of the last one —
+            // appending it to the same bubble is what produced run-on text like
+            // 「先讀一下資料全貌…先把完整資料讀進來…」, two separate sentences
+            // glued together. A fresh bubble per turn also lets the tool step
+            // land between them, which is what makes the trace readable.
+            bubble = null;
+            text = '';
             // Not awaited: the stream must keep draining while Office.js works and
             // while a confirmation dialog waits on a human.
             void handleToolRequest(ev.data);
@@ -535,7 +610,7 @@ async function send(message) {
             addNote(typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data), 'err');
           } else if (ev.type === 'done') {
             if (ev.data && ev.data.sessionId) state.sessionId = ev.data.sessionId;
-            setStatus('');
+            progressDone(false);
           }
         }
       }
@@ -546,7 +621,7 @@ async function send(message) {
     state.streaming = false;
     state.runId = null;
     $('send').disabled = !$('input').value.trim();
-    setStatus('');
+    progressDone(false);
   }
 }
 
