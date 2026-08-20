@@ -326,6 +326,15 @@ button:disabled { cursor: default; }
 .card-more:hover { color: var(--fg-muted); }
 .card-more .ic { transition: transform var(--speed); }
 .card-more[aria-expanded="true"] .ic { transform: rotate(180deg); }
+.card-undo {
+  flex: 0 0 100%;
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 6px; padding: 0;
+  font-size: 11.5px; color: var(--accent);
+}
+.card-undo:hover { text-decoration: underline; text-underline-offset: 2px; }
+.card-undo:disabled { color: var(--fg-subtle); }
+
 .card-raw {
   flex: 0 0 100%;
   margin-top: 6px; padding: 8px 10px;

@@ -1255,7 +1255,122 @@ function stringifyResult(v, cap, tailNote) {
  * needing confirmation (see scriptMutatesWorkbook), and the pane will not run it
  * until a human clicks.
  */
-async function runScript(args) {
+/**
+ * Watch what a script DOES, instead of reading what it says.
+ *
+ * The server decides whether to ask by pattern-matching the source
+ * (scriptMutatesWorkbook). That is a heuristic and it always was: `r["cle" +
+ * "ar"]()` defeats it, and so does any instruction that arrives from mail, KM or
+ * a web page and talks the model into writing something the patterns miss. What
+ * follows is the control the patterns never were.
+ *
+ * Every Office object handed to a script is wrapped in a Proxy. Two things count
+ * as changing the workbook:
+ *
+ *   - assigning ANY property on an Office object. Office.js has no read-only
+ *     property you are meant to assign to — reading is `.load()` — so the rule
+ *     needs no list to keep in step with the API, and `obj["val"+"ues"] = x`
+ *     trips it exactly like `obj.values = x`.
+ *   - calling a method that mutates. This does need a list, but it matches the
+ *     method actually invoked rather than the text of the call.
+ *
+ * When writes were not approved, the attempt throws where it happens rather than
+ * at sync: the model gets an error naming the operation, which is something it
+ * can act on, and nothing was queued in the meantime.
+ *
+ * What this is NOT: a sandbox. A script that reaches the host's own globals
+ * instead of its bindings is outside what a Proxy can see. Closing that needs
+ * the script off this thread entirely, which is a bigger change than this one.
+ */
+const MUTATING_METHODS = new Set([
+  'add', 'addFromBase64', 'delete', 'remove', 'insert', 'clear', 'clearContents', 'clearFormats',
+  'merge', 'unmerge', 'copyFrom', 'moveTo', 'autofitColumns', 'autofitRows', 'convertToRange',
+  'applyFilter', 'clearFilter', 'reapplyFilters', 'apply', 'freezeRows', 'freezeColumns',
+  'freezePanes', 'setPosition', 'setDynamicArray', 'setData', 'replaceAll', 'group', 'ungroup',
+  'refresh', 'refreshAll', 'activate', 'select', 'setName', 'setFormat', 'setValues',
+  'addConditionalFormat', 'removeDuplicates', 'sort',
+]);
+
+/** Reach the object underneath a wrapper, so Office.js never sees a Proxy. */
+const RAW = Symbol('raw');
+
+function makeScriptGuard(allowWrites) {
+  const cache = new WeakMap();
+  let touched = null;
+
+  const deny = (what) => {
+    touched = what;
+    if (allowWrites) return;
+    throw new Error(
+      `這段程式想修改活頁簿（${what}），但這次呼叫沒有申請寫入權限。`
+      + '請重新呼叫 excel_run_script 並帶上 mode="write"，使用者會看到確認視窗。',
+    );
+  };
+
+  // Plain data comes back from Office as ordinary arrays and objects — .values is
+  // a real Array. Wrapping those would cost a proxy per cell and catch nothing,
+  // because assigning into them changes a JS array, not the workbook.
+  const isOfficeObject = (v) => {
+    if (v === null) return false;
+    const k = typeof v;
+    if (k !== 'object' && k !== 'function') return false;
+    if (Array.isArray(v) || v instanceof Date || v instanceof Promise) return false;
+    const c = v.constructor;
+    return !(c === Object || c === undefined);
+  };
+
+  const unwrap = (v) => (isOfficeObject(v) && v[RAW]) || v;
+
+  // `force` exists for the Excel namespace itself. It is a plain object, so the
+  // heuristic below rejects it — and leaving it unwrapped hands any script an
+  // unguarded context through Excel.run(cb).
+  function wrap(target, force) {
+    if (!force && !isOfficeObject(target)) return target;
+    if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return target;
+    const hit = cache.get(target);
+    if (hit) return hit;
+
+    const proxy = new Proxy(target, {
+      get(t, prop) {
+        if (prop === RAW) return t;
+        // Reflect against the target, not the receiver: Office objects keep state
+        // in internal slots and reject a Proxy as `this`.
+        const v = Reflect.get(t, prop, t);
+        if (typeof v !== 'function') return wrap(v);
+        const name = String(prop);
+        return function (...a) {
+          if (MUTATING_METHODS.has(name)) deny(name + '()');
+          // A callback passed to Office (Excel.run, forEach) is handed raw
+          // objects when Office calls it back — re-wrap them on the way in, or
+          // the script gets an unguarded context through the front door.
+          const args = a.map(x => (typeof x === 'function'
+            ? (...back) => x(...back.map(wrap))
+            : unwrap(x)));
+          return wrap(Reflect.apply(v, t, args));
+        };
+      },
+      set(t, prop, value) {
+        deny(String(prop) + ' =');
+        return Reflect.set(t, prop, unwrap(value), t);
+      },
+      deleteProperty(t, prop) {
+        deny('delete ' + String(prop));
+        return Reflect.deleteProperty(t, prop);
+      },
+    });
+
+    cache.set(target, proxy);
+    return proxy;
+  }
+
+  return {
+    wrap: (v) => wrap(v, false),
+    wrapNamespace: (v) => wrap(v, true),
+    didMutate: () => touched,
+  };
+}
+
+async function runScript(args, allowWrites) {
   const code = String(args.code || '').trim();
   if (!code) throw new Error('code 是必要的');
 
@@ -1283,8 +1398,10 @@ async function runScript(args) {
 
   const limit = String(args.mode || '') === 'write' ? SCRIPT_TIMEOUT_WRITE_MS : SCRIPT_TIMEOUT_READ_MS;
 
+  const guard = makeScriptGuard(allowWrites);
   const run = Excel.run(async (ctx) => {
-    const value = await body(ctx, ctx, ctx.workbook, Excel, log, scriptStore);
+    const g = guard.wrap(ctx);
+    const value = await body(g, g, g.workbook, guard.wrapNamespace(Excel), log, scriptStore);
     // A script that queued mutations but never synced would silently do nothing;
     // syncing again here is free when the script already did it.
     await ctx.sync();
@@ -1332,7 +1449,12 @@ async function runScript(args) {
  * tool result ("找不到工作表「損益表」") so it can correct itself; an exception
  * here would just strand the agent waiting for a result that never comes.
  */
-export async function executeTool(tool, args) {
+/**
+ * @param opts.writeApproved  whether a person agreed to this call changing the
+ *   workbook. Only excel_run_script reads it — every other tool is either a read
+ *   or was flagged destructive by name, and the confirmation already happened.
+ */
+export async function executeTool(tool, args, opts = {}) {
   try {
     switch (tool) {
       case 'excel_get_overview':  return { ok: true, content: await getOverview(args || {}) };
@@ -1351,7 +1473,7 @@ export async function executeTool(tool, args) {
       case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };
-      case 'excel_run_script':     return { ok: true, content: await runScript(args || {}) };
+      case 'excel_run_script':     return { ok: true, content: await runScript(args || {}, !!opts.writeApproved) };
       default:
         return { ok: false, error: `未知的工具：${tool}` };
     }

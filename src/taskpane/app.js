@@ -85,6 +85,8 @@ const state = {
   selectionDropped: false,
   /** Snapshots of everything we've overwritten this session, newest last. */
   undoStack: [],
+  /** Whether the Ctrl+Z caveat has been said. Once is a note; twice is nagging. */
+  saidUndoScope: false,
   /** Which cross-source MCPs the server says this user COULD mount. */
   available: { email: false, km: false },
   /** Why they aren't available, shown on the disabled toggle. */
@@ -799,7 +801,10 @@ async function handleToolRequest(payload) {
     }
   }
 
-  const result = await executeTool(tool, args);
+  // needsConfirm true means a person saw this call and said yes (or has auto-approve
+  // on). False means the server judged it a read — and if it turns out not to be,
+  // the guard inside runScript stops it rather than trusting that judgement.
+  const result = await executeTool(tool, args, { writeApproved: !!needsConfirm });
   // Approving WITH a note means "do this, and here is something you should know".
   // Riding it back on the tool result gets it to the agent within the same turn,
   // instead of the person having to repeat themselves in the next message.
@@ -811,6 +816,7 @@ async function handleToolRequest(payload) {
   if (result.snapshot) {
     state.undoStack.push(result.snapshot);
     updateUndoButton();
+    noteUndoScope();
   }
 
   // The outcome lands back in the card the user just answered, instead of a
@@ -823,7 +829,10 @@ async function handleToolRequest(payload) {
     // line stays; but 「[PivotTableRangeConflict] 操作失敗…」 in red reads as a
     // crash. Grey line, plain words, raw message on hover.
     if (result.ok === false) resolveCard(card, 'retry', t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
-    else resolveCard(card, 'ok', summary || t('完成'), undefined, result.content);
+    else {
+      resolveCard(card, 'ok', summary || t('完成'), undefined, result.content);
+      if (result.snapshot) attachUndo(card, result.snapshot);
+    }
   } else if (result.ok === false) {
     progressFailed(t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
   }
@@ -837,6 +846,60 @@ async function handleToolRequest(payload) {
   // follows, which is the model reading all of it back in.
   const size = String(result.content || result.error || '').length;
   if (size) progressDetail(t('已讀入 {0} 的結果', fmtSize(size)));
+}
+
+/**
+ * Undo the newest change the assistant made.
+ *
+ * Excel's own undo stack is not reachable: Office.js gives an add-in no way to
+ * push an entry onto it, and what an add-in writes does not become undoable by
+ * Ctrl+Z. So this is a separate stack of before-images, and the honest response
+ * to that is not to hide it — it is to put it everywhere a person might reach
+ * for it, and to say plainly, once, that Ctrl+Z in the grid will not find it.
+ */
+async function undoLast() {
+  const snap = state.undoStack.pop();
+  if (!snap) return false;
+  updateUndoButton();
+  try {
+    await restoreSnapshot(snap);
+    addNote(t('已復原 {0}', `${snap.sheet}!${snap.address}`), 'ok');
+    return true;
+  } catch (e) {
+    addNote(t('復原失敗：{0}', e.message), 'err');
+    return false;
+  }
+}
+
+/**
+ * An undo link on the card that describes the change.
+ *
+ * Strictly newest-first. Restoring an older before-image would write stale
+ * values over whatever came after it — that is not an undo, it is a second
+ * mistake — so a superseded link says so rather than doing it.
+ */
+function attachUndo(card, snap) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'card-undo';
+  btn.innerHTML = `<svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-undo"/></svg><span>${escapeHtml(t('復原這一步'))}</span>`;
+  btn.addEventListener('click', async () => {
+    if (state.undoStack[state.undoStack.length - 1] !== snap) {
+      addNote(t('這一步之後還有比較新的修改，請先復原那幾步。'), 'note');
+      return;
+    }
+    btn.disabled = true;
+    const ok = await undoLast();
+    if (ok) btn.remove(); else btn.disabled = false;
+  });
+  card.appendChild(btn);
+}
+
+/** Said once per session, at the moment it first becomes true. */
+function noteUndoScope() {
+  if (state.saidUndoScope) return;
+  state.saidUndoScope = true;
+  addNote(t('提醒：AI 做的修改不會進到 Excel 的復原紀錄，Ctrl+Z 退不回來。要退回請用這裡的復原鍵。'), 'note');
 }
 
 function updateUndoButton() {
@@ -1787,6 +1850,20 @@ Office.onReady(async (info) => {
     if (state.streaming) { e.preventDefault(); stopRun(); }
   });
 
+  // Ctrl+Z is where the hand goes. It only reaches us while the pane has focus
+  // — with focus in the grid, Excel handles the key and never tells us — but
+  // half the cases is better than none, and the note above covers the rest.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'z') return;
+    // Inside a text field Ctrl+Z means undo typing, and stealing it is worse
+    // than not offering it at all.
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (!state.undoStack.length) return;
+    e.preventDefault();
+    void undoLast();
+  });
+
   $('input').addEventListener('input', (e) => {
     autoGrow(e.target);
     $('send').disabled = !e.target.value.trim() || state.streaming;
@@ -1808,17 +1885,7 @@ Office.onReady(async (info) => {
     }
   });
 
-  $('undo').addEventListener('click', async () => {
-    const snap = state.undoStack.pop();
-    if (!snap) return;
-    updateUndoButton();
-    try {
-      await restoreSnapshot(snap);
-      addNote(t('已復原 {0}', `${snap.sheet}!${snap.address}`), 'ok');
-    } catch (e) {
-      addNote(t('復原失敗：{0}', e.message), 'err');
-    }
-  });
+  $('undo').addEventListener('click', () => { void undoLast(); });
 
   $('setup-form').addEventListener('submit', (e) => { e.preventDefault(); void runSetup(); });
   $('setup-back').addEventListener('click', () => { setupState = null; showLogin(); });

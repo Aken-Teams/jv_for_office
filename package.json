@@ -13,7 +13,8 @@
     "clear-cache": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/clear-office-cache.ps1",
     "validate": "office-addin-manifest validate manifest.xml",
     "installer:icon": "node tools/make-installer-icon.mjs",
-    "installer:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1"
+    "installer:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1",
+    "test": "node test/script-guard.test.mjs"
   },
   "devDependencies": {
     "office-addin-dev-certs": "^1.13.3",
