@@ -1224,7 +1224,13 @@ async function runScript(args) {
   let body;
   try {
     body = new Function(
-      'ctx', 'workbook', 'Excel', 'log', 'store',
+      // `context` as well as `ctx`: every Office.js doc, sample and Script Lab
+      // snippet writes Excel.run(async (context) => …), so that is what the model
+      // reaches for. Measured — three consecutive calendar attempts died on
+      // 「context is not defined」, and the agent then spent the rest of the run
+      // deliberating over how to avoid a fourth. Fighting the convention was the
+      // mistake; providing both names costs nothing.
+      'ctx', 'context', 'workbook', 'Excel', 'log', 'store',
       '"use strict"; return (async () => {\n' + code + '\n})();',
     );
   } catch (e) {
@@ -1234,7 +1240,7 @@ async function runScript(args) {
   const limit = String(args.mode || '') === 'write' ? SCRIPT_TIMEOUT_WRITE_MS : SCRIPT_TIMEOUT_READ_MS;
 
   const run = Excel.run(async (ctx) => {
-    const value = await body(ctx, ctx.workbook, Excel, log, scriptStore);
+    const value = await body(ctx, ctx, ctx.workbook, Excel, log, scriptStore);
     // A script that queued mutations but never synced would silently do nothing;
     // syncing again here is free when the script already did it.
     await ctx.sync();
@@ -1309,6 +1315,14 @@ export async function executeTool(tool, args) {
     // Office.js errors carry a `code` that is far more actionable than the message
     // (e.g. InvalidArgument on a malformed A1 address).
     const code = e && e.code ? `[${e.code}] ` : '';
-    return { ok: false, error: `${code}${(e && e.message) || String(e)}` };
+    let msg = `${code}${(e && e.message) || String(e)}`;
+    // A ReferenceError means the script used a name this sandbox does not define.
+    // The bare message says what broke but not what to use instead, and an agent
+    // that cannot tell the difference just rewrites the same script again.
+    if (tool === 'excel_run_script' && e instanceof ReferenceError) {
+      msg += '。這段程式可以用的名稱只有：context（= ctx）、workbook、Excel、log、store。'
+        + '沒有 Office Scripts 的 ExcelScript，也沒有 require / import / fetch / document。';
+    }
+    return { ok: false, error: msg };
   }
 }
