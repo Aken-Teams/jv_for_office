@@ -15,6 +15,7 @@ import {
   executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
   getActiveSheetName, watchActiveSheet, getSelectionRef, watchSelection, getWorkbookKey,
 } from './excelTools.js';
+import { t, setLocale, applyStaticText } from './i18n.js';
 
 /** Last-resort fallback if config.json is missing or unreadable. */
 const DEFAULT_API_BASE = 'http://localhost:12054';
@@ -36,6 +37,23 @@ const LS_API_OVERRIDE = 'jv_excel_api_override';
 const LS_AUTO_APPROVE = 'jv_excel_auto_approve';
 /** Chosen model. A working preference, so it survives restarts. */
 const LS_MODEL = 'jv_excel_model';
+/**
+ * Reply language for the whole add-in.
+ *
+ * Empty means "whatever the account says" — the common case, and the reason the
+ * setting is not a required choice. It is stored per installation and applied to
+ * every conversation, because a language that only held for one thread would be
+ * a setting you have to remember to set again, which is worse than none.
+ */
+const LS_LOCALE = 'jv_excel_locale';
+
+/** Must stay in step with LOCALE_NAMES in the server's excelContext.ts. */
+const LOCALES = [
+  { id: '',      label: '跟隨帳號設定', note: '用 AI Agents Office 上的語言' },
+  { id: 'zh-TW', label: '繁體中文' },
+  { id: 'zh-CN', label: '简体中文' },
+  { id: 'en',    label: 'English' },
+];
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
@@ -59,6 +77,8 @@ const state = {
   model: localStorage.getItem(LS_MODEL) || '',
   /** Catalogue from the server — includes any local models this deployment has. */
   models: [],
+  /** Forced reply language, or '' to follow the account. Add-in wide. */
+  locale: localStorage.getItem(LS_LOCALE) || '',
   /** Live selection, or null. Rides along with the next message unless dropped. */
   selection: null,
   /** Set by the × on the chip: skip the selection for THIS message only. */
@@ -68,11 +88,10 @@ const state = {
   /** Which cross-source MCPs the server says this user COULD mount. */
   available: { email: false, km: false },
   /** Why they aren't available, shown on the disabled toggle. */
-  sourceHint: '正在確認可用的資料來源…',
+  sourceHint: t('正在確認可用的資料來源…'),
   /** 'ad' | 'email' — which sign-in form is showing. */
   loginMode: 'email',
   /** Where the web app lives, for first-time AD setup. */
-  webUrl: '',
   /**
    * Which ones are switched ON right now. Off by default and held only in
    * memory: the pane runs in a SharedRuntime, so this survives closing and
@@ -349,8 +368,8 @@ function progressThinking(chunk) {
   // labelled 「AI 啟動中…」 is now a lie — and a lie that reads as "hung", which is
   // exactly what a 400-second wait under that label looked like.
   const cur = progress.steps[progress.steps.length - 1];
-  if (cur && cur.t1 === undefined && (cur.label === 'AI 啟動中…' || cur.label === '連線到伺服器…')) {
-    progressStep('思考中…');
+  if (cur && cur.t1 === undefined && (cur.label === t('AI 啟動中…') || cur.label === t('連線到伺服器…'))) {
+    progressStep(t('思考中…'));
   }
   progress.think = (progress.think + String(chunk || '')).slice(-400);
   const parts = progress.think.split(/[\n。．.!?！？]+/).map(s => s.trim()).filter(Boolean);
@@ -360,7 +379,7 @@ function progressThinking(chunk) {
   // reads as a report of work being done, and someone watching an empty spreadsheet
   // reasonably concludes it must be writing cells. It is not: nothing has happened
   // yet. Redundant labelling is worth it to kill that misreading.
-  progressDetail('正在想：' + (last.length > 60 ? last.slice(0, 60) + '…' : last));
+  progressDetail(t('正在想：{0}', last.length > 60 ? last.slice(0, 60) + '…' : last));
 }
 
 /**
@@ -414,7 +433,7 @@ function progressDone(summarise) {
 
   if (summarise && steps.length > 1) {
     const total = (steps[steps.length - 1].t1 || Date.now()) - steps[0].t0;
-    addNote(`${steps.length} 個步驟 · 共 ${fmtElapsed(total)}`, 'note');
+    addNote(t('{0} 個步驟 · 共 {1}', steps.length, fmtElapsed(total)), 'note');
   }
 }
 
@@ -486,9 +505,9 @@ function askChoice({ question, options }) {
     card.innerHTML = `
       <div class="confirm-head">
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
-        <span class="confirm-title">AI 需要你決定</span>
+        <span class="confirm-title">${escapeHtml(t('AI 需要你決定'))}</span>
       </div>
-      <div class="confirm-body">${escapeHtml(String(question || '請你決定一件事'))}</div>
+      <div class="confirm-body">${escapeHtml(String(question || t('請你決定一件事')))}</div>
       <div class="choice-list">
         ${list.map((o, i) => `
           <button class="choice-opt" data-i="${i}">
@@ -497,13 +516,13 @@ function askChoice({ question, options }) {
           </button>`).join('')}
       </div>
       <input class="confirm-say" type="text" autocomplete="off"
-             placeholder="都不是？直接告訴它你要怎麼做" aria-label="自己輸入做法" />`;
+             placeholder="${escapeHtml(t('都不是？直接告訴它你要怎麼做'))}" aria-label="${escapeHtml(t('自己輸入做法'))}" />`;
     $('log').appendChild(card);
     scrollDown();
 
     const say = card.querySelector('.confirm-say');
     const done = (answer) => {
-      resolveCard(card, 'ok', `你選了：${answer}`);
+      resolveCard(card, 'ok', t('你選了：{0}', answer));
       resolve(answer);
     };
     for (const btn of card.querySelectorAll('.choice-opt')) {
@@ -543,7 +562,7 @@ function autoApprovedCard(summary) {
   // Still rendered, still in the transcript, still undoable. 自動允許 removes the
   // click, not the record — otherwise nobody could tell afterwards what the agent
   // had done on its own.
-  resolveCard(card, 'running', `自動允許：${summary}`);
+  resolveCard(card, 'running', t('自動允許：{0}', summary));
   scrollDown();
   return card;
 }
@@ -569,23 +588,23 @@ function askConfirm(summary, detail, meta, highRisk) {
     card.className = highRisk ? 'confirm danger' : 'confirm';
     card.setAttribute('role', 'alertdialog');
     const risk = detail && detail.occupied
-      ? `<div class="risk">目標範圍已有 ${detail.occupied} 格有內容${detail.hadFormula ? `（其中 ${detail.hadFormula} 格是公式）` : ''}，會被覆蓋。</div>`
+      ? `<div class="risk">${escapeHtml(t('目標範圍已有 {0} 格有內容{1}，會被覆蓋。', detail.occupied, detail.hadFormula ? t('（其中 {0} 格是公式）', detail.hadFormula) : ''))}</div>`
       : '';
     card.innerHTML = `
       <div class="confirm-head">
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
-        <span class="confirm-title">${highRisk ? '這個動作沒辦法復原' : 'AI 想要修改這份活頁簿'}</span>
+        <span class="confirm-title">${escapeHtml(highRisk ? t('這個動作沒辦法復原') : t('AI 想要修改這份活頁簿'))}</span>
       </div>
       <div class="confirm-body">${escapeHtml(summary)}</div>
       ${meta ? `<div class="confirm-meta">${escapeHtml(meta)}</div>` : ''}
       ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
-      ${state.sources.length ? `<div class="confirm-src">此對話可讀取：${escapeHtml(sourceLabel(state.sources))}。寫入內容可能包含這些來源的資料。</div>` : ''}
+      ${state.sources.length ? `<div class="confirm-src">${escapeHtml(t('此對話可讀取：{0}。寫入內容可能包含這些來源的資料。', sourceLabel(state.sources)))}</div>` : ''}
       <input class="confirm-say" type="text" autocomplete="off"
-             placeholder="想改成什麼？（選填）" aria-label="給 AI 的說明（選填）" />
+             placeholder="${escapeHtml(t('想改成什麼？（選填）'))}" aria-label="${escapeHtml(t('給 AI 的說明（選填）'))}" />
       <div class="confirm-actions">
-        <button class="btn-approve">允許</button>
-        <button class="btn-deny">拒絕</button>
+        <button class="btn-approve">${escapeHtml(t('允許'))}</button>
+        <button class="btn-deny">${escapeHtml(t('拒絕'))}</button>
       </div>`;
     $('log').appendChild(card);
     scrollDown();
@@ -596,15 +615,15 @@ function askConfirm(summary, detail, meta, highRisk) {
     // The deny button relabels itself once there is something to say: with an
     // instruction attached it is no longer "no", it is "do it this way instead",
     // and the label should say which one the click will do.
-    const syncLabel = () => { deny.textContent = say.value.trim() ? '改成這樣' : '拒絕'; };
+    const syncLabel = () => { deny.textContent = say.value.trim() ? t('改成這樣') : t('拒絕'); };
     say.addEventListener('input', syncLabel);
 
     const done = (ok) => {
       const note = say.value.trim();
       // ✓ / × rather than emoji: they inherit colour and exist in every font in
       // the stack, so they render identically on Windows and in dark mode.
-      if (ok) resolveCard(card, 'running', '執行中…');
-      else resolveCard(card, 'denied', note ? `改成這樣：${note}` : `已拒絕：${summary}`);
+      if (ok) resolveCard(card, 'running', t('執行中…'));
+      else resolveCard(card, 'denied', note ? t('改成這樣：{0}', note) : t('已拒絕：{0}', summary));
       resolve({ approved: ok, card, note });
     };
     card.querySelector('.btn-approve').addEventListener('click', () => done(true));
@@ -638,22 +657,22 @@ async function postToolResult(runId, callId, result) {
   }
 }
 
-const TOOL_LABEL = {
-  excel_get_overview: '正在讀取活頁簿結構…',
-  excel_get_selection: '正在讀取選取範圍…',
-  excel_read_range: '正在讀取資料…',
-  excel_search: '正在搜尋…',
-  excel_write_range: '等待你確認寫入…',
-  excel_manage_sheet: '正在調整工作表…',
-  excel_format_range: '正在套用格式…',
-  excel_create_chart: '正在建立圖表…',
-  excel_structure_op: '等待你確認結構變更…',
-  excel_table_ops: '正在整理表格…',
-  excel_create_pivot: '等待你確認建立樞紐…',
-  excel_trace_precedents: '正在追蹤公式來源…',
-  excel_sheet_style: '正在調整版面…',
-  excel_run_script: '正在執行程式…',
-};
+const TOOL_LABEL = () => ({
+  excel_get_overview: t('正在讀取活頁簿結構…'),
+  excel_get_selection: t('正在讀取選取範圍…'),
+  excel_read_range: t('正在讀取資料…'),
+  excel_search: t('正在搜尋…'),
+  excel_write_range: t('等待你確認寫入…'),
+  excel_manage_sheet: t('正在調整工作表…'),
+  excel_format_range: t('正在套用格式…'),
+  excel_create_chart: t('正在建立圖表…'),
+  excel_structure_op: t('等待你確認結構變更…'),
+  excel_table_ops: t('正在整理表格…'),
+  excel_create_pivot: t('等待你確認建立樞紐…'),
+  excel_trace_precedents: t('正在追蹤公式來源…'),
+  excel_sheet_style: t('正在調整版面…'),
+  excel_run_script: t('正在執行程式…'),
+});
 
 /**
  * What the model is doing BEFORE the call is dispatched.
@@ -662,29 +681,29 @@ const TOOL_LABEL = {
  * tool call is generation time — for excel_run_script that is the model writing
  * an entire script, and it is usually the longest single stretch of a turn.
  */
-const PREPARING_LABEL = {
-  excel_run_script: '正在寫程式…',
-  excel_write_range: '正在整理要寫入的資料…',
-  excel_create_chart: '正在設定圖表…',
-  excel_create_pivot: '正在設定樞紐分析表…',
-  excel_format_range: '正在決定格式…',
-  excel_manage_sheet: '正在準備工作表變更…',
-};
+const PREPARING_LABEL = () => ({
+  excel_run_script: t('正在寫程式…'),
+  excel_write_range: t('正在整理要寫入的資料…'),
+  excel_create_chart: t('正在設定圖表…'),
+  excel_create_pivot: t('正在設定樞紐分析表…'),
+  excel_format_range: t('正在決定格式…'),
+  excel_manage_sheet: t('正在準備工作表變更…'),
+});
 
 /** MCP tools arrive prefixed (`mcp__excel__excel_run_script`). */
 function preparingLabel(name) {
   const short = String(name).replace(/^mcp__excel__/, '');
-  return PREPARING_LABEL[short] || TOOL_LABEL[short] || `正在準備 ${short}…`;
+  return PREPARING_LABEL()[short] || TOOL_LABEL()[short] || t('正在準備 {0}…', short);
 }
 
-const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} 字元`);
+const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : t('{0} 字元', n || 0));
 
 async function handleToolRequest(payload) {
   const { callId, tool, args, needsConfirm, summary, meta } = payload;
   // Prefer the server's specific description ("讀取 工作表1!A1:AZ375") over the
   // generic per-tool label — it is the same line the confirmation card shows, so
   // the trace and the dialog agree about what happened.
-  setStatus(summary || TOOL_LABEL[tool] || `正在執行 ${tool}…`);
+  setStatus(summary || TOOL_LABEL()[tool] || t('正在執行 {0}…', tool));
 
   // Answered by a person, not by Office.js — so it is handled here and never
   // reaches executeTool. The bridge gives this call a human-scale timeout.
@@ -760,10 +779,10 @@ async function handleToolRequest(payload) {
     // halves matter: the person consented to something that did not happen, so the
     // line stays; but 「[PivotTableRangeConflict] 操作失敗…」 in red reads as a
     // crash. Grey line, plain words, raw message on hover.
-    if (result.ok === false) resolveCard(card, 'retry', '沒成功，AI 正在換方法', result.error || '執行失敗');
+    if (result.ok === false) resolveCard(card, 'retry', t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
     else resolveCard(card, 'ok', result.content || summary);
   } else if (result.ok === false) {
-    progressFailed('沒成功，AI 正在換方法', result.error || '執行失敗');
+    progressFailed(t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
   }
 
   await postToolResult(state.runId, callId, result);
@@ -774,7 +793,7 @@ async function handleToolRequest(payload) {
   // problem the tool was added to solve — and it explains the silent gap that
   // follows, which is the model reading all of it back in.
   const size = String(result.content || result.error || '').length;
-  if (size) progressDetail(`已讀入 ${fmtSize(size)} 的結果`);
+  if (size) progressDetail(t('已讀入 {0} 的結果', fmtSize(size)));
 }
 
 function updateUndoButton() {
@@ -800,14 +819,14 @@ function setSendMode(mode) {
   if (mode === 'stop') {
     btn.disabled = false;
     btn.classList.add('stopping');
-    btn.title = '停止（Esc）';
-    btn.setAttribute('aria-label', '停止 AI 工作');
+    btn.title = t('停止（Esc）');
+    btn.setAttribute('aria-label', t('停止 AI 工作'));
     ic.innerHTML = '<use href="#i-stop"/>';
   } else {
     btn.classList.remove('stopping');
     btn.disabled = !$('input').value.trim();
-    btn.title = '送出（Enter）';
-    btn.setAttribute('aria-label', '送出');
+    btn.title = t('送出（Enter）');
+    btn.setAttribute('aria-label', t('送出'));
     ic.innerHTML = '<use href="#i-send"/>';
   }
 }
@@ -827,7 +846,7 @@ function newConversation() {
   $('log').innerHTML = '';
   state.undoStack = [];
   updateUndoButton();
-  addNote('已開新對話。之前的紀錄留在 AI Agents Office 裡，這裡從頭開始。', 'note');
+  addNote(t('已開新對話。之前的紀錄留在 AI Agents Office 裡，這裡從頭開始。'), 'note');
 }
 
 // ── Conversation history ──────────────────────────────────────────────────────
@@ -844,7 +863,7 @@ async function openHistory() {
   if (!panel.hidden) { closeHistory(); return; }
   panel.hidden = false;
   $('history').setAttribute('aria-expanded', 'true');
-  $('hist-list').innerHTML = '<div class="hist-empty">載入中…</div>';
+  $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('載入中…'))}</div>`;
 
   if (!state.workbookKey) {
     // Minted on first send, so a workbook nobody has asked about yet has no id
@@ -859,17 +878,17 @@ async function openHistory() {
     const body = await res.json();
     const list = (body.conversations || []).filter(c => c.turns > 0);
     if (!list.length) {
-      $('hist-list').innerHTML = '<div class="hist-empty">這份活頁簿還沒有對話紀錄。</div>';
+      $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('這份活頁簿還沒有對話紀錄。'))}</div>`;
       return;
     }
     $('hist-list').innerHTML = list.map(c => `
       <button type="button" class="hist-item" data-id="${escapeHtml(c.id)}"
               aria-current="${c.status === 'active'}">
-        <span class="h-title">${escapeHtml(c.title || '未命名')}</span>
-        <span class="h-meta">${fmtWhen(c.created_at)} · ${c.turns} 則提問${c.status === 'active' ? ' · 目前' : ''}</span>
+        <span class="h-title">${escapeHtml(c.title || t('未命名'))}</span>
+        <span class="h-meta">${fmtWhen(c.created_at)} · ${escapeHtml(t('{0} 則提問', c.turns))}${c.status === 'active' ? ' · ' + escapeHtml(t('目前')) : ''}</span>
       </button>`).join('');
   } catch (e) {
-    $('hist-list').innerHTML = `<div class="hist-empty">讀不到紀錄：${escapeHtml(e.message)}</div>`;
+    $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('讀不到紀錄：{0}', e.message))}</div>`;
   }
 }
 
@@ -883,9 +902,9 @@ function fmtWhen(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  if (days === 0) return `今天 ${d.toTimeString().slice(0, 5)}`;
-  if (days === 1) return `昨天 ${d.toTimeString().slice(0, 5)}`;
-  if (days < 7) return `${days} 天前`;
+  if (days === 0) return t('今天 {0}', d.toTimeString().slice(0, 5));
+  if (days === 1) return t('昨天 {0}', d.toTimeString().slice(0, 5));
+  if (days < 7) return t('{0} 天前', days);
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
@@ -894,7 +913,7 @@ async function showPastConversation(id, title) {
   // Park the live transcript rather than rebuild it: it holds resolved cards and
   // notes that no server round trip would bring back.
   if (state.liveLog === null) state.liveLog = $('log').innerHTML;
-  $('log').innerHTML = '<div class="note">載入中…</div>';
+  $('log').innerHTML = `<div class="note">${escapeHtml(t('載入中…'))}</div>`;
   try {
     const res = await fetch(`${state.apiBase}/api/excel/conversations/${encodeURIComponent(id)}/messages`,
       { headers: { Authorization: `Bearer ${state.token}` } });
@@ -903,10 +922,10 @@ async function showPastConversation(id, title) {
     $('log').innerHTML = '';
     const bar = document.createElement('div');
     bar.className = 'hist-banner';
-    bar.innerHTML = `<span>${escapeHtml(title || '過往紀錄')}（唯讀）</span>`;
+    bar.innerHTML = `<span>${escapeHtml(title || t('過往紀錄'))}${escapeHtml(t('（唯讀）'))}</span>`;
     const back = document.createElement('button');
     back.type = 'button';
-    back.textContent = '回到目前對話';
+    back.textContent = t('回到目前對話');
     back.addEventListener('click', backToLive);
     bar.appendChild(back);
     $('log').appendChild(bar);
@@ -914,7 +933,7 @@ async function showPastConversation(id, title) {
     scrollDown();
   } catch (e) {
     $('log').innerHTML = '';
-    addNote(`讀不到這段紀錄：${e.message}`, 'err');
+    addNote(t('讀不到這段紀錄：{0}', e.message), 'err');
     backToLive();
   }
 }
@@ -928,7 +947,7 @@ function backToLive() {
 
 function stopRun() {
   if (!state.streaming || !state.abort) return;
-  progressStep('停止中…');
+  progressStep(t('停止中…'));
   try { state.abort.abort(); } catch { /* already gone */ }
 }
 
@@ -941,7 +960,7 @@ async function send(message) {
 
   backToLive();
   addBubble('user', message);
-  progressStep('連線到伺服器…');
+  progressStep(t('連線到伺服器…'));
 
   let bubble = null;
   let text = '';
@@ -993,15 +1012,31 @@ async function send(message) {
         workbookKey: state.workbookKey || undefined,
         newConversation: state.startFresh || undefined,
         model: state.model || undefined,
+        locale: state.locale || undefined,
         clientTools: supportedTools(),
         dataSources: state.sources,
       }),
     });
 
-    if (res.status === 401) { logout('登入已過期，請重新登入。'); return; }
+    // 401 and 403 both mean this token is finished — expired, suspended or
+    // deleted. The server says which, and its sentence is the useful one:
+    // 「登入已過期」 sends someone to sign in again, which is exactly the wrong
+    // advice when their account was disabled.
+    if (res.status === 401 || res.status === 403) {
+      const err = await res.json().catch(() => ({}));
+      // Not every 403 is the end of the session — hitting the monthly usage cap
+      // is one too, and signing someone out over a quota would be absurd. The
+      // codes below are the ones that mean this token will never work again.
+      if (res.status === 401 || err.code === 'SUSPENDED' || err.code === 'ACCOUNT_GONE') {
+        logout(err.error || t('登入已過期，請重新登入。'));
+      } else {
+        addNote(err.error || t('伺服器錯誤 ({0})', res.status), 'err');
+      }
+      return;
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      addNote(err.error || `伺服器錯誤 (${res.status})`, 'err');
+      addNote(err.error || t('伺服器錯誤 ({0})', res.status), 'err');
       return;
     }
 
@@ -1025,7 +1060,7 @@ async function send(message) {
 
           if (ev.type === 'spawn_started') {
             // The concurrency/auth queue let go and the CLI process actually started.
-            progressStep('AI 啟動中…');
+            progressStep(t('AI 啟動中…'));
           } else if (ev.type === 'tool_activity') {
             // Three different things arrive on this event, and dropping the last
             // two is what made a 42-second wait look like a frozen spinner: the
@@ -1042,9 +1077,9 @@ async function send(message) {
             if (t === 'ToolSearch') {
               // The CLI loading the deferred MCP tools — the single longest step
               // of the opening gap, so it gets named rather than hidden.
-              progressStep('載入 Excel 工具…');
+              progressStep(t('載入 Excel 工具…'));
             } else if (d.status === 'writing') {
-              progressDetail(`已寫出 ${fmtSize(d.chars)}`);
+              progressDetail(t('已寫出 {0}', fmtSize(d.chars)));
             } else if (d.status === 'running' && t) {
               progressStep(preparingLabel(t));
             }
@@ -1086,9 +1121,9 @@ async function send(message) {
     }
   } catch (e) {
     if (e && e.name === 'AbortError') {
-      addNote('已停止。已經做完的部分留在活頁簿裡，需要的話可以用上方的復原鍵退回。', 'note');
+      addNote(t('已停止。已經做完的部分留在活頁簿裡，需要的話可以用上方的復原鍵退回。'), 'note');
     } else {
-      addNote(`連線失敗：${e.message}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 ${location.origin}。`, 'err');
+      addNote(t('連線失敗：{0}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 {1}。', e.message, location.origin), 'err');
     }
   } finally {
     state.streaming = false;
@@ -1134,14 +1169,10 @@ async function loginAd(username, password, domain, apiBase) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `登入失敗 (${res.status})`);
-  if (body.firstLogin) {
-    throw new Error(
-      '這是你第一次用 AD 帳號登入，請先到 AI Agents Office 網頁版'
-      + (state.webUrl ? `（${state.webUrl}）` : '')
-      + '完成首次設定，再回來登入。',
-    );
-  }
-  return body.token;
+  // Not an error. The server hands back a 30-minute session token precisely so
+  // the caller can finish the sign-up itself; see showSetup().
+  if (body.firstLogin) return { setup: body.adSessionToken, adUser: body.adUser || {} };
+  return { token: body.token };
 }
 
 /** Draw the sign-in form the server actually accepts. */
@@ -1200,7 +1231,6 @@ async function loadAuthMode() {
     // here rather than requiring someone to redeploy config.json.
     revealServerField(`連不上伺服器 ${state.apiBase}，請確認位址或聯繫管理者。`);
   }
-  state.webUrl = mode.webUrl || '';
   $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
   setLoginMode(mode.adLogin ? 'ad' : 'email');
 }
@@ -1215,6 +1245,7 @@ function logout(reason) {
 function showLogin(msg) {
   $('login').classList.add('show');
   $('chat').classList.remove('show');
+  $('setup').classList.remove('show');
   $('login-error').textContent = msg || '';
   $('api-base').value = state.apiBase;
   void (async () => { await loadConfig(); await loadAuthMode(); })();
@@ -1222,12 +1253,194 @@ function showLogin(msg) {
 
 function showChat() {
   $('login').classList.remove('show');
+  $('setup').classList.remove('show');
   $('chat').classList.add('show');
   updateUndoButton();
   updateApproveToggle();
   renderModelMenu();
   renderSourceMenu();
   void loadDataSources();
+}
+
+/**
+ * First-time AD sign-up, done here rather than in the web app.
+ *
+ * The server issues a 30-minute ad_session token on first login and exposes the
+ * two endpoints that consume it, so nothing new was needed on that side. What
+ * this replaces is a redirect: someone who installed an Excel add-in and typed
+ * their work password should not be told to go and log in to a different
+ * product before their spreadsheet will answer them.
+ *
+ * There are two ways this can end. Normally the AD mail is unused and a single
+ * POST creates the account. If that mail already belongs to an account someone
+ * registered by email, the server refuses (USE_CLAIM_FLOW) and a code has to go
+ * to that mailbox first — the one case where proving it is the same person
+ * cannot be skipped.
+ */
+function showSetup(sessionToken, adUser) {
+  setupState = { sessionToken, adUser, claiming: false, sent: false, email: '' };
+  $('login').classList.remove('show');
+  $('chat').classList.remove('show');
+  $('setup').classList.add('show');
+
+  const rows = [
+    ['工號', adUser.username],
+    ['組織', adUser.domain],
+    ['信箱', adUser.mail],
+    ['部門', adUser.department],
+  ].filter(([, v]) => v);
+  $('setup-who').innerHTML = rows
+    .map(([k, v]) => `<div><span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(String(v))}</span></div>`).join('');
+
+  $('setup-name').value = adUser.displayName || adUser.username || '';
+  $('setup-claim').hidden = true;
+  $('setup-code-field').hidden = true;
+  $('setup-code').value = '';
+  $('setup-error').textContent = '';
+  $('setup-go').textContent = '建立帳號並開始使用';
+  initIntro();
+}
+
+/**
+ * The four-slide intro above the sign-up form.
+ *
+ * Pointer events rather than touch events, so a trackpad drag, a touchscreen
+ * swipe and a mouse drag are all the same code path — Excel runs on all three.
+ * A drag past a quarter of the pane advances; anything less snaps back, which
+ * is the threshold that stops a scroll gesture from being read as a swipe.
+ *
+ * No auto-advance. Text that moves while you are reading it is text you have to
+ * read twice, and this sits directly above a form someone is trying to fill in.
+ */
+function initIntro() {
+  const track = $('intro-track');
+  const dots = $('intro-dots');
+  const count = track.children.length;
+  if (intro.bound) { go(0); return; }
+
+  function go(i) {
+    intro.at = Math.max(0, Math.min(count - 1, i));
+    track.style.transform = `translateX(calc(${-intro.at * 100}% - ${intro.at} * var(--slide-gap)))`;
+    for (const [n, d] of [...dots.children].entries()) d.setAttribute('aria-selected', String(n === intro.at));
+  }
+
+  dots.innerHTML = Array.from({ length: count }, (_, i) =>
+    `<button type="button" class="intro-dot" role="tab" data-i="${i}" aria-label="第 ${i + 1} 頁"></button>`).join('');
+  dots.addEventListener('click', (e) => {
+    const d = e.target.closest('.intro-dot');
+    if (d) go(Number(d.dataset.i));
+  });
+
+  let x0 = null, w = 1;
+  track.addEventListener('pointerdown', (e) => {
+    x0 = e.clientX; w = track.clientWidth || 1;
+    track.classList.add('dragging');
+    track.setPointerCapture(e.pointerId);
+  });
+  track.addEventListener('pointermove', (e) => {
+    if (x0 === null) return;
+    const dx = (e.clientX - x0) / w * 100;
+    track.style.transform = `translateX(calc(${-intro.at * 100 + dx}% - ${intro.at} * var(--slide-gap)))`;
+  });
+  const end = (e) => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0;
+    x0 = null;
+    track.classList.remove('dragging');
+    go(Math.abs(dx) > w / 4 ? intro.at + (dx < 0 ? 1 : -1) : intro.at);
+  };
+  track.addEventListener('pointerup', end);
+  track.addEventListener('pointercancel', end);
+
+  $('setup').addEventListener('keydown', (e) => {
+    // Only when the arrows are not doing something better — inside a text field
+    // they move the caret, and stealing that would be maddening.
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); go(intro.at + 1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); go(intro.at - 1); }
+  });
+
+  intro.bound = true;
+  intro.go = go;
+  go(0);
+}
+
+/** Carousel position, kept outside initIntro so a re-entry does not re-bind. */
+const intro = { at: 0, bound: false, go: null };
+
+/** Only alive between showSetup() and the account existing. */
+let setupState = null;
+
+async function postSetup(path, body) {
+  const res = await fetch(`${state.apiBase}/api/auth/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adSessionToken: setupState.sessionToken, ...body }),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+function finishSetup(token) {
+  state.token = token;
+  localStorage.setItem(LS_TOKEN, token);
+  setupState = null;
+  showChat();
+  addNote('帳號建立好了，可以開始問了。', 'ok');
+}
+
+async function runSetup() {
+  const err = $('setup-error');
+  const go = $('setup-go');
+  err.textContent = '';
+  go.disabled = true;
+  try {
+    if (!setupState.claiming) {
+      const r = await postSetup('ad/register', { displayName: $('setup-name').value.trim() });
+      if (r.ok) { finishSetup(r.data.token); return; }
+      if (r.data.code === 'USE_CLAIM_FLOW') {
+        // No AD mail means there is no mailbox to send a code to, so the
+        // conflict cannot be resolved from here. Rare enough to be worth one
+        // honest sentence rather than a flow nobody will ever reach.
+        if (!setupState.adUser.mail) throw new Error('這個帳號和現有帳號衝突，AD 上又沒有信箱可以驗證，請聯繫管理者處理。');
+        setupState.claiming = true;
+        setupState.email = setupState.adUser.mail;
+        $('setup-claim').hidden = false;
+        $('setup-claim-note').textContent =
+          `${setupState.email} 已經有一個用信箱註冊的帳號。寄一組驗證碼過去，確認是本人後就把它接起來，原本的資料都會留著。`;
+        go.textContent = '寄驗證碼';
+        return;
+      }
+      throw new Error(r.data.error || `建立失敗（${r.status}）`);
+    }
+
+    if (!setupState.sent) {
+      const r = await postSetup('ad/claim/request', { claimEmail: setupState.email });
+      if (!r.ok) throw new Error(r.data.error || `寄送失敗（${r.status}）`);
+      setupState.sent = true;
+      $('setup-code-field').hidden = false;
+      $('setup-claim-note').textContent = `驗證碼寄到 ${setupState.email} 了，15 分鐘內有效。`;
+      go.textContent = '確認並開始使用';
+      $('setup-code').focus();
+      return;
+    }
+
+    const code = $('setup-code').value.trim();
+    if (!code) throw new Error('請輸入驗證碼。');
+    const r = await postSetup('ad/claim/verify', { claimEmail: setupState.email, code });
+    if (r.ok) { finishSetup(r.data.token); return; }
+    // An expired or exhausted code cannot be retried — send a new one.
+    if (r.data.expired) {
+      setupState.sent = false;
+      $('setup-code-field').hidden = true;
+      go.textContent = '重寄驗證碼';
+    }
+    throw new Error(r.data.error || `驗證失敗（${r.status}）`);
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    go.disabled = false;
+  }
 }
 
 /**
@@ -1260,7 +1473,7 @@ function fillDomainOptions() {
   sel.value = AD_DOMAINS.some(d => d.value === saved) ? saved : AD_DOMAINS[0].value;
 }
 
-const SOURCE_NAMES = { web: '搜尋網路', email: '郵件', km: 'KM' };
+const SOURCE_NAMES = () => ({ web: t('搜尋網路'), email: t('郵件'), km: 'KM' });
 /** Sources that need no account link, so the menu never greys them out. */
 const ALWAYS_AVAILABLE = new Set(['web']);
 const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
@@ -1289,7 +1502,7 @@ function renderSelChip() {
   chip.hidden = !show;
   if (show) {
     $('sel-label').textContent = sel.sheet ? `${sel.sheet}!${sel.label}` : sel.label;
-    chip.title = `這則訊息會一起送出你選取的 ${sel.label}，讓 AI 知道你指的是哪裡。點 × 可以不帶。`;
+    chip.title = t('這則訊息會一起送出你選取的 {0}，讓 AI 知道你指的是哪裡。點 × 可以不帶。', sel.label);
   }
 }
 
@@ -1311,7 +1524,7 @@ function setSheetName(name) {
   state.sheetName = name || '';
   const el = $('wb-sheet');
   el.textContent = state.sheetName;
-  el.title = state.sheetName ? `目前的工作表：${state.sheetName}` : '';
+  el.title = state.sheetName ? t('目前的工作表：{0}', state.sheetName) : '';
   el.hidden = !state.sheetName;
 }
 /**
@@ -1330,8 +1543,8 @@ function updateApproveToggle() {
   // anyone is likely to drag to. With only two states, naming the current one and
   // saying it toggles is unambiguous; what each mode actually means is spelled out
   // in the transcript the moment it changes.
-  btn.dataset.tip = on ? '自動允許，點一下切換' : '每次確認，點一下切換';
-  btn.setAttribute('aria-label', on ? '目前是自動允許，點一下改回每次確認' : '目前是每次確認，點一下改成自動允許');
+  btn.dataset.tip = on ? t('自動允許，點一下切換') : t('每次確認，點一下切換');
+  btn.setAttribute('aria-label', on ? t('目前是自動允許，點一下改回每次確認') : t('目前是每次確認，點一下改成自動允許'));
 }
 
 /**
@@ -1349,13 +1562,13 @@ function renderSourceMenu() {
     const usable = ALWAYS_AVAILABLE.has(key) || !!state.available[key];
     item.disabled = !usable;
     item.setAttribute('aria-checked', String(usable && state.sources.includes(key)));
-    item.title = usable ? '' : (state.sourceHint || `${SOURCE_NAMES[key]} 尚未連結`);
+    item.title = usable ? '' : (state.sourceHint || t('{0} 尚未連結', SOURCE_NAMES()[key]));
   }
   const on = state.sources.length > 0;
   $('plus').classList.toggle('has-src', on);
   $('src-note').textContent = on
-    ? `這個對話可以讀取：${sourceLabel(state.sources)}（唯讀）。`
-    : '開啟後，這個對話可以讀取這些來源（唯讀）。';
+    ? t('這個對話可以讀取：{0}（唯讀）。', sourceLabel(state.sources))
+    : t('開啟後，這個對話可以讀取這些來源（唯讀）。');
 }
 
 /**
@@ -1386,6 +1599,24 @@ function renderModelMenu() {
     </button>`).join('');
 }
 
+function renderLangMenu() {
+  const current = LOCALES.find(l => l.id === state.locale) || LOCALES[0];
+  $('lang-menu').innerHTML = LOCALES.map(l => `
+    <button type="button" class="lang-item" role="menuitemradio" data-id="${escapeHtml(l.id)}"
+            aria-checked="${l.id === current.id}">
+      ${escapeHtml(l.id ? l.label : t(l.label))}
+      ${l.note ? `<span class="l-note">${escapeHtml(t(l.note))}</span>` : ''}
+    </button>`).join('');
+}
+
+function toggleLangMenu(show) {
+  const menu = $('lang-menu');
+  const open = show === undefined ? menu.hidden : show;
+  if (open) renderLangMenu();
+  menu.hidden = !open;
+  $('lang').setAttribute('aria-expanded', String(open));
+}
+
 function toggleModelMenu(show) {
   const menu = $('model-menu');
   const open = show === undefined ? menu.hidden : show;
@@ -1408,12 +1639,12 @@ async function loadDataSources() {
       headers: { Authorization: `Bearer ${state.token}` },
     });
     if (!res.ok) {
-      state.sourceHint = `無法向伺服器確認資料來源（HTTP ${res.status}）。`;
+      state.sourceHint = t('無法向伺服器確認資料來源（HTTP {0}）。', res.status);
     } else {
       const body = await res.json();
       if (!body.dataSources) {
         // An older server build that predates this endpoint's response shape.
-        state.sourceHint = '伺服器尚未套用更新，請重新啟動 server 後再試。';
+        state.sourceHint = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
       } else {
         state.available = body.dataSources;
         // Older servers do not send this; the picker then hides itself rather
@@ -1423,7 +1654,7 @@ async function loadDataSources() {
       }
     }
   } catch (e) {
-    state.sourceHint = `連不上伺服器（${e.message}）。`;
+    state.sourceHint = t('連不上伺服器（{0}）。', e.message);
   }
   renderSourceMenu();
   renderModelMenu();
@@ -1439,14 +1670,16 @@ function autoGrow(el) {
 
 Office.onReady(async (info) => {
   if (info.host !== Office.HostType.Excel) {
-    document.body.innerHTML = '<p style="padding:16px">這個增益集只能在 Excel 中使用。</p>';
+    document.body.innerHTML = `<p style="padding:16px">${escapeHtml(t('這個增益集只能在 Excel 中使用。'))}</p>`;
     return;
   }
 
+  setLocale(state.locale);
+  applyStaticText();
   fillDomainOptions();
 
   try { state.workbookName = await getWorkbookName(); } catch { /* non-fatal */ }
-  $('wb-name').textContent = state.workbookName || '（未命名活頁簿）';
+  $('wb-name').textContent = state.workbookName || t('（未命名活頁簿）');
   $('wb-name').title = state.workbookName || '';
 
   try { setSheetName(await getActiveSheetName()); } catch { /* non-fatal */ }
@@ -1470,13 +1703,15 @@ Office.onReady(async (info) => {
     const typed = $('api-base-field').hidden ? '' : $('api-base').value.trim().replace(/\/+$/, '');
     const apiBase = typed || state.apiBase || DEFAULT_API_BASE;
     try {
-      const token = state.loginMode === 'ad'
+      const r = state.loginMode === 'ad'
         ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value, apiBase)
-        : await login($('email').value.trim(), $('password').value, apiBase);
-      state.token = token; state.apiBase = apiBase;
-      localStorage.setItem(LS_TOKEN, token);
+        : { token: await login($('email').value.trim(), $('password').value, apiBase) };
+      state.apiBase = apiBase;
       if (typed) localStorage.setItem(LS_API_OVERRIDE, typed);
       if (state.loginMode === 'ad') localStorage.setItem(LS_DOMAIN, $('ad-domain').value);
+      if (r.setup) { showSetup(r.setup, r.adUser); return; }
+      state.token = r.token;
+      localStorage.setItem(LS_TOKEN, r.token);
       showChat();
     } catch (err) {
       $('login-error').textContent = err.message;
@@ -1503,6 +1738,7 @@ Office.onReady(async (info) => {
     // The menu first: Esc should back out of whatever is on top, and closing a
     // menu is not what someone means when they are trying to call off a run.
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
+    if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
@@ -1535,10 +1771,36 @@ Office.onReady(async (info) => {
     updateUndoButton();
     try {
       await restoreSnapshot(snap);
-      addNote(`已復原 ${snap.sheet}!${snap.address}`, 'ok');
+      addNote(t('已復原 {0}', `${snap.sheet}!${snap.address}`), 'ok');
     } catch (e) {
-      addNote(`復原失敗：${e.message}`, 'err');
+      addNote(t('復原失敗：{0}', e.message), 'err');
     }
+  });
+
+  $('setup-form').addEventListener('submit', (e) => { e.preventDefault(); void runSetup(); });
+  $('setup-back').addEventListener('click', () => { setupState = null; showLogin(); });
+
+  $('lang').addEventListener('click', () => { closeHistory(); toggleLangMenu(); });
+
+  $('lang-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('.lang-item');
+    if (!item) return;
+    state.locale = item.dataset.id;
+    localStorage.setItem(LS_LOCALE, state.locale);
+    setLocale(state.locale);
+    // Everything already on screen too, not just what gets drawn next: a pane
+    // half in one language is worse than a pane wholly in the wrong one.
+    applyStaticText();
+    renderSourceMenu();
+    updateApproveToggle();
+    renderSelChip();
+    toggleLangMenu(false);
+    const l = LOCALES.find(x => x.id === state.locale) || LOCALES[0];
+    // In the transcript, because the change applies from the next message on and
+    // the reply arriving in a different language should have a visible cause.
+    addNote(state.locale
+      ? t('之後的回覆會用{0}。活頁簿裡既有的資料不會被翻譯。', l.label)
+      : t('之後的回覆會跟著你帳號的語言設定。'), 'note');
   });
 
   $('model-btn').addEventListener('click', () => { toggleSourceMenu(false); toggleModelMenu(); });
@@ -1551,7 +1813,7 @@ Office.onReady(async (info) => {
     renderModelMenu();
     toggleModelMenu(false);
     const m = state.models.find(x => x.id === state.model);
-    addNote(`已改用 ${m ? m.label : state.model}。${m && m.note ? m.note + '。' : ''}`, 'note');
+    addNote(t('已改用 {0}。{1}', m ? m.label : state.model, m && m.note ? m.note + '。' : ''), 'note');
   });
 
   $('plus').addEventListener('click', () => { toggleModelMenu(false); toggleSourceMenu(); });
@@ -1567,8 +1829,8 @@ Office.onReady(async (info) => {
     // In the transcript as well as the menu: this changes what the agent can
     // reach, and someone scrolling back should be able to see when it changed.
     addNote(state.sources.includes(key)
-      ? `已開啟${SOURCE_NAMES[key]}，這個對話可以讀取它（唯讀）。`
-      : `已關閉${SOURCE_NAMES[key]}。`, 'note');
+      ? t('已開啟{0}，這個對話可以讀取它（唯讀）。', SOURCE_NAMES()[key])
+      : t('已關閉{0}。', SOURCE_NAMES()[key]), 'note');
   });
 
   // Click-away closes it. A menu that can only be dismissed by the button that
@@ -1576,6 +1838,9 @@ Office.onReady(async (info) => {
   document.addEventListener('click', (e) => {
     if (!$('hist-panel').hidden && !e.target.closest('#hist-panel') && !e.target.closest('#history')) {
       closeHistory();
+    }
+    if (!$('lang-menu').hidden && !e.target.closest('#lang-menu') && !e.target.closest('#lang')) {
+      toggleLangMenu(false);
     }
     if (!$('model-menu').hidden && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
       toggleModelMenu(false);
@@ -1600,8 +1865,8 @@ Office.onReady(async (info) => {
     // on should read once what they are turning off; someone scrolling back
     // should be able to see when it changed.
     addNote(state.autoApprove
-      ? '已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。'
-      : '已改回每次確認：AI 要修改活頁簿前都會先問過你。', 'note');
+      ? t('已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。')
+      : t('已改回每次確認：AI 要修改活頁簿前都會先問過你。'), 'note');
   });
 
   $('history').addEventListener('click', () => { void openHistory(); });
@@ -1623,7 +1888,7 @@ Office.onReady(async (info) => {
     if (!a) return;
     e.preventDefault();
     const ok = await selectCell(a.dataset.sheet, a.dataset.addr);
-    if (!ok) addNote(`找不到工作表「${a.dataset.sheet}」`, 'err');
+    if (!ok) addNote(t('找不到工作表「{0}」', a.dataset.sheet), 'err');
   });
 
   // External links open in the real browser. Letting one navigate the pane would

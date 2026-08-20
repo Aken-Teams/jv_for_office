@@ -23,6 +23,7 @@
   --bg-chrome: #faf9f8;
   --surface: #f3f2f1;
   --surface-hover: #ebe9e7;
+  --slide-gap: 12px;
   --fg: #1b1a19;
   --fg-muted: #605e5c;      /* Fluent's secondary text — 7:1 on white, unlike the grey-400 everyone reaches for */
   --fg-subtle: #8a8886;
@@ -120,7 +121,11 @@ body {
 .brand-mark-xl { height: 40px; margin: 0 auto 12px; }
 
 .brand { display: flex; align-items: center; gap: 8px; color: var(--accent); min-width: 0; }
-.brand-name { font-weight: 600; font-size: 14px; color: var(--fg); letter-spacing: -.01em; }
+/* The wordmark yields before the buttons do. Six of them at 350px leaves the
+   brand about 80px, and a truncated name costs nothing next to a control that
+   has been pushed out of the pane. */
+.brand-name { font-weight: 600; font-size: 14px; color: var(--fg); letter-spacing: -.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand-lg .brand-name { font-size: 20px; }
 .brand-sub { font-size: 12px; color: var(--fg-muted); margin-top: -3px; }
 
@@ -192,6 +197,122 @@ button:disabled { cursor: default; }
 }
 .btn-primary:hover { background: var(--accent-hover); }
 @media (prefers-color-scheme: dark) { .btn-primary { color: #10281b; } }
+
+/* ── First-run setup ─────────────────────────────────────────────────────── */
+
+/* The pane is one screen tall and this is the one view with more than fits.
+   Scrolling the whole thing beats shrinking the type until nobody reads it. */
+.setup-scroll { flex: 1; overflow-y: auto; padding: 18px 16px 22px; }
+.setup-scroll::-webkit-scrollbar { width: 10px; }
+.setup-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid var(--bg); border-radius: 5px; }
+.setup-brand { margin-bottom: 16px; }
+
+/* Intro carousel.
+
+   The track bleeds to the pane edges while its padding keeps the cards inset,
+   so the next card peeks out of the gutter instead of butting flush against
+   this one. That peek is the only thing that says "there is more this way"
+   before anyone has touched it. */
+.intro { margin: 0 -16px 18px; padding: 0 16px; overflow: hidden; }
+.intro-track {
+  display: flex; gap: var(--slide-gap); touch-action: pan-y;
+  transition: transform 340ms cubic-bezier(.22, .61, .36, 1);
+}
+.intro-track.dragging { transition: none; }
+
+/* One card per slide, each tinted differently — four grey-green cards in a row
+   read as one long card, and the swipe stops looking like it did anything. The
+   hues stay in Office's range: this sits inside Excel, not next to it. */
+.slide {
+  flex: 0 0 100%; min-width: 0;
+  padding: 16px; border-radius: 14px;
+  border: 1px solid var(--slide-line);
+  background: linear-gradient(155deg, var(--slide-bg), var(--bg) 150%);
+  user-select: none;
+}
+.slide:nth-child(1) { --slide-bg: #eaf5ee; --slide-line: #cbe6d6; --slide-ic: #107c41; }
+.slide:nth-child(2) { --slide-bg: #eaf2fb; --slide-line: #cddff5; --slide-ic: #0f6cbd; }
+.slide:nth-child(3) { --slide-bg: #fdf3e6; --slide-line: #f2e0c2; --slide-ic: #a4650b; }
+.slide:nth-child(4) { --slide-bg: #f3f0fa; --slide-line: #ded6f0; --slide-ic: #6b3fa0; }
+
+/* The icon gets its own tile. Floating on the tint it disappeared; on a solid
+   chip it is the first thing the eye lands on, which is what an intro wants. */
+.slide-tile {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; margin-bottom: 12px;
+  border-radius: 9px; background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+}
+.slide-ic { width: 18px; height: 18px; color: var(--slide-ic); }
+.slide h3 { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 7px; letter-spacing: -.01em; }
+.slide p { font-size: 12.5px; line-height: 1.8; color: var(--fg-muted); }
+
+/* Three concrete things under the sentence that describes them. Wrapping chips
+   rather than a fixed row, because the same three words are a third longer in
+   English and a fixed row would clip them. */
+.slide-feats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+.feat {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px 4px 7px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--slide-line);
+  font-size: 11.5px; color: var(--fg);
+}
+.feat svg { width: 13px; height: 13px; color: var(--slide-ic); flex: none; }
+
+@media (prefers-color-scheme: dark) {
+  .slide:nth-child(1) { --slide-bg: #16261d; --slide-line: #27412f; --slide-ic: #4ec98a; }
+  .slide:nth-child(2) { --slide-bg: #152130; --slide-line: #26384f; --slide-ic: #62aeea; }
+  .slide:nth-child(3) { --slide-bg: #2a2114; --slide-line: #45351f; --slide-ic: #dda94a; }
+  .slide:nth-child(4) { --slide-bg: #211c2e; --slide-line: #372d49; --slide-ic: #ac92dd; }
+  .slide-tile { box-shadow: none; }
+}
+
+/* Dots are the affordance — without them a carousel that has not moved yet
+   looks like a card, and nobody swipes a card. */
+.intro-dots { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
+.intro-dot {
+  width: 6px; height: 6px; border-radius: 50%; padding: 0;
+  background: var(--line-strong);
+  transition: width var(--speed), background var(--speed);
+}
+.intro-dot[aria-selected="true"] { width: 18px; border-radius: 3px; background: var(--accent); }
+
+.setup-card {
+  padding: 16px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--bg);
+}
+.setup-lead { font-size: 13px; color: var(--fg); margin-bottom: 12px; }
+
+/* What the directory says about you, shown before an account is made from it —
+   so the first thing this add-in does with your identity is let you check it. */
+.setup-who {
+  margin-bottom: 14px; padding: 10px 12px;
+  border-radius: var(--radius-sm); background: var(--surface);
+}
+.setup-who div {
+  display: flex; gap: 10px;
+  font-size: 12px; color: var(--fg-muted); line-height: 1.85;
+}
+/* Fixed-width keys so the values line up in a column. Four rows of ragged
+   colons is the difference between a form and a printout. */
+.setup-who .k { flex: 0 0 44px; }
+.setup-who .v { color: var(--fg); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.setup-label { display: block; }
+.setup-note { margin: 4px 0 10px; font-size: 12px; color: var(--fg-muted); line-height: 1.7; }
+.btn-block { display: block; width: 100%; margin-top: 4px; }
+
+/* Secondary action under a primary one. No fill, so there is never a question
+   about which of the two buttons is the way forward. */
+.btn-ghost {
+  width: 100%; margin-top: 8px; padding: 8px 14px;
+  border-radius: var(--radius-sm); background: transparent;
+  color: var(--fg-muted); font-size: 12.5px;
+}
+.btn-ghost:hover { background: var(--surface-hover); color: var(--fg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .intro-track { transition: none; }
+}
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 
@@ -299,6 +420,25 @@ header .actions { display: flex; gap: 2px; flex: none; }
   background: var(--accent); border-color: var(--accent); color: #fff;
 }
 @media (prefers-color-scheme: dark) { .src-toggle[aria-pressed="true"] { color: #10281b; } }
+
+/* Reply language. Right-aligned under its own button rather than full width
+   like the history panel — this is a short list of short words, and a panel
+   stretched across the pane for seven items would look like a mistake. */
+.lang-menu {
+  position: absolute; top: 44px; right: 8px; z-index: 40;
+  min-width: 150px; padding: 5px;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.lang-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 9px; border-radius: 7px; font-size: 12.5px; color: var(--fg);
+  transition: background var(--speed);
+}
+.lang-item:hover { background: var(--surface-hover); }
+.lang-item[aria-checked="true"] { color: var(--accent); font-weight: 600; }
+.lang-item .l-note { display: block; font-size: 11px; color: var(--fg-muted); font-weight: 400; margin-top: 1px; }
 
 /* Conversation history for this workbook. Sits under the header, full width. */
 .hist-panel {

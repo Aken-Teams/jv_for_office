@@ -159,6 +159,101 @@
     </div>
   </section>
 
+  <!-- ── First-time AD setup ──
+       Not a redirect to the web app. Everything below is one POST that the
+       server already exposes; sending someone out to a different product to
+       finish signing in to this one reads as "you have to use that first",
+       which is exactly what it should not read as.
+
+       The intro carousel is here and only here. This is the one moment we know
+       for certain the person has never used this before — putting the pitch
+       anywhere else would mean showing it to people who already know. -->
+  <section id="setup" class="pane">
+    <div class="setup-scroll">
+      <div class="brand setup-brand">
+        <img class="brand-mark" src="../../assets/logo.png" alt="JVision" />
+        <div>
+          <div class="brand-name">JVision</div>
+          <div class="brand-sub">for Excel</div>
+        </div>
+      </div>
+
+      <!-- Swipe, drag, arrow keys or the dots. Four slides, because a fifth is
+           where an intro stops being read. -->
+      <div id="intro" class="intro" aria-roledescription="carousel">
+        <div id="intro-track" class="intro-track">
+          <article class="slide" aria-label="1 / 4">
+            <span class="slide-tile"><svg class="slide-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-sheet"/></svg></span>
+            <h3>在 Excel 裡直接問</h3>
+            <p>不用切視窗，也不用把資料複製到別的地方。選一段儲存格，用講的就好。</p>
+          <div class="slide-feats">
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-select"/></svg>選了就懂</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>用問的</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-sheet"/></svg>就地作答</span>
+          </div>
+          </article>
+          <article class="slide" aria-label="2 / 4">
+            <span class="slide-tile"><svg class="slide-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-select"/></svg></span>
+            <h3>它看得懂這張表</h3>
+            <p>讀得到儲存格、公式和你選取的範圍。可以解釋這張表在算什麼、幫你找出壞掉的公式。</p>
+          <div class="slide-feats">
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-link"/></svg>追公式來源</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>揪出錯誤</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg>解釋算法</span>
+          </div>
+          </article>
+          <article class="slide" aria-label="3 / 4">
+            <span class="slide-tile"><svg class="slide-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg></span>
+            <h3>動手前都會問過你</h3>
+            <p>寫公式、排版、做圖表和樞紐分析表都做得到。每一次要動你的活頁簿之前都會先問，做完也還能復原。</p>
+          <div class="slide-feats">
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>先問過你</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-undo"/></svg>隨時復原</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-stop"/></svg>隨時喊停</span>
+          </div>
+          </article>
+          <article class="slide" aria-label="4 / 4">
+            <span class="slide-tile"><svg class="slide-ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg></span>
+            <h3>同一個帳號，還有網頁版</h3>
+            <p>AI Agents Office 在瀏覽器上幫你產出文件、簡報和報告。這裡建立的帳號兩邊共用。</p>
+          <div class="slide-feats">
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-globe"/></svg>瀏覽器就能用</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-mail"/></svg>讀得到郵件</span>
+            <span class="feat"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>紀錄共用</span>
+          </div>
+          </article>
+        </div>
+        <div id="intro-dots" class="intro-dots" role="tablist" aria-label="介紹"></div>
+      </div>
+
+      <div class="setup-card">
+        <p class="setup-lead">第一次使用，先幫你把帳號建起來。</p>
+        <div id="setup-who" class="setup-who"></div>
+
+        <form id="setup-form" novalidate>
+          <label class="setup-label">顯示名稱
+            <input id="setup-name" type="text" autocomplete="name" spellcheck="false" />
+          </label>
+
+          <!-- Only appears when the AD mail already belongs to an email-registered
+               account. Then a code is the only safe way to prove it is the same
+               person, so we ask for one here rather than handing the problem off. -->
+          <div id="setup-claim" hidden>
+            <p class="setup-note" id="setup-claim-note"></p>
+            <label id="setup-code-field" class="setup-label" hidden>驗證碼
+              <input id="setup-code" type="text" inputmode="numeric" autocomplete="one-time-code"
+                     spellcheck="false" maxlength="6" />
+            </label>
+          </div>
+
+          <button type="submit" id="setup-go" class="btn-primary btn-block">建立帳號並開始使用</button>
+          <button type="button" id="setup-back" class="btn-ghost">回登入</button>
+          <div id="setup-error" class="err-text" role="alert"></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
   <!-- ── Chat ── -->
   <section id="chat" class="pane">
     <header>
@@ -174,18 +269,22 @@
         <button id="approve-mode" class="icon-btn" aria-pressed="false">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg>
         </button>
-        <button id="history" class="icon-btn" data-tip="這份活頁簿的對話紀錄" aria-label="對話紀錄"
+        <button id="history" class="icon-btn" data-tip="這份活頁簿的對話紀錄" data-t-tip="這份活頁簿的對話紀錄" aria-label="對話紀錄" data-t-al="對話紀錄"
                 aria-haspopup="true" aria-expanded="false">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>
         </button>
-        <button id="new-chat" class="icon-btn" data-tip="開新對話（這份活頁簿的紀錄會留著）" aria-label="開新對話">
+        <button id="new-chat" class="icon-btn" data-tip="開新對話（這份活頁簿的紀錄會留著）" data-t-tip="開新對話（這份活頁簿的紀錄會留著）" aria-label="開新對話" data-t-al="開新對話">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-newchat"/></svg>
         </button>
-        <button id="undo" class="icon-btn" disabled data-tip="復原上一步 AI 做的修改" aria-label="復原上一步">
+        <button id="undo" class="icon-btn" disabled data-tip="復原上一步 AI 做的修改" data-t-tip="復原上一步 AI 做的修改" aria-label="復原上一步" data-t-al="復原上一步">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-undo"/></svg>
           <span id="undo-count" class="badge" hidden></span>
         </button>
-        <button id="logout" class="icon-btn" data-tip="登出" aria-label="登出">
+        <button id="lang" class="icon-btn" data-tip="AI 回覆語言" data-t-tip="AI 回覆語言" aria-label="AI 回覆語言" data-t-al="AI 回覆語言"
+                aria-haspopup="true" aria-expanded="false">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-globe"/></svg>
+        </button>
+        <button id="logout" class="icon-btn" data-tip="登出" data-t-tip="登出" aria-label="登出" data-t-al="登出">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-signout"/></svg>
         </button>
       </div>
@@ -194,14 +293,19 @@
     <!-- Drops from the header, over the transcript. Anchored to the pane rather
          than the button because at 350px a dropdown sized to its trigger would
          be too narrow to read a title in. -->
-    <div id="hist-panel" class="hist-panel" hidden role="dialog" aria-label="對話紀錄">
-      <div class="hist-head">這份活頁簿的對話紀錄</div>
+    <!-- In the header, not the composer, and that placement is the message: the
+         model picker down by the send button changes one run, this changes every
+         reply the add-in ever gives you until you change it back. -->
+    <div id="lang-menu" class="lang-menu" hidden role="menu" aria-label="AI 回覆語言" data-t-al="AI 回覆語言"></div>
+
+    <div id="hist-panel" class="hist-panel" hidden role="dialog" aria-label="對話紀錄" data-t-al="對話紀錄">
+      <div class="hist-head" data-t="這份活頁簿的對話紀錄">這份活頁簿的對話紀錄</div>
       <div id="hist-list" class="hist-list"></div>
     </div>
 
     <div class="wb-bar">
       <svg class="ic ic-sm" viewBox="0 0 18 18" aria-hidden="true"><use href="#i-sheet"/></svg>
-      <span id="wb-name" title="目前開啟的活頁簿"></span>
+      <span id="wb-name" title="目前開啟的活頁簿" data-t-title="目前開啟的活頁簿"></span>
       <!-- Which sheet the agent is actually looking at. flex:none so the workbook
            name is what gets truncated in a 350px bar, never this — with sheets
            called 工作表1 / 工作表5 / 缺料警示 the sheet is the part that tells you
@@ -213,13 +317,13 @@
     <div id="log">
       <div id="empty" class="empty">
         <img class="brand-mark brand-mark-xl" src="../../assets/logo.png" alt="" />
-        <p class="empty-title">問這份活頁簿任何事</p>
-        <p class="empty-sub">我讀得到儲存格、公式和你選取的範圍，也能在你確認後寫回去。</p>
+        <p class="empty-title" data-t="問這份活頁簿任何事">問這份活頁簿任何事</p>
+        <p class="empty-sub" data-t="我讀得到儲存格、公式和你選取的範圍，也能在你確認後寫回去。">我讀得到儲存格、公式和你選取的範圍，也能在你確認後寫回去。</p>
         <div class="chips">
-          <button type="button" class="chip">這張表在算什麼？</button>
-          <button type="button" class="chip">幫我找出所有錯誤的公式</button>
-          <button type="button" class="chip">選取範圍幫我做一張摘要</button>
-          <button type="button" class="chip">這些數字有什麼趨勢？</button>
+          <button type="button" class="chip" data-t="這張表在算什麼？">這張表在算什麼？</button>
+          <button type="button" class="chip" data-t="幫我找出所有錯誤的公式">幫我找出所有錯誤的公式</button>
+          <button type="button" class="chip" data-t="選取範圍幫我做一張摘要">選取範圍幫我做一張摘要</button>
+          <button type="button" class="chip" data-t="這些數字有什麼趨勢？">這些數字有什麼趨勢？</button>
         </div>
       </div>
     </div>
@@ -230,7 +334,7 @@
     <div id="sel-chip" class="sel-chip" hidden>
       <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-select"/></svg>
       <span id="sel-label"></span>
-      <button type="button" id="sel-drop" class="sel-drop" aria-label="這則訊息不要帶選取範圍">×</button>
+      <button type="button" id="sel-drop" class="sel-drop" aria-label="這則訊息不要帶選取範圍" data-t-al="這則訊息不要帶選取範圍">×</button>
     </div>
     <form id="composer">
       <!-- Opens upward: the composer is pinned to the bottom of the pane, so a
@@ -239,34 +343,34 @@
       <div id="src-menu" class="src-menu" hidden role="menu" aria-labelledby="plus">
         <button type="button" class="src-item" data-src="web" role="menuitemcheckbox" aria-checked="false">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-globe"/></svg>
-          <span class="src-name">搜尋網路</span>
+          <span class="src-name" data-t="搜尋網路">搜尋網路</span>
           <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <button type="button" class="src-item" data-src="email" role="menuitemcheckbox" aria-checked="false">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-mail"/></svg>
-          <span class="src-name">郵件</span>
+          <span class="src-name" data-t="郵件">郵件</span>
           <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <button type="button" class="src-item" data-src="km" role="menuitemcheckbox" aria-checked="false">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg>
-          <span class="src-name">KM 文件</span>
+          <span class="src-name" data-t="KM 文件">KM 文件</span>
           <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
-        <div id="src-note" class="src-note">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
+        <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
       </div>
 
       <div class="input-shell">
         <button type="button" id="plus" class="plus-btn" aria-haspopup="true" aria-expanded="false"
-                aria-label="外部資料來源">
+                aria-label="外部資料來源" data-t-al="外部資料來源">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
         </button>
-        <textarea id="input" rows="1" placeholder="對這份活頁簿提問…" aria-label="訊息"></textarea>
-        <button id="send" type="submit" class="send-btn" disabled title="送出（Enter）" aria-label="送出">
+        <textarea id="input" rows="1" placeholder="對這份活頁簿提問…" data-t-ph="對這份活頁簿提問…" aria-label="訊息" data-t-al="訊息"></textarea>
+        <button id="send" type="submit" class="send-btn" disabled title="送出（Enter）" data-t-title="送出（Enter）" aria-label="送出" data-t-al="送出">
           <svg id="send-ic" class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-send"/></svg>
         </button>
       </div>
       <div class="composer-foot">
-        <span class="hint-row">Enter 送出 · Shift+Enter 換行</span>
+        <span class="hint-row" data-t="Enter 送出 · Shift+Enter 換行">Enter 送出 · Shift+Enter 換行</span>
         <div class="model-wrap">
           <button type="button" id="model-btn" class="model-btn" aria-haspopup="true" aria-expanded="false">
             <span id="model-label">Opus 5</span>
