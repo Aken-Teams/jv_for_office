@@ -398,6 +398,13 @@ header .actions { display: flex; gap: 2px; flex: none; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   overflow: hidden;
 }
+/* A failed attempt. Grey, not red: the agent read the error and moved on, so
+   this is history rather than something the person has to act on. Red here is
+   reserved for the things that genuinely need them — a lost connection, an
+   expired login. */
+.step.fail .mark { color: var(--fg-subtle); font-weight: 600; }
+.step.fail .step-label { color: var(--fg-subtle); }
+
 /* Finished steps recede — the running one is what you're waiting on. */
 .step.done { opacity: .6; }
 .step.done .step-label { color: var(--fg-muted); }
@@ -563,6 +570,9 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .confirm.resolved .mark { font-weight: 700; flex: none; }
 .confirm.resolved.ok { border-left-color: var(--ok); color: var(--ok); }
 .confirm.resolved.err { border-left-color: var(--danger); color: var(--danger); }
+/* An approved action Excel rejected. Grey, because the agent goes on to work
+   around it — red is kept for what the person has to deal with themselves. */
+.confirm.resolved.retry { border-left-color: var(--line-strong); color: var(--fg-subtle); }
 .confirm.resolved.running { border-left-color: var(--accent); }
 .confirm.resolved .dots { align-self: center; }
 

@@ -290,10 +290,13 @@ function renderProgress() {
   progress.el.innerHTML = progress.steps.map((st) => {
     const done = st.t1 !== undefined;
     const ms = (done ? st.t1 : now) - st.t0;
-    const mark = done
-      ? '<span class="mark">✓</span>'
-      : '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
-    return `<div class="step${done ? ' done' : ''}">${mark}`
+    const mark = st.fail
+      ? '<span class="mark">✕</span>'
+      : done
+        ? '<span class="mark">✓</span>'
+        : '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
+    const hint = st.hint ? ` title="${escapeHtml(st.hint)}"` : '';
+    return `<div class="step${done ? ' done' : ''}${st.fail ? ' fail' : ''}"${hint}>${mark}`
       + `<span class="step-label">${escapeHtml(st.label)}</span>`
       + `<span class="step-ms">${fmtElapsed(ms)}</span></div>`
       // Only on the step that is still running: a finished step's reasoning is
@@ -354,6 +357,23 @@ function progressStep(label) {
   scrollDown();
 }
 
+/**
+ * A step that ended badly, closed immediately.
+ *
+ * `hint` carries the raw message as a tooltip rather than into the transcript:
+ * a tool failure is addressed to the AGENT, which reads it and tries another way.
+ * Printing 「pt.getRange is not a function」 in red made a task that then finished
+ * successfully look like the add-in had crashed. The line stays — silently
+ * swallowing a failed attempt would be worse — but it is grey, and the
+ * JavaScript is available on hover for whoever wants it.
+ */
+function progressFailed(label, hint) {
+  progressStep(label);
+  const st = progress.steps[progress.steps.length - 1];
+  if (st) { st.t1 = Date.now(); st.fail = true; st.hint = hint || ''; }
+  renderProgress();
+}
+
 /** Tear the panel down and, if it did real work, leave one line behind. */
 function progressDone(summarise) {
   if (progress.timer) { clearInterval(progress.timer); progress.timer = null; }
@@ -399,11 +419,15 @@ function prettyAddress(address) {
  * summary, the address, and a separate success note underneath). Now the card
  * reports its own outcome and the note is gone.
  */
-function resolveCard(card, kind, text) {
+function resolveCard(card, kind, text, hint) {
   card.className = `confirm resolved ${kind}`;
   card.removeAttribute('role');
+  // Only a genuine 'err' is announced to assistive tech. A 'retry' is the agent's
+  // problem, not the reader's — see the mark table below.
   if (kind === 'err') card.setAttribute('role', 'alert');
-  const mark = { ok: '✓', denied: '×', err: '!', running: '' }[kind] ?? '';
+  else card.removeAttribute('aria-live');
+  if (hint) card.title = hint; else card.removeAttribute('title');
+  const mark = { ok: '✓', denied: '×', err: '!', retry: '✕', running: '' }[kind] ?? '';
   card.innerHTML = mark
     ? `<span class="mark">${mark}</span>${escapeHtml(text)}`
     : `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(text)}`;
@@ -416,22 +440,17 @@ function resolveCard(card, kind, text) {
  * made the decision.
  */
 /**
- * Operations that ask even in 自動允許 mode.
+ * Does this call destroy data the undo button cannot bring back?
  *
- * The undo button restores overwritten cells from a snapshot taken before the
- * write. Deleting a sheet, rows or columns has nothing to snapshot — the tool
- * spec says so outright ("刪除之後沒辦法用「復原上一步」救回來"). Auto-approving
- * something reversible is a convenience trade; auto-approving something
- * irreversible is a different kind of decision, so this short list keeps asking.
+ * The server decides, because the answer depends on the CONTENTS of the call —
+ * a script containing sheet.getRange("371:373").delete() is exactly as final as
+ * excel_structure_op delete_rows, and only the server sees the code. Used for
+ * two things: the red card, and the one carve-out 自動允許 keeps asking about.
  *
- * If you want 自動允許 to mean literally everything, delete this function and the
- * `!alwaysAsk(...)` test below — it is deliberately one line to remove.
+ * If you want 自動允許 to mean literally everything, change this to `false`.
  */
-function alwaysAsk(tool, args) {
-  const op = (args && args.op) || '';
-  if (tool === 'excel_manage_sheet') return op === 'delete';
-  if (tool === 'excel_structure_op') return op === 'delete_rows' || op === 'delete_columns';
-  return false;
+function isIrreversible(payload) {
+  return payload.risk === 'high';
 }
 
 /** A card in the log for something that ran without being asked about. */
@@ -605,10 +624,10 @@ async function handleToolRequest(payload) {
     // 自動允許 skips the click, but only after the same inspection: the snapshot
     // that inspectWrite triggers is what makes the write undoable, so it still
     // runs and a broken target still fails here rather than mid-write.
-    if (state.autoApprove && !alwaysAsk(tool, args)) {
+    if (state.autoApprove && !isIrreversible(payload)) {
       card = autoApprovedCard(summary);
     } else {
-      const decision = await askConfirm(summary, detail, meta, alwaysAsk(tool, args));
+      const decision = await askConfirm(summary, detail, meta, isIrreversible(payload));
       card = decision.card;
       userNote = decision.note || '';
       if (!decision.approved) {
@@ -645,10 +664,15 @@ async function handleToolRequest(payload) {
   // separate line below it — same information, one place, and the card stops
   // looking like an open question.
   if (card) {
-    if (result.ok === false) resolveCard(card, 'err', result.error || '執行失敗');
+    // 'retry', not 'err'. An approved action that Excel rejected is something the
+    // AGENT then works around — the run in the screenshot went on to finish. Both
+    // halves matter: the person consented to something that did not happen, so the
+    // line stays; but 「[PivotTableRangeConflict] 操作失敗…」 in red reads as a
+    // crash. Grey line, plain words, raw message on hover.
+    if (result.ok === false) resolveCard(card, 'retry', '沒成功，AI 正在換方法', result.error || '執行失敗');
     else resolveCard(card, 'ok', result.content || summary);
   } else if (result.ok === false) {
-    addNote(result.error || '執行失敗', 'err');
+    progressFailed('沒成功，AI 正在換方法', result.error || '執行失敗');
   }
 
   await postToolResult(state.runId, callId, result);
