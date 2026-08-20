@@ -1107,6 +1107,50 @@ export async function getWorkbookName() {
  * about — "這一段" and excel_get_selection both resolve against this one, and a
  * workbook with 工作表1 / 工作表5 / 缺料警示 gives no other clue which is in play.
  */
+/** The custom document property that carries our id. */
+const WORKBOOK_ID_PROP = 'JVisionWorkbookId';
+
+/**
+ * A stable identifier for this workbook, for keying conversation history.
+ *
+ * Office.js has no built-in workbook id, and everything it does expose changes
+ * when the file is renamed or moved — which is the one thing this must survive.
+ * People rename files constantly; losing the history when they do reads as a bug,
+ * not as a filing problem. So we mint a GUID into a custom document property the
+ * first time and read it back after.
+ *
+ * The cost: writing that property marks the workbook as modified. Callers must
+ * therefore only ask for the id at a point where the person is already doing
+ * something to the file — sending a message, not opening the pane.
+ *
+ * Returns null when the id cannot be stored (a read-only or protected file, or a
+ * host below ExcelApi 1.7). The caller falls back to the file name, which is
+ * worse but not broken.
+ */
+export async function getWorkbookKey() {
+  if (!hasApi('1.7')) return null;
+  try {
+    return await Excel.run(async (ctx) => {
+      const custom = ctx.workbook.properties.custom;
+      const existing = custom.getItemOrNullObject(WORKBOOK_ID_PROP);
+      existing.load('isNullObject,value');
+      await ctx.sync();
+      if (!existing.isNullObject && existing.value) return String(existing.value);
+
+      // crypto.randomUUID needs a secure context; the pane is always https.
+      const id = (self.crypto && self.crypto.randomUUID)
+        ? self.crypto.randomUUID()
+        : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+      custom.add(WORKBOOK_ID_PROP, id);
+      await ctx.sync();
+      return id;
+    });
+  } catch {
+    // Read-only, protected, or a host that will not take the property.
+    return null;
+  }
+}
+
 export async function getActiveSheetName() {
   return Excel.run(async (ctx) => {
     const sh = ctx.workbook.worksheets.getActiveWorksheet();

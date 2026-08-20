@@ -58,6 +58,16 @@
         <path d="M4 4.4h5a2 2 0 012 2v9a1.6 1.6 0 00-1.6-1.6H4z" fill="none" stroke="currentColor" stroke-width="1.3"/>
         <path d="M16 4.4h-5a2 2 0 00-2 2v9a1.6 1.6 0 011.6-1.6H16z" fill="none" stroke="currentColor" stroke-width="1.3"/>
       </g>
+      <g id="i-clock">
+        <circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M10 5.9V10l2.9 1.8" fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <g id="i-newchat">
+        <path d="M16.5 10.2v3.6a2 2 0 01-2 2H8.2L4 18.6V6.4a2 2 0 012-2h4.4"
+              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M14.6 3.2v4.6M12.3 5.5h4.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </g>
       <g id="i-chev">
         <path d="M6.4 8.2l3.6 3.6 3.6-3.6" fill="none" stroke="currentColor" stroke-width="1.6"
               stroke-linecap="round" stroke-linejoin="round"/>
@@ -164,6 +174,13 @@
         <button id="approve-mode" class="icon-btn" aria-pressed="false">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg>
         </button>
+        <button id="history" class="icon-btn" data-tip="這份活頁簿的對話紀錄" aria-label="對話紀錄"
+                aria-haspopup="true" aria-expanded="false">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>
+        </button>
+        <button id="new-chat" class="icon-btn" data-tip="開新對話（這份活頁簿的紀錄會留著）" aria-label="開新對話">
+          <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-newchat"/></svg>
+        </button>
         <button id="undo" class="icon-btn" disabled data-tip="復原上一步 AI 做的修改" aria-label="復原上一步">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-undo"/></svg>
           <span id="undo-count" class="badge" hidden></span>
@@ -173,6 +190,14 @@
         </button>
       </div>
     </header>
+
+    <!-- Drops from the header, over the transcript. Anchored to the pane rather
+         than the button because at 350px a dropdown sized to its trigger would
+         be too narrow to read a title in. -->
+    <div id="hist-panel" class="hist-panel" hidden role="dialog" aria-label="對話紀錄">
+      <div class="hist-head">這份活頁簿的對話紀錄</div>
+      <div id="hist-list" class="hist-list"></div>
+    </div>
 
     <div class="wb-bar">
       <svg class="ic ic-sm" viewBox="0 0 18 18" aria-hidden="true"><use href="#i-sheet"/></svg>

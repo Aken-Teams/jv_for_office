@@ -13,7 +13,7 @@
  */
 import {
   executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
-  getActiveSheetName, watchActiveSheet, getSelectionRef, watchSelection,
+  getActiveSheetName, watchActiveSheet, getSelectionRef, watchSelection, getWorkbookKey,
 } from './excelTools.js';
 
 /** Last-resort fallback if config.json is missing or unreadable. */
@@ -47,6 +47,12 @@ const state = {
   /** Lets the person call off a run that is taking too long. See stopRun(). */
   abort: null,
   workbookName: '',
+  /** Stable id for this file, minted on first send. See getWorkbookKey(). */
+  workbookKey: '',
+  /** Set by 開新對話: the next send starts a fresh thread instead of resuming. */
+  startFresh: false,
+  /** The live transcript, parked while a past thread is on screen. */
+  liveLog: null,
   /** The sheet the user is on — shown so it is clear where the agent is working. */
   sheetName: '',
   /** Chosen model id, or '' for whatever the server defaults to. */
@@ -806,6 +812,120 @@ function setSendMode(mode) {
   }
 }
 
+/**
+ * Start a new thread on the same workbook.
+ *
+ * Both halves matter. The server opens a new conversation row, and the CLI
+ * session id is dropped so the agent does not resume the old one — a failed
+ * calendar attempt followed the user into unrelated questions precisely because
+ * the pane kept resuming a session the server had moved on from.
+ */
+function newConversation() {
+  if (state.streaming) return;
+  state.startFresh = true;
+  state.sessionId = null;
+  $('log').innerHTML = '';
+  state.undoStack = [];
+  updateUndoButton();
+  addNote('已開新對話。之前的紀錄留在 AI Agents Office 裡，這裡從頭開始。', 'note');
+}
+
+// ── Conversation history ──────────────────────────────────────────────────────
+
+/**
+ * Past threads for this workbook.
+ *
+ * Read-only. Continuing an old thread would mean resuming its CLI session as
+ * well as its database row, and a half-resumed conversation is worse than none —
+ * so this shows what happened and hands you back to the live one.
+ */
+async function openHistory() {
+  const panel = $('hist-panel');
+  if (!panel.hidden) { closeHistory(); return; }
+  panel.hidden = false;
+  $('history').setAttribute('aria-expanded', 'true');
+  $('hist-list').innerHTML = '<div class="hist-empty">載入中…</div>';
+
+  if (!state.workbookKey) {
+    // Minted on first send, so a workbook nobody has asked about yet has no id
+    // and therefore no history — which is the honest thing to say.
+    try { state.workbookKey = (await getWorkbookKey()) || ''; } catch { /* fall through */ }
+  }
+  const key = state.workbookKey || state.workbookName;
+  try {
+    const res = await fetch(
+      `${state.apiBase}/api/excel/conversations?workbookKey=${encodeURIComponent(key || '')}`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    const body = await res.json();
+    const list = (body.conversations || []).filter(c => c.turns > 0);
+    if (!list.length) {
+      $('hist-list').innerHTML = '<div class="hist-empty">這份活頁簿還沒有對話紀錄。</div>';
+      return;
+    }
+    $('hist-list').innerHTML = list.map(c => `
+      <button type="button" class="hist-item" data-id="${escapeHtml(c.id)}"
+              aria-current="${c.status === 'active'}">
+        <span class="h-title">${escapeHtml(c.title || '未命名')}</span>
+        <span class="h-meta">${fmtWhen(c.created_at)} · ${c.turns} 則提問${c.status === 'active' ? ' · 目前' : ''}</span>
+      </button>`).join('');
+  } catch (e) {
+    $('hist-list').innerHTML = `<div class="hist-empty">讀不到紀錄：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function closeHistory() {
+  $('hist-panel').hidden = true;
+  $('history').setAttribute('aria-expanded', 'false');
+}
+
+/** Dates in the pane are always about "how long ago", never about precision. */
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days === 0) return `今天 ${d.toTimeString().slice(0, 5)}`;
+  if (days === 1) return `昨天 ${d.toTimeString().slice(0, 5)}`;
+  if (days < 7) return `${days} 天前`;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+async function showPastConversation(id, title) {
+  closeHistory();
+  // Park the live transcript rather than rebuild it: it holds resolved cards and
+  // notes that no server round trip would bring back.
+  if (state.liveLog === null) state.liveLog = $('log').innerHTML;
+  $('log').innerHTML = '<div class="note">載入中…</div>';
+  try {
+    const res = await fetch(`${state.apiBase}/api/excel/conversations/${encodeURIComponent(id)}/messages`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { messages = [] } = await res.json();
+    $('log').innerHTML = '';
+    const bar = document.createElement('div');
+    bar.className = 'hist-banner';
+    bar.innerHTML = `<span>${escapeHtml(title || '過往紀錄')}（唯讀）</span>`;
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = '回到目前對話';
+    back.addEventListener('click', backToLive);
+    bar.appendChild(back);
+    $('log').appendChild(bar);
+    for (const m of messages) addBubble(m.role === 'user' ? 'user' : 'ai', m.content);
+    scrollDown();
+  } catch (e) {
+    $('log').innerHTML = '';
+    addNote(`讀不到這段紀錄：${e.message}`, 'err');
+    backToLive();
+  }
+}
+
+function backToLive() {
+  if (state.liveLog === null) return;
+  $('log').innerHTML = state.liveLog;
+  state.liveLog = null;
+  scrollDown();
+}
+
 function stopRun() {
   if (!state.streaming || !state.abort) return;
   progressStep('停止中…');
@@ -819,6 +939,7 @@ async function send(message) {
   state.abort = new AbortController();
   setSendMode('stop');
 
+  backToLive();
   addBubble('user', message);
   progressStep('連線到伺服器…');
 
@@ -837,6 +958,12 @@ async function send(message) {
     // then be answered with no tool call at all.
     //
     // First turn only: later turns resume the CLI session, which already has it.
+    // Minted here rather than at startup: it writes a custom property, which
+    // marks the file as modified, and merely opening the pane should not do that.
+    if (!state.workbookKey) {
+      try { state.workbookKey = (await getWorkbookKey()) || ''; } catch { /* fall back to the name */ }
+    }
+
     let workbookContext;
     if (!state.sessionId) {
       const r = await executeTool('excel_get_overview', { preview_rows: 5 });
@@ -861,6 +988,10 @@ async function send(message) {
         // 「畫面怪怪的，幫我看看」 — they cannot always name the column, but the
         // selection says which one they mean.
         selection: (!state.selectionDropped && state.selection) ? state.selection.context : undefined,
+        // The id keys the conversation; the name is what the web app shows as
+        // its title. A renamed file keeps its history because only the id matters.
+        workbookKey: state.workbookKey || undefined,
+        newConversation: state.startFresh || undefined,
         model: state.model || undefined,
         clientTools: supportedTools(),
         dataSources: state.sources,
@@ -963,6 +1094,7 @@ async function send(message) {
     state.streaming = false;
     state.runId = null;
     state.abort = null;
+    state.startFresh = false;
     setSendMode('send');
     state.selectionDropped = false;
     void getSelectionRef().then(setSelection).catch(() => {});
@@ -1370,6 +1502,7 @@ Office.onReady(async (info) => {
     if (e.key !== 'Escape') return;
     // The menu first: Esc should back out of whatever is on top, and closing a
     // menu is not what someone means when they are trying to call off a run.
+    if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
@@ -1441,6 +1574,9 @@ Office.onReady(async (info) => {
   // Click-away closes it. A menu that can only be dismissed by the button that
   // opened it is one people leave open by accident.
   document.addEventListener('click', (e) => {
+    if (!$('hist-panel').hidden && !e.target.closest('#hist-panel') && !e.target.closest('#history')) {
+      closeHistory();
+    }
     if (!$('model-menu').hidden && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
       toggleModelMenu(false);
     }
@@ -1467,6 +1603,16 @@ Office.onReady(async (info) => {
       ? '已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。'
       : '已改回每次確認：AI 要修改活頁簿前都會先問過你。', 'note');
   });
+
+  $('history').addEventListener('click', () => { void openHistory(); });
+
+  $('hist-list').addEventListener('click', (e) => {
+    const item = e.target.closest('.hist-item');
+    if (!item) return;
+    void showPastConversation(item.dataset.id, item.querySelector('.h-title').textContent);
+  });
+
+  $('new-chat').addEventListener('click', () => { backToLive(); newConversation(); });
 
   $('logout').addEventListener('click', () => logout(''));
 
