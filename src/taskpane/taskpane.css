@@ -335,6 +335,17 @@ header .actions { display: flex; gap: 2px; flex: none; }
   flex: none; font-size: 11px; color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
+/* The model's current reasoning, captioning the running step. Indented to the
+   step label, dimmed and italic so it reads as commentary rather than as another
+   step, and clipped to two lines: it updates several times a second, and a block
+   that changes height on every tick makes the whole panel jump. */
+.step-detail {
+  margin: 1px 0 5px 19px;
+  font-size: 11px; line-height: 1.45; font-style: italic;
+  color: var(--fg-subtle);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 /* Finished steps recede — the running one is what you're waiting on. */
 .step.done { opacity: .6; }
 .step.done .step-label { color: var(--fg-muted); }

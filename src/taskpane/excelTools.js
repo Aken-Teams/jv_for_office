@@ -1032,14 +1032,47 @@ export async function getWorkbookName() {
   });
 }
 
-// ── run_script ────────────────────────────────────────────────────────────────
-
 /**
- * Result cap. A script that returns the raw grid has defeated its own purpose —
- * that is the exact "10,000 cells into the context window" problem this tool
- * exists to avoid — so the cap is deliberately tight and says so when it bites.
+ * Scratch space shared across script calls, for the pane's lifetime.
+ *
+ * This is what makes "scan in one script, write in the next" possible without the
+ * data passing through the model at all. Before it existed the model had exactly
+ * one channel between two scripts — its own return value — so a task like
+ * "find the 99 shortage rows, then write them into a sheet" forced all 99 rows
+ * out through the context window and back in again. That measured 19.6 KB and
+ * 17 seconds of dead time per hop.
+ *
+ * Not persisted and not sent anywhere: it lives in this module, in the pane.
  */
-const MAX_SCRIPT_RESULT_CHARS = 20000;
+const scriptStore = Object.create(null);
+
+/** One short line per key, so the model remembers what it parked and under what name. */
+function describeStore() {
+  const keys = Object.keys(scriptStore);
+  if (!keys.length) return '';
+  return `store 目前有：${keys.map((k) => {
+    const v = scriptStore[k];
+    if (Array.isArray(v)) return `${k}（${v.length} 筆陣列）`;
+    if (v && typeof v === 'object') return `${k}（物件，${Object.keys(v).length} 個鍵）`;
+    return `${k}（${typeof v}）`;
+  }).join('、')}`;
+}
+
+// ── run_script ────────────────────────────────────────────────────────────────
+/**
+ * Result cap.
+ *
+ * Measured: with a 20 KB cap the model filled it — 19.6 KB of scan output, then
+ * 17 seconds of silence while it read the whole thing back in. That is the exact
+ * "10,000 cells into the context window" problem this tool was added to avoid,
+ * arriving through a different door.
+ *
+ * The cap is not the fix on its own, though; the model returned everything
+ * because it needed those rows later and had nowhere else to put them. `store`
+ * below is that somewhere. The cap just makes the wrong path fail loudly, and
+ * the truncation message names the right one.
+ */
+const MAX_SCRIPT_RESULT_CHARS = 4000;
 const MAX_SCRIPT_LOG_LINES = 100;
 /**
  * Client-side limits, both kept UNDER the server bridge's own timeouts
@@ -1088,7 +1121,7 @@ async function runScript(args) {
   let body;
   try {
     body = new Function(
-      'ctx', 'workbook', 'Excel', 'log',
+      'ctx', 'workbook', 'Excel', 'log', 'store',
       '"use strict"; return (async () => {\n' + code + '\n})();',
     );
   } catch (e) {
@@ -1098,7 +1131,7 @@ async function runScript(args) {
   const limit = String(args.mode || '') === 'write' ? SCRIPT_TIMEOUT_WRITE_MS : SCRIPT_TIMEOUT_READ_MS;
 
   const run = Excel.run(async (ctx) => {
-    const value = await body(ctx, ctx.workbook, Excel, log);
+    const value = await body(ctx, ctx.workbook, Excel, log, scriptStore);
     // A script that queued mutations but never synced would silently do nothing;
     // syncing again here is free when the script already did it.
     await ctx.sync();
@@ -1121,13 +1154,19 @@ async function runScript(args) {
 
   const parts = [];
   if (logs.length) parts.push('log:\n' + logs.join('\n'));
+  // Remind the model what it parked and under which name — otherwise the next
+  // script guesses the key and gets undefined.
+  const stored = describeStore();
+  if (stored) parts.push(stored);
   parts.push(
     value === undefined
       ? '（程式沒有 return 任何東西。要拿到結果請用 return。）'
       : stringifyResult(
         value,
         MAX_SCRIPT_RESULT_CHARS,
-        '\n…（結果過長已截斷。請在程式裡先彙總再 return，不要把原始資料整份帶回來。）',
+        '\n…（結果超過 4 KB 已截斷。要留給下一支 script 用的資料請放進 store，'
+        + '例如 store.rows = rows —— 它跨呼叫保留，而且不會經過你的上下文。'
+        + '若要寫進工作表，就在這一支 script 裡直接寫完，不要先回傳。）',
       ),
   );
   return parts.join('\n\n');

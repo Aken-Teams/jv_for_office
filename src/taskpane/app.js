@@ -262,8 +262,10 @@ function addBubble(role, text) {
  */
 const progress = {
   el: null,
-  steps: [],     // { label, t0, t1 }
+  steps: [],     // { label, t0, t1, detail }
   timer: null,
+  /** Rolling tail of the model's thinking, used to caption the running step. */
+  think: '',
 };
 
 const fmtElapsed = (ms) => (ms < 10000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`);
@@ -279,8 +281,39 @@ function renderProgress() {
       : '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
     return `<div class="step${done ? ' done' : ''}">${mark}`
       + `<span class="step-label">${escapeHtml(st.label)}</span>`
-      + `<span class="step-ms">${fmtElapsed(ms)}</span></div>`;
+      + `<span class="step-ms">${fmtElapsed(ms)}</span></div>`
+      // Only on the step that is still running: a finished step's reasoning is
+      // history, and keeping it would turn the panel into a wall of text.
+      + (st.detail && !done ? `<div class="step-detail">${escapeHtml(st.detail)}</div>` : '');
   }).join('');
+}
+
+/**
+ * Show what the model is actually reasoning about, under the running step.
+ *
+ * The server has been forwarding `thinking` deltas all along (claudeCli emits
+ * them, the excel route passes them straight through) — the pane just dropped
+ * them on the floor, which is why 30 seconds of the model composing its next
+ * script looked identical to a hung spinner.
+ *
+ * Only the latest sentence is shown. The full stream is far too long for a 350px
+ * pane, and "what is it doing right now" is answered by the most recent line, not
+ * by all of them. Splitting on sentence enders means the text settles into a
+ * readable phrase instead of scrolling character by character.
+ */
+function progressDetail(text) {
+  const step = progress.steps[progress.steps.length - 1];
+  if (!step || step.t1 !== undefined) return;
+  step.detail = text;
+  renderProgress();
+}
+
+/** Caption the running step with the model's latest line of reasoning. */
+function progressThinking(chunk) {
+  progress.think = (progress.think + String(chunk || '')).slice(-400);
+  const parts = progress.think.split(/[\n。．.!?！？]+/).map(s => s.trim()).filter(Boolean);
+  const last = parts[parts.length - 1] || '';
+  progressDetail(last.length > 64 ? `${last.slice(0, 64)}…` : last);
 }
 
 /**
@@ -300,6 +333,8 @@ function progressStep(label) {
     progress.timer = setInterval(renderProgress, 250);
   }
   if (current && current.t1 === undefined) current.t1 = Date.now();
+  // A new step means a new train of thought; the old caption would be a lie.
+  progress.think = '';
   progress.steps.push({ label, t0: Date.now() });
   renderProgress();
   scrollDown();
@@ -311,6 +346,7 @@ function progressDone(summarise) {
   const steps = progress.steps;
   if (progress.el) { progress.el.remove(); progress.el = null; }
   progress.steps = [];
+  progress.think = '';
 
   if (summarise && steps.length > 1) {
     const total = (steps[steps.length - 1].t1 || Date.now()) - steps[0].t0;
@@ -440,6 +476,30 @@ const TOOL_LABEL = {
   excel_run_script: '正在執行程式…',
 };
 
+/**
+ * What the model is doing BEFORE the call is dispatched.
+ *
+ * Distinct from TOOL_LABEL, which describes the call executing. Composing a long
+ * tool call is generation time — for excel_run_script that is the model writing
+ * an entire script, and it is usually the longest single stretch of a turn.
+ */
+const PREPARING_LABEL = {
+  excel_run_script: '正在寫程式…',
+  excel_write_range: '正在整理要寫入的資料…',
+  excel_create_chart: '正在設定圖表…',
+  excel_create_pivot: '正在設定樞紐分析表…',
+  excel_format_range: '正在決定格式…',
+  excel_manage_sheet: '正在準備工作表變更…',
+};
+
+/** MCP tools arrive prefixed (`mcp__excel__excel_run_script`). */
+function preparingLabel(name) {
+  const short = String(name).replace(/^mcp__excel__/, '');
+  return PREPARING_LABEL[short] || TOOL_LABEL[short] || `正在準備 ${short}…`;
+}
+
+const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n || 0} 字元`);
+
 async function handleToolRequest(payload) {
   const { callId, tool, args, needsConfirm, summary } = payload;
   // Prefer the server's specific description ("讀取 工作表1!A1:AZ375") over the
@@ -488,6 +548,13 @@ async function handleToolRequest(payload) {
 
   await postToolResult(state.runId, callId, result);
   setStatus('思考中…');
+  // How much came back is the number that matters here. excel_run_script exists so
+  // the model gets a CONCLUSION, not a data dump; a result measured in tens of KB
+  // means a script is returning raw rows and has quietly reintroduced the very
+  // problem the tool was added to solve — and it explains the silent gap that
+  // follows, which is the model reading all of it back in.
+  const size = String(result.content || result.error || '').length;
+  if (size) progressDetail(`已讀入 ${fmtSize(size)} 的結果`);
 }
 
 function updateUndoButton() {
@@ -577,11 +644,27 @@ async function send(message) {
             // The concurrency/auth queue let go and the CLI process actually started.
             progressStep('AI 啟動中…');
           } else if (ev.type === 'tool_activity') {
-            // ToolSearch is the CLI loading the deferred MCP tools — it is the
-            // single longest step of the opening gap, so it gets named rather
-            // than hidden behind a generic spinner.
-            const t = ev.data && ev.data.tool;
-            if (t === 'ToolSearch') progressStep('載入 Excel 工具…');
+            // Three different things arrive on this event, and dropping the last
+            // two is what made a 42-second wait look like a frozen spinner: the
+            // model spends that time WRITING the tool call (a whole script, in
+            // the case of excel_run_script), and the server has been announcing
+            // it from the first token.
+            const d = ev.data || {};
+            const t = d.tool;
+            // A tool call starting means the remark before it is finished. Segment
+            // here as well as on tool_request: ToolSearch sits between two
+            // preambles and produces no tool_request, which is how
+            // 「先載入工具並跑資料分析。先掃描工作表1…」 ended up as one sentence.
+            if (d.status === 'running' && t) { bubble = null; text = ''; }
+            if (t === 'ToolSearch') {
+              // The CLI loading the deferred MCP tools — the single longest step
+              // of the opening gap, so it gets named rather than hidden.
+              progressStep('載入 Excel 工具…');
+            } else if (d.status === 'writing') {
+              progressDetail(`已寫出 ${fmtSize(d.chars)}`);
+            } else if (d.status === 'running' && t) {
+              progressStep(preparingLabel(t));
+            }
           } else if (ev.type === 'text') {
             // Drop the panel BEFORE creating the bubble, so the bubble takes
             // its place at the end of the log rather than appearing above it.
@@ -590,6 +673,9 @@ async function send(message) {
             if (!bubble) bubble = addBubble('ai', '');
             bubble.innerHTML = renderMarkdown(text);
             scrollDown();
+          } else if (ev.type === 'thinking') {
+            // Caption the running step with what the model is reasoning about.
+            progressThinking(ev.data);
           } else if (ev.type === 'tool_request') {
             // Close the current bubble. Whatever the model says AFTER this tool
             // comes back is a new remark, not a continuation of the last one —
