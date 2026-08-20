@@ -1068,20 +1068,20 @@ async function send(message) {
             // the case of excel_run_script), and the server has been announcing
             // it from the first token.
             const d = ev.data || {};
-            const t = d.tool;
+            const tool = d.tool;
             // A tool call starting means the remark before it is finished. Segment
             // here as well as on tool_request: ToolSearch sits between two
             // preambles and produces no tool_request, which is how
             // 「先載入工具並跑資料分析。先掃描工作表1…」 ended up as one sentence.
-            if (d.status === 'running' && t) { bubble = null; text = ''; }
-            if (t === 'ToolSearch') {
+            if (d.status === 'running' && tool) { bubble = null; text = ''; }
+            if (tool === 'ToolSearch') {
               // The CLI loading the deferred MCP tools — the single longest step
               // of the opening gap, so it gets named rather than hidden.
               progressStep(t('載入 Excel 工具…'));
             } else if (d.status === 'writing') {
               progressDetail(t('已寫出 {0}', fmtSize(d.chars)));
-            } else if (d.status === 'running' && t) {
-              progressStep(preparingLabel(t));
+            } else if (d.status === 'running' && tool) {
+              progressStep(preparingLabel(tool));
             }
           } else if (ev.type === 'text') {
             // Drop the panel BEFORE creating the bubble, so the bubble takes
@@ -1476,7 +1476,7 @@ function fillDomainOptions() {
 const SOURCE_NAMES = () => ({ web: t('搜尋網路'), email: t('郵件'), km: 'KM' });
 /** Sources that need no account link, so the menu never greys them out. */
 const ALWAYS_AVAILABLE = new Set(['web']);
-const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES[k] || k).join('、');
+const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES()[k] || k).join('、');
 
 /**
  * Reflect the toggle's state.
