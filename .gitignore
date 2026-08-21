@@ -4,6 +4,7 @@ devserver.log
 .env
 config.json
 test/.snapshot-under-test.mjs
+test/.paragraph-under-test.mjs
 test/.fit-under-test.mjs
 test/.clean-under-test.mjs
 test/.shapes-under-test.mjs

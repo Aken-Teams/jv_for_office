@@ -1013,6 +1013,30 @@ async function handleToolRequest(payload) {
     return;
   }
 
+  // Putting a pasted picture INTO the file needs both halves: the bytes live
+  // here, in the pane, and only the host module can reach Office.js. So the
+  // shell looks the attachment up and the host does the writing — neither could
+  // do it alone, which is why this is not simply another host tool.
+  //
+  // Guarded on the host declaring it: Excel has no counterpart, and a shell that
+  // assumed one would break the workbook side.
+  if (host.meta.insertAttachmentTool && tool === host.meta.insertAttachmentTool) {
+    const list = state.sentAttachments.filter((a) => a.kind !== 'file');
+    const n = Math.max(1, Math.min(list.length, Number((args || {}).index) || 1));
+    const pic = list[n - 1];
+    const result = pic
+      ? await host.insertImage(pic, args || {})
+      : { ok: false, error: '使用者這則訊息沒有附圖片，沒有東西可以插入。' };
+    if (result.snapshot) {
+      state.undoStack.push(result.snapshot);
+      updateUndoButton();
+      noteUndoScope();
+    }
+    await postToolResult(state.runId, callId, result);
+    setStatus(t('思考中…'));
+    return;
+  }
+
   let card = null;
   /** Anything the person typed on the confirmation card. */
   let userNote = '';
