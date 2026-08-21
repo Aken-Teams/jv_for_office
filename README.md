@@ -1,8 +1,12 @@
-# JVision for Excel
+# JVision for Office
 
 在 Excel 側邊欄直接對「當下開啟的那份活頁簿」提問 —— AI 讀得到儲存格、公式、選取範圍，
 也能在你按下確認後寫回去。對標 Claude for Excel，但後端是我們自己的
 [ai-agents-office](../ai-agents-office)，資料流全程在自己的機器上。
+
+**目前已完成 Excel。** PowerPoint 與 Word 共用同一份外殼，放在同一個專案裡；
+為什麼這樣放、以及更版怎麼互不影響，見 [docs/multi-host.md](docs/multi-host.md)。
+下面的說明以 Excel 為例。
 
 ## 這跟「產生一個 Excel 檔給你下載」差在哪
 
