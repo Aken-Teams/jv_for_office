@@ -65,6 +65,8 @@ import { makeScriptGuard } from './guard.js';
 // Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the first
 // time somebody asks for a diagram.
 import { renderMermaid } from './mermaid.js';
+// Pure string work — no canvas, no DOM. See svgchart.js for why vector.
+import { chartSvg, CHART_TYPES } from './svgchart.js';
 
 // ── Capability gates ─────────────────────────────────────────────────────────
 
@@ -142,38 +144,70 @@ const TYPE = { display: 40, title: 32, heading: 22, body: 18, small: 14, caption
  * assignments. Each is a full palette — an accent alone is not a theme, and a
  * deck where only the titles changed colour looks half-finished.
  */
+/**
+ * Themes.
+ *
+ * ── Rebuilt after measuring a deck that actually looks good ──
+ * The first version gave each theme an accent, a tint and a body colour, which
+ * sounds sufficient and is not. Pulling apart a reference deck built by hand
+ * showed why: across ten slides it used TEN colours total, and they were not
+ * three roles with variations — they were six distinct jobs, each used the same
+ * way every time. Repetition is what makes a deck look designed; a palette that
+ * only names "the accent" leaves the other five jobs to be improvised per slide.
+ *
+ * So each theme names every job:
+ *
+ *   strong   headings, number badges, the primary card bar        #1A3A5C
+ *   accent   the top strip and the short rule under the title     #C0392B
+ *   second   the alternate card bar, so a row of five is not flat #2E6DA4
+ *   tint     card fill                                            #EEF3F8
+ *   muted    eyebrows, page references, axis labels               #8A93A0
+ *   ink      body text — NOT black. #3D3D3D reads softer on a projector
+ *   line     hairlines and gridlines                              #D5DBE0
+ *
+ * ── cover / onCover exist because of a bug this shape prevents ──
+ * The old title recipe filled the whole slide with `accent` and wrote in
+ * `onAccent`. That works for four of the five palettes and inverts on the dark
+ * one, where the accent is a LIGHT blue meant to sit on a dark ground — so the
+ * dark theme's cover came out pale blue with near-black text. Naming the cover
+ * fill and its text colour directly makes every palette state its own answer
+ * rather than having one inferred from a rule that does not generalise.
+ */
 const THEMES = {
   corporate: {
-    label: '企業藍',
-    font: '微軟正黑體',
-    ink: '#1B1A19', muted: '#605E5C', accent: '#1F3864', soft: '#EFF3F9',
-    bg: '#FFFFFF', onAccent: '#FFFFFF',
+    label: '企業藍', font: '微軟正黑體',
+    ink: '#3D3D3D', strong: '#1A3A5C', accent: '#C0392B', second: '#2E6DA4',
+    tint: '#EEF3F8', muted: '#8A93A0', line: '#D5DBE0',
+    bg: '#FFFFFF', cover: '#1A3A5C', onCover: '#FFFFFF',
   },
   slate: {
-    label: '沉穩灰',
-    font: '微軟正黑體',
-    ink: '#101418', muted: '#5A6470', accent: '#2F4858', soft: '#EEF1F3',
-    bg: '#FFFFFF', onAccent: '#FFFFFF',
+    label: '沉穩灰', font: '微軟正黑體',
+    ink: '#33383D', strong: '#2F4858', accent: '#B5651D', second: '#5E7C8B',
+    tint: '#EFF2F4', muted: '#87909A', line: '#D8DDE1',
+    bg: '#FFFFFF', cover: '#2F4858', onCover: '#FFFFFF',
   },
   fresh: {
-    label: '清新綠',
-    font: '微軟正黑體',
-    ink: '#12241C', muted: '#4C6157', accent: '#107C41', soft: '#EFF6F2',
-    bg: '#FFFFFF', onAccent: '#FFFFFF',
+    label: '清新綠', font: '微軟正黑體',
+    ink: '#33403A', strong: '#0E6B3A', accent: '#C0392B', second: '#4C9B72',
+    tint: '#EDF6F1', muted: '#849289', line: '#D6E2DB',
+    bg: '#FFFFFF', cover: '#0E6B3A', onCover: '#FFFFFF',
   },
   warm: {
-    label: '暖橘',
-    font: '微軟正黑體',
-    ink: '#241A12', muted: '#6B5647', accent: '#B24C1E', soft: '#FBF2EC',
-    bg: '#FFFFFF', onAccent: '#FFFFFF',
+    label: '暖橘', font: '微軟正黑體',
+    ink: '#40352D', strong: '#9C3D12', accent: '#1A3A5C', second: '#D08A50',
+    tint: '#FBF2EA', muted: '#9C8B7C', line: '#E6D8CB',
+    bg: '#FFFFFF', cover: '#9C3D12', onCover: '#FFFFFF',
   },
   night: {
-    label: '深色',
-    font: '微軟正黑體',
-    ink: '#F5F6F7', muted: '#B7BEC7', accent: '#4C9AFF', soft: '#1E2530',
-    bg: '#141A22', onAccent: '#0B1017',
+    label: '深色', font: '微軟正黑體',
+    // Every role inverts together. `cover` is the dark ground and `onCover` the
+    // light type — the opposite of the light themes, stated rather than derived.
+    ink: '#E8ECF1', strong: '#7FB2FF', accent: '#FF6B5B', second: '#4C9AFF',
+    tint: '#1E2530', muted: '#98A3B3', line: '#2C3542',
+    bg: '#141A22', cover: '#0D1219', onCover: '#F5F7FA',
   },
 };
+
 const DEFAULT_THEME = 'corporate';
 
 const theme = (name) => THEMES[String(name || '').toLowerCase()] || THEMES[DEFAULT_THEME];
@@ -506,14 +540,14 @@ async function addShape(args) {
     const geo = box(args, { left: GRID.margin, top: GRID.body.top, width: 240, height: 120 });
     const shape = slide.shapes.addGeometricShape(kind, geo);
     shape.name = stamp('shape');
-    styleBox(shape, { fill: args.fill || th.accent, ...args });
+    styleBox(shape, { fill: args.fill || th.strong, ...args });
     if (args.text) {
       shape.textFrame.textRange.text = String(args.text);
       styleText(shape, {
         font: args.font || th.font,
         size: num(args.size, TYPE.body),
         bold: args.bold !== undefined ? args.bold : true,
-        color: args.color || th.onAccent,
+        color: args.color || th.onCover,
         align: args.align || 'center',
         valign: args.valign || 'middle',
       });
@@ -539,7 +573,7 @@ async function addLine(args) {
     line.name = stamp('line');
     const lf = line.lineFormat;
     lf.visible = true;
-    lf.color = colour(args.line_color || args.color, th.accent);
+    lf.color = colour(args.line_color || args.color, th.strong);
     lf.weight = num(args.line_width, 1.5);
     line.load('id');
     await ctx.sync();
@@ -700,6 +734,42 @@ async function arrange(args) {
   });
 }
 
+// ── The chrome every slide wears ─────────────────────────────────────────────
+
+/**
+ * The frame that makes ten slides look like one deck.
+ *
+ * ── What this is, and why it is not the model's decision ──
+ * Measuring the reference deck, the striking thing was not any individual slide.
+ * It was that the same four elements sat at exactly the same coordinates on
+ * every one of them:
+ *
+ *   a full-bleed 5pt accent strip along the very top
+ *   an eyebrow at (38,22) — section number and name, 11pt, grey
+ *   the title at (38,42), 25pt, in the strong colour
+ *   a SHORT accent rule at (38,89), 108pt wide — not full width
+ *
+ * That last detail is the one worth noticing: the rule stops at 108 points. A
+ * full-width rule under a title reads as a divider between two things; a short
+ * one reads as an underline belonging to the title. It is a small decision, made
+ * once, repeated ten times — and repetition is where the impression of design
+ * actually comes from.
+ *
+ * None of it is exposed as a parameter, because a model that chooses the strip's
+ * height per slide will eventually choose differently, and then the deck has a
+ * defect nobody can name. The model supplies words; the geometry is fixed.
+ */
+const CHROME = {
+  strip: { left: 0, top: 0, width: GRID.W, height: 5 },
+  eyebrow: { left: 38, top: 22, width: 828, height: 19 },
+  title: { left: 38, top: 42, width: 878, height: 42 },
+  rule: { left: 38, top: 89, width: 108, height: 4 },
+  /** Content starts below the rule, with room to breathe. */
+  contentTop: 124,
+  contentLeft: 38,
+  contentWidth: 884,
+};
+
 // ── One call, one finished slide ─────────────────────────────────────────────
 
 /**
@@ -753,85 +823,122 @@ async function buildSlide(args) {
     const title = String(args.title || '');
     const body = Array.isArray(args.body) ? args.body.map(String)
       : (args.body ? String(args.body).split(/\r?\n/) : []);
-    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `•　${l.trim()}`).join('\n');
+    // A small square rather than 「•」: the reference deck uses one, and a round
+    // dot is the mark every word processor puts there by default.
+    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `▪　${l.trim()}`).join('\n');
+
+    // ── The chrome, on every slide that is not a full-bleed cover ──
+    // Fixed geometry, applied the same way every time. See CHROME for why none
+    // of it is a parameter.
+    const dressed = kind !== 'title' && args.chrome !== false;
+    if (dressed) {
+      band(CHROME.strip, th.accent);
+      if (args.eyebrow) {
+        text(String(args.eyebrow).toUpperCase(), CHROME.eyebrow,
+          { size: 11, color: th.muted, valign: 'middle' });
+      }
+      if (title) {
+        text(title, CHROME.title, { size: 25, bold: true, color: th.strong, valign: 'middle' });
+        band(CHROME.rule, th.accent);
+      }
+      if (args.page) {
+        text(String(args.page), { left: 800, top: 22, width: 116, height: 19 },
+          { size: 11, color: th.muted, align: 'right', valign: 'middle' });
+      }
+    }
+    const CT = CHROME.contentTop;
+    const CL = CHROME.contentLeft;
+    const CW = CHROME.contentWidth;
 
     if (kind === 'title') {
-      // A cover: the deck's one slide where centred type is right.
-      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.accent);
-      text(title, { left: GRID.margin, top: 190, width: GRID.W - GRID.margin * 2, height: 96 },
-        { size: TYPE.display, bold: true, color: th.onAccent, align: 'center', valign: 'middle' });
+      // The cover: the one slide where full-bleed and centred type are right.
+      // `cover`/`onCover` rather than accent/onAccent — see THEMES for the bug
+      // that distinction exists to prevent.
+      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
+      band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
+      text(title, { left: 80, top: 190, width: GRID.W - 160, height: 96 },
+        { size: TYPE.display, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
+      // A short rule between title and subtitle, centred. The same idea as the
+      // one under a slide title: it belongs to the words above it.
+      band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 3 }, th.accent);
       if (body.length) {
-        text(body.join('　·　'),
-          { left: GRID.margin, top: 300, width: GRID.W - GRID.margin * 2, height: 40 },
-          { size: TYPE.heading, color: th.onAccent, align: 'center' });
+        text(body.join('　·　'), { left: 80, top: 322, width: GRID.W - 160, height: 40 },
+          { size: TYPE.heading, color: th.onCover, align: 'center' });
       }
       if (args.footer) {
-        text(String(args.footer), { ...GRID.footer, top: 452 },
-          { size: TYPE.small, color: th.onAccent, align: 'center' });
+        text(String(args.footer), { left: 80, top: 452, width: GRID.W - 160, height: 28 },
+          { size: TYPE.small, color: th.onCover, align: 'center' });
       }
     } else if (kind === 'section') {
-      // A divider. The number is what tells the audience where they are.
-      band({ left: 0, top: 210, width: GRID.W, height: 120 }, th.soft);
-      band({ left: 0, top: 210, width: 8, height: 120 }, th.accent);
-      text(title, { left: 60, top: 232, width: 760, height: 52 },
-        { size: TYPE.title, bold: true, color: th.accent, valign: 'middle' });
+      // A divider. The big number is what tells the audience where they are, and
+      // it is the element people actually navigate by.
+      band({ left: 0, top: 186, width: GRID.W, height: 168 }, th.tint);
+      band({ left: 0, top: 186, width: 8, height: 168 }, th.accent);
+      if (args.eyebrow) {
+        text(String(args.eyebrow), { left: 76, top: 212, width: 200, height: 56 },
+          { size: 54, bold: true, color: th.accent, valign: 'middle' });
+      }
+      text(title, { left: args.eyebrow ? 180 : 76, top: 220, width: 700, height: 48 },
+        { size: TYPE.title, bold: true, color: th.strong, valign: 'middle' });
       if (body.length) {
-        text(body[0], { left: 60, top: 288, width: 760, height: 30 },
+        text(body[0], { left: args.eyebrow ? 180 : 76, top: 274, width: 700, height: 30 },
           { size: TYPE.body, color: th.muted });
       }
     } else if (kind === 'statement') {
-      // One number or one sentence, big. For the slide that has one job.
-      text(title, { left: GRID.margin, top: 170, width: GRID.W - GRID.margin * 2, height: 120 },
-        { size: 72, bold: true, color: th.accent, align: 'center', valign: 'bottom' });
+      // One number, big. The slide that has exactly one job.
+      text(title, { left: CL, top: 176, width: CW, height: 120 },
+        { size: 84, bold: true, color: th.strong, align: 'center', valign: 'bottom' });
+      band({ left: (GRID.W - 120) / 2, top: 310, width: 120, height: 4 }, th.accent);
       if (body.length) {
-        text(body.join('\n'),
-          { left: GRID.margin, top: 300, width: GRID.W - GRID.margin * 2, height: 70 },
+        text(body.join('\n'), { left: 140, top: 330, width: GRID.W - 280, height: 80 },
           { size: TYPE.heading, color: th.muted, align: 'center' });
       }
     } else if (kind === 'quote') {
-      text('“', { left: 56, top: 130, width: 80, height: 80 },
-        { size: 96, bold: true, color: th.soft });
-      text(title, { left: 130, top: 160, width: 760, height: 180 },
+      band({ left: CL, top: 150, width: 4, height: 200 }, th.accent);
+      text('“', { left: CL + 20, top: 132, width: 90, height: 90 },
+        { size: 96, bold: true, color: th.tint });
+      text(title, { left: CL + 34, top: 168, width: CW - 60, height: 164 },
         { size: TYPE.title, color: th.ink, valign: 'middle' });
       if (body.length) {
-        text(`— ${body.join('，')}`, { left: 130, top: 350, width: 760, height: 36 },
+        text(`— ${body.join('，')}`, { left: CL + 34, top: 344, width: CW - 60, height: 32 },
           { size: TYPE.body, color: th.muted });
       }
     } else if (kind === 'two_column' || kind === 'compare') {
-      text(title, GRID.title, { size: TYPE.title, bold: true, color: th.ink, valign: 'bottom' });
-      band({ left: GRID.margin, top: 126, width: GRID.body.width, height: 3 }, th.accent);
-
       const left = Array.isArray(args.left) ? args.left.map(String) : String(args.left || '').split(/\r?\n/);
       const right = Array.isArray(args.right) ? args.right.map(String) : String(args.right || '').split(/\r?\n/);
+      const colW = (CW - 28) / 2;
       const cols = [
-        { head: args.left_title, lines: left, x: GRID.body.left },
-        { head: args.right_title, lines: right, x: GRID.body.left + COL_W + GRID.gutter },
+        { head: args.left_title, lines: left, x: CL, tone: th.strong },
+        { head: args.right_title, lines: right, x: CL + colW + 28, tone: th.second },
       ];
+      const colH = 340;
       for (const c of cols) {
-        let y = GRID.body.top;
+        let y = CT;
         if (kind === 'compare') {
-          // A compare slide needs the two sides to read as two sides, so each
-          // gets a panel. Without it the gutter is the only cue and it is not
-          // enough at projector distance.
-          band({ left: c.x, top: y, width: COL_W, height: GRID.body.height }, th.soft);
+          // Two panels with their own bars, so the sides read as two things.
+          // Without it the gutter is the only cue, and at projector distance a
+          // 28pt gap is not a cue.
+          band({ left: c.x, top: y, width: colW, height: colH }, th.tint);
+          band({ left: c.x, top: y, width: colW, height: 5 }, c.tone);
         }
         if (c.head) {
-          text(String(c.head), { left: c.x + 16, top: y + 14, width: COL_W - 32, height: 34 },
-            { size: TYPE.heading, bold: true, color: th.accent });
-          y += 54;
+          text(String(c.head), { left: c.x + 18, top: y + 16, width: colW - 36, height: 32 },
+            { size: TYPE.heading, bold: true, color: c.tone });
+          y += 52;
         }
-        text(bullet(c.lines), { left: c.x + 16, top: y + 8, width: COL_W - 32, height: GRID.body.top + GRID.body.height - y - 20 },
+        text(bullet(c.lines), { left: c.x + 18, top: y + 10, width: colW - 36, height: CT + colH - y - 22 },
           { size: TYPE.body, color: th.ink });
       }
     } else {
       // bullets — the ordinary content slide, and the one that has to be right.
-      text(title, GRID.title, { size: TYPE.title, bold: true, color: th.ink, valign: 'bottom' });
-      band({ left: GRID.margin, top: 126, width: GRID.body.width, height: 3 }, th.accent);
-      text(bullet(body), { ...GRID.body, top: 152 }, { size: TYPE.body, color: th.ink });
+      text(bullet(body), { left: CL, top: CT, width: CW, height: 330 },
+        { size: TYPE.body, color: th.ink });
     }
 
     if (args.footer && kind !== 'title') {
-      text(String(args.footer), GRID.footer, { size: TYPE.caption, color: th.muted });
+      band({ left: CL, top: 486, width: CW, height: 1 }, th.line);
+      text(String(args.footer), { left: CL, top: 494, width: CW, height: 24 },
+        { size: TYPE.caption, color: th.muted });
     }
 
     const all = [...put.shape, ...put.text];
@@ -841,6 +948,160 @@ async function buildSlide(args) {
 
     return `已用「${kind}」版型做好投影片 ${index}，${all.length} 個物件，套用「${th.label}」配色。\n`
       + '每個物件都可以再用 ppt_format_shape 微調，或用 ppt_arrange 對齊。';
+  });
+}
+
+/**
+ * A row of cards.
+ *
+ * ── Why this is the single highest-value addition ──
+ * Counting shapes on the reference deck: 17 to 47 per slide, against the four to
+ * six the recipes were producing. That gap IS the difference in how the two look,
+ * and almost all of it is cards — a tinted panel with a coloured bar, repeated
+ * across the slide. Slides 2 and 6 of the reference are both nothing but rows of
+ * these with different parameters.
+ *
+ * And the density is free. Forty shapes and five shapes are queued into the SAME
+ * PowerPoint.run batch and cost the SAME single sync — one round trip either way.
+ * The add-in was not slow because it was doing less; it was doing less for no
+ * reason.
+ *
+ * ── The two variants, both taken from the reference ──
+ *   bar: 'left'  a wide card with a 5pt spine down its left edge. For lists —
+ *                agenda items, findings. Reads as a row you scan downward.
+ *   bar: 'top'   a narrower card with a 5pt cap. For a row of peers — the five
+ *                stages of a process, four pillars. Reads as a row you scan across.
+ *
+ * Colours cycle strong → second → accent so a row of five is not a flat wall of
+ * one hue, which is the thing that makes auto-generated slides look generated.
+ */
+async function addCards(args) {
+  if (!hasApi('1.4')) throw new Error('卡片需要 PowerPointApi 1.4，這個 Office 版本太舊。');
+  const cards = Array.isArray(args.cards) ? args.cards.filter(Boolean) : [];
+  if (!cards.length) throw new Error('cards 是必要的，至少要一張。');
+  if (cards.length > 8) throw new Error('一排最多 8 張卡片——再多在 A4 寬的投影片上就窄到讀不了了。');
+
+  const th = theme(args.theme);
+  const bar = String(args.bar || (cards.length > 3 ? 'top' : 'left')).toLowerCase();
+  const cols = clamp(num(args.columns, bar === 'top' ? cards.length : Math.min(2, cards.length)), 1, 8);
+  const rows = Math.ceil(cards.length / cols);
+
+  const gutter = num(args.gutter, 24);
+  const left = num(args.left, CHROME.contentLeft);
+  const top = num(args.top, CHROME.contentTop);
+  const totalW = num(args.width, CHROME.contentWidth);
+  const cw = (totalW - gutter * (cols - 1)) / cols;
+  const ch = num(args.height, bar === 'top' ? 92 : 68);
+  const pitchY = ch + num(args.row_gap, 18);
+
+  const cycle = [th.strong, th.second, th.accent];
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    const made_ = [];
+    const add = (shape) => { made_.push(shape); return shape; };
+
+    cards.forEach((card, i) => {
+      const c = i % cols;
+      const r = Math.floor(i / cols);
+      const x = left + (cw + gutter) * c;
+      const y = top + pitchY * r;
+      const accent = colour(card.color, cycle[i % cycle.length]);
+
+      // The panel. roundRect for a top-bar card and plain rect for a left-bar
+      // one, matching the reference — a spine down the side of a rounded box
+      // does not sit flush against the corner radius.
+      const panel = add(slide.shapes.addGeometricShape(
+        bar === 'top' ? 'RoundRectangle' : 'Rectangle',
+        { left: x, top: y, width: cw, height: ch }));
+      panel.name = stamp('card');
+      panel.fill.setSolidColor(colour(card.fill, bar === 'top' ? th.bg : th.tint));
+      if (bar === 'top') {
+        panel.lineFormat.visible = true;
+        panel.lineFormat.color = accent;
+        panel.lineFormat.weight = 1;
+      } else {
+        panel.lineFormat.visible = false;
+      }
+
+      // The bar. A separate shape rather than a thick border, because a border
+      // is drawn on all four sides and this must be on exactly one.
+      const spine = add(slide.shapes.addGeometricShape('Rectangle', bar === 'top'
+        ? { left: x, top: y, width: cw, height: 5 }
+        : { left: x, top: y, width: 5, height: ch }));
+      spine.name = stamp('bar');
+      spine.fill.setSolidColor(accent);
+      spine.lineFormat.visible = false;
+
+      const padX = bar === 'top' ? 14 : 16;
+      let tx = x + padX + (bar === 'left' ? 5 : 0);
+      let tw = cw - padX * 2 - (bar === 'left' ? 5 : 0);
+      let ty = y + (bar === 'top' ? 16 : 12);
+
+      // The number badge. Big, in the accent, set to the LEFT of the text rather
+      // than above it — it is an index, not a heading.
+      if (card.number) {
+        const badge = add(slide.shapes.addTextBox(String(card.number),
+          { left: tx, top: ty, width: 52, height: 40 }));
+        badge.name = stamp('num');
+        styleText(badge, { font: th.font, size: 24, bold: true, color: accent, valign: 'top' });
+        badge.fill.clear();
+        badge.lineFormat.visible = false;
+        tx += 56;
+        tw -= 56;
+      }
+
+      if (card.title) {
+        const title = add(slide.shapes.addTextBox(String(card.title),
+          { left: tx, top: ty, width: tw, height: card.text ? 24 : ch - 24 }));
+        title.name = stamp('ct');
+        styleText(title, {
+          font: th.font, size: num(args.size, 14), bold: true,
+          color: card.title_color ? colour(card.title_color) : th.ink, valign: 'top',
+        });
+        title.fill.clear();
+        title.lineFormat.visible = false;
+        ty += 26;
+      }
+      if (card.text) {
+        const body = add(slide.shapes.addTextBox(String(card.text),
+          { left: tx, top: ty, width: tw, height: y + ch - ty - 10 }));
+        body.name = stamp('cb');
+        styleText(body, { font: th.font, size: num(args.small, 11.5), color: th.muted, valign: 'top' });
+        body.fill.clear();
+        body.lineFormat.visible = false;
+      }
+      // The right-hand reference (「P.03」 in the reference deck), for agendas.
+      if (card.note && bar === 'left') {
+        const note = add(slide.shapes.addTextBox(String(card.note),
+          { left: x + cw - 74, top: y + ch / 2 - 14, width: 58, height: 28 }));
+        note.name = stamp('cn');
+        styleText(note, { font: th.font, size: 11, color: th.muted, align: 'right', valign: 'middle' });
+        note.fill.clear();
+        note.lineFormat.visible = false;
+      }
+    });
+
+    // Arrows between cards, for a process row. Drawn after the cards so they sit
+    // in the gutters rather than under a panel.
+    if (args.arrows && bar === 'top' && cols > 1) {
+      for (let c = 0; c < Math.min(cols, cards.length) - 1; c++) {
+        const ax = left + (cw + gutter) * c + cw + 4;
+        const arrow = add(slide.shapes.addGeometricShape('RightArrow',
+          { left: ax, top: top + ch / 2 - 7, width: gutter - 8, height: 14 }));
+        arrow.name = stamp('arrow');
+        arrow.fill.setSolidColor(th.line);
+        arrow.lineFormat.visible = false;
+      }
+    }
+
+    made_.forEach((sh) => sh.load('id'));
+    await ctx.sync();
+    made_.forEach((sh) => remember(slide.id, sh.id));
+
+    return `已在投影片 ${index} 排了 ${cards.length} 張卡片`
+      + `（${cols} 欄${rows > 1 ? ` × ${rows} 列` : ''}、${bar === 'top' ? '頂部' : '左側'}色條）`
+      + `，共 ${made_.length} 個物件。`;
   });
 }
 
@@ -945,6 +1206,51 @@ async function addDiagram(args) {
     + '這個 Office 版本不支援 SVG（要 ImageCoercion 1.2），所以放的是圖片，不能在 PowerPoint 裡編輯內容。';
 }
 
+/**
+ * A chart, drawn here and inserted as vector.
+ *
+ * ── The trade, stated plainly ──
+ * PowerPoint's JS API cannot create a chart. There is no gate to lift and no
+ * newer requirement set that adds one — the capability is absent. So this draws
+ * the chart itself and inserts it as SVG.
+ *
+ * What that buys: it is vector, so it stays sharp on a projector, and the person
+ * can right-click → 轉換為圖形 and edit every bar as a real object.
+ *
+ * What it costs, and the tool description says so rather than letting the model
+ * imply otherwise: it is NOT a PowerPoint chart object. There is no linked
+ * datasheet. Changing a number means asking for the chart again.
+ */
+async function addChart(args) {
+  if (!hasImageCoercion('1.2')) {
+    throw new Error(
+      '這個 Office 版本不支援插入向量圖（需要 ImageCoercion 1.2，Office 2021 以上）。'
+      + '圖表沒辦法用點陣圖替代——投影出來會糊，而且不能編輯。'
+      + '請改用 ppt_add_cards 把數字做成數據卡。');
+  }
+  const th = theme(args.theme);
+  const svg = chartSvg({
+    type: args.type,
+    title: args.title,
+    categories: args.categories,
+    values: args.values,
+    series: args.series,
+    colors: args.colors || [th.strong, th.second, th.accent],
+    data_labels: args.data_labels,
+    area: args.area,
+    center: args.center,
+    center_label: args.center_label,
+    width: num(args.width, 760),
+    height: num(args.height, 380),
+  }, th);
+
+  const geo = fitToBody(num(args.width, 760), num(args.height, 380), args);
+  await insertImageData(svg, Office.CoercionType.XmlSvg, geo);
+  return `已插入${args.title ? `「${args.title}」` : ''}圖表，${geo.width}×${geo.height} 點。\n`
+    + '它是 SVG 向量圖：投影不會糊，使用者按右鍵「轉換為圖形」之後每一根長條都可以個別編輯。\n'
+    + '但它**不是 PowerPoint 的圖表物件**，沒有連結的資料表——要改數字就重新產生一張。';
+}
+
 // ── Theme sweep ──────────────────────────────────────────────────────────────
 
 /**
@@ -976,7 +1282,7 @@ async function applyTheme(args) {
     await ctx.sync();
     return `已把「${th.label}」的字型套到 ${touched} 個物件`
       + (onlyOurs ? '（只動這個增益集建立的物件；使用者自己放的內容沒有被改）' : '（包含使用者自己放的物件）')
-      + `。\n配色：主色 ${th.accent}、內文 ${th.ink}、輔助 ${th.muted}。`;
+      + `。\n配色：主色 ${th.strong}、強調 ${th.accent}、內文 ${th.ink}、輔助 ${th.muted}。`;
   });
 }
 
@@ -1192,6 +1498,7 @@ export function supportedTools() {
     'ppt_add_text',
     'ppt_add_shape',
     'ppt_add_line',
+    'ppt_add_cards',
     'ppt_set_text',
     'ppt_format_shape',
     'ppt_delete_shape',
@@ -1205,12 +1512,16 @@ export function supportedTools() {
   // Pictures are a Common API capability, not a PowerPointApi one, so they are
   // gated on their own requirement set rather than on the host version.
   if (hasImageCoercion('1.1')) tools.push('ppt_add_image', 'ppt_add_diagram');
+  // Charts are vector-only on purpose: a rasterised chart on a projector is
+  // worse than no chart, so this needs 1.2 rather than falling back to 1.1.
+  if (hasImageCoercion('1.2')) tools.push('ppt_add_chart');
   return tools;
 }
 
 const WRITES = new Set([
   'ppt_add_slide', 'ppt_delete_slide', 'ppt_build_slide', 'ppt_add_text',
-  'ppt_add_shape', 'ppt_add_line', 'ppt_set_text', 'ppt_format_shape',
+  'ppt_add_shape', 'ppt_add_line', 'ppt_add_cards', 'ppt_add_chart',
+  'ppt_set_text', 'ppt_format_shape',
   'ppt_delete_shape', 'ppt_arrange', 'ppt_apply_theme', 'ppt_add_image',
   'ppt_add_diagram', 'ppt_run_script',
 ]);
@@ -1235,6 +1546,8 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_add_text: addText,
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
+          ppt_add_cards: addCards,
+          ppt_add_chart: addChart,
           ppt_set_text: setText,
           ppt_format_shape: formatShape,
           ppt_delete_shape: deleteShape,
@@ -1273,7 +1586,7 @@ export const meta = {
   },
 
   /** The slide canvas, so the pane can show it and the prompt can quote it. */
-  canvas: { width: GRID.W, height: GRID.H, grid: GRID, type: TYPE, themes: THEMES },
+  canvas: { width: GRID.W, height: GRID.H, grid: GRID, chrome: CHROME, type: TYPE, themes: THEMES },
 
   toolLabels: () => ({
     ppt_get_overview: t('正在讀取簡報結構…'),
@@ -1285,6 +1598,8 @@ export const meta = {
     ppt_add_text: t('正在加上文字…'),
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
+    ppt_add_cards: t('正在排卡片…'),
+    ppt_add_chart: t('正在畫圖表…'),
     ppt_set_text: t('正在改寫文字…'),
     ppt_format_shape: t('正在調整物件…'),
     ppt_delete_shape: t('正在移除物件…'),
@@ -1302,6 +1617,7 @@ export const meta = {
     ppt_build_slide: t('正在設計投影片…'),
     ppt_arrange: t('正在盤算版面…'),
     ppt_add_diagram: t('正在設計流程圖…'),
+    ppt_add_cards: t('正在設計版面…'),
   }),
 
   words: {

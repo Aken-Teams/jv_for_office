@@ -265,6 +265,8 @@ const zhCN = {
   '正在把圖片放進簡報…': '正在把图片放进演示文稿…',
   '正在設計投影片…': '正在设计幻灯片…',
   '正在盤算版面…': '正在盘算版面…',
+  '正在排卡片…': '正在排卡片…',
+  '正在畫圖表…': '正在画图表…',
 };
 
 const en = {
@@ -507,6 +509,8 @@ const en = {
   '正在把圖片放進簡報…': 'Placing the picture on the slide…',
   '正在設計投影片…': 'Designing the slide…',
   '正在盤算版面…': 'Working out the layout…',
+  '正在排卡片…': 'Laying out cards…',
+  '正在畫圖表…': 'Drawing the chart…',
 };
 
 const DICTS = { 'zh-CN': zhCN, en };
