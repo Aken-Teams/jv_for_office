@@ -859,6 +859,24 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 }
 .sel-drop:hover { background: var(--bg); color: var(--fg); }
 
+/* Pasted images, above the input. Thumbnails rather than filenames: a person
+   pastes two screenshots in a row and the only way they can tell which is which
+   is by looking at them. Sized so three fit across the narrowest task pane. */
+.attach-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px; }
+.attach-item {
+  position: relative; width: 56px; height: 56px; border-radius: 8px;
+  overflow: hidden; border: 1px solid var(--line); background: var(--bg-soft);
+}
+.attach-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-drop {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+  border-radius: 999px; line-height: 1; font-size: 13px;
+  /* Fixed dark ground, not a theme token: this sits on top of an arbitrary
+     image, so it has to stay legible over a white screenshot and a dark one. */
+  background: rgba(0, 0, 0, .6); color: #fff;
+}
+.attach-drop:hover { background: rgba(0, 0, 0, .8); }
+
 #composer { flex: none; padding: 10px 12px 12px; border-top: 1px solid var(--line); background: var(--bg); }
 
 /* Textarea and send button share one bordered shell, so the composer reads as a

@@ -45,7 +45,10 @@ Claude CLI ──stdio──> excelMcp.ts（獨立 subprocess）
 | `excel_get_selection` | 使用者當下選取的範圍 | |
 | `excel_read_range` | 讀值／讀公式／兩者，回 CSV | |
 | `excel_search` | 找含某段文字的儲存格 | |
+| `excel_read_attachment` | 看使用者貼進對話框的圖片 | |
+| `excel_read_image` | 看工作表上貼著的圖片內容（使用者問到才讀） | |
 | `excel_write_range` | 寫入值或公式 | ✔ |
+| `excel_clean_data` | 去重、統一寫法、補空白、拆併欄位 | ✔ |
 | `excel_manage_sheet` | 新增／更名／刪除／切換／搬移工作表 | 刪除、更名 |
 | `excel_format_range` | 數字格式、粗體、字色底色、對齊、框線、欄寬列高、合併 | |
 | `excel_create_chart` | 直條／橫條／折線／圓餅／散佈／區域／雷達圖 | |
@@ -57,6 +60,11 @@ Claude CLI ──stdio──> excelMcp.ts（獨立 subprocess）
 
 儲存格引用 `[[工作表!C42]]` 會渲染成可點的連結，點了跳到那一格。
 寫入前會存快照，「復原上一步」拿得回來。
+
+圖片可以直接貼進對話框（或拖進去）——最常見的用法是把一張報表截圖丟進來，
+請它打成 Excel 表格。圖片留在增益集裡，模型要看才會呼叫 `excel_read_attachment` 取走；
+沒問到的圖不會離開這台電腦。工作表上「貼著」的圖片則只在使用者提到它時才讀，
+因為圖片是最難用肉眼檢查的夾帶管道。
 
 格式方面另外支援：字體、框線顏色／粗細／樣式、縮排、內建表格樣式、圖表圖例位置與資料標籤。
 

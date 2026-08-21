@@ -28,11 +28,24 @@
  */
 import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
+import { equationOoxml } from './omml.js';
 
 /** Cheap and synchronous; Office.js answers from a local table. */
 export function hasApi(version) {
   try {
     return Office.context.requirements.isSetSupported('WordApi', version);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The desktop-only requirement sets are a separate family from WordApi 1.x —
+ * asking isSetSupported('WordApi', …) for them always answers false.
+ */
+export function hasDesktopApi(version) {
+  try {
+    return Office.context.requirements.isSetSupported('WordApiDesktop', version);
   } catch {
     return false;
   }
@@ -53,6 +66,9 @@ const BASE_TOOLS = [
   'word_header_footer',
   'word_insert_break',
   'word_insert_chart',
+  'word_insert_equation',
+  'word_insert_link',
+  'word_page_design',
   'word_replace_all',
   // Compute and edit inside Word instead of hauling the document through the
   // model's context. Same rationale as excel_run_script.
@@ -77,6 +93,10 @@ const BASE_TOOLS = [
 export function supportedTools() {
   const tools = [...BASE_TOOLS];
   if (hasApi('1.4')) tools.push('word_tracked_changes', 'word_comment');
+  // Real checkboxes need 1.7 and floating text boxes need a desktop-only set —
+  // both newer than anything else here, so they are offered only where they work.
+  if (hasApi('1.7')) tools.push('word_checkbox');
+  if (hasDesktopApi('1.2')) tools.push('word_insert_textbox');
   return tools;
 }
 
@@ -1100,6 +1120,322 @@ async function insertChart(args) {
   });
 }
 
+
+// ── Equations ─────────────────────────────────────────────────────────────────
+
+/**
+ * Insert real Word mathematics, written as LaTeX.
+ *
+ * The conversion lives in hosts/omml.js and touches no Office API, which is why
+ * it can be tested exhaustively without Word. What arrives here is a finished
+ * OOXML package; all this function decides is where to put it.
+ *
+ * Not tracked by default. A revision mark on an equation shows in the review
+ * pane as an insertion of opaque machinery — there is nothing a reviewer can
+ * read and accept or reject — and the pane's own snapshot already covers it.
+ */
+async function insertEquation(args) {
+  const latex = String(args.latex || '').trim();
+  if (!latex) throw new Error('latex 是必要的');
+
+  const ooxml = equationOoxml(latex, args.display !== false);
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        items[from - 1].insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
+      } else {
+        ctx.document.body.insertOoxml(ooxml, 'End');
+      }
+      await ctx.sync();
+      return null;
+    });
+    return `已插入公式：${latex}\n`
+      + '它是真正的 Word 公式物件，使用者可以點進去繼續編輯，也搜尋得到。'
+      + (args.display === false ? '' : '（獨立成行並置中。）')
+      + trackingNote(result);
+  });
+}
+
+// ── Checkboxes and content controls ───────────────────────────────────────────
+
+/**
+ * Checklists made of real Word checkboxes.
+ *
+ * Not typed 「☐」 characters — actual CheckBox content controls, which means the
+ * reader clicks them and Word records the state in the file. That is the whole
+ * point: a checklist you cannot tick is a picture of a checklist.
+ *
+ * Needs WordApi 1.7, which is a noticeably higher bar than the 1.4 that tracked
+ * changes need. supportedTools() drops this whole tool on older builds so the
+ * model never offers someone a form their Word cannot make.
+ */
+async function checkbox(args) {
+  if (!hasApi('1.7')) throw new Error('這個 Word 版本不支援核取方塊內容控制項（需要 WordApi 1.7）。');
+  const op = String(args.op || 'insert');
+
+  return Word.run(async (ctx) => {
+    if (op === 'list' || op === 'set') {
+      const controls = ctx.document.getContentControls({ types: ['CheckBox'] });
+      controls.load('items');
+      await ctx.sync();
+      const boxes = controls.items;
+      if (!boxes.length) return '這份文件裡沒有核取方塊。';
+
+      for (const c of boxes) c.load('id,text,checkboxContentControl/isChecked');
+      await ctx.sync();
+
+      if (op === 'set') {
+        const at = Math.floor(Number(args.index));
+        if (!Number.isFinite(at) || at < 1 || at > boxes.length) {
+          throw new Error(`index 要在 1 到 ${boxes.length} 之間。先用 op="list" 看編號。`);
+        }
+        boxes[at - 1].checkboxContentControl.isChecked = args.checked !== false;
+        await ctx.sync();
+        return `已${args.checked === false ? '取消勾選' : '勾選'}第 ${at} 項。`;
+      }
+
+      const done = boxes.filter((c) => c.checkboxContentControl.isChecked).length;
+      const lines = boxes.map((c, i) =>
+        `${i + 1}\t${c.checkboxContentControl.isChecked ? '☑' : '☐'}\t${snip(c.text, 80)}`);
+      return `核取方塊共 ${boxes.length} 個，已勾選 ${done} 個：\n編號\t狀態\t項目\n${lines.join('\n')}`;
+    }
+
+    // ── insert ──
+    const items = Array.isArray(args.items) ? args.items.map(String).filter(Boolean) : [];
+    if (!items.length) throw new Error('items 是必要的，例如 ["確認圖面版次", "確認材料規格"]。');
+
+    const paras = await loadParagraphs(ctx);
+    const result = await withTracking(ctx, args, async () => {
+      let anchor = null;
+      for (const label of items) {
+        if (anchor) {
+          anchor = anchor.insertParagraph(label, 'After');
+        } else if (args.paragraph && paras.length) {
+          const { from } = resolveRange(paras, args);
+          anchor = paras[from - 1].insertParagraph(label, String(args.at) === 'before' ? 'Before' : 'After');
+        } else {
+          anchor = ctx.document.body.insertParagraph(label, 'End');
+        }
+        // The control wraps an empty range at the head of the line, so the box
+        // sits before the label rather than swallowing it.
+        anchor.getRange('Start').insertContentControl('CheckBox');
+      }
+      await ctx.sync();
+      return null;
+    });
+    return `已插入 ${items.length} 個核取方塊。使用者在 Word 裡點一下就能勾，狀態會存進檔案裡。`
+      + trackingNote(result);
+  });
+}
+
+// ── Hyperlinks ────────────────────────────────────────────────────────────────
+
+async function link(args) {
+  const op = String(args.op || 'add');
+  return Word.run(async (ctx) => {
+    if (op === 'list') {
+      const paras = await loadParagraphs(ctx);
+      const found = [];
+      for (let i = 0; i < paras.length; i++) {
+        const r = paras[i].getRange();
+        r.load('hyperlink,text');
+        found.push({ i: i + 1, r });
+      }
+      await ctx.sync();
+      const hits = found.filter((f) => f.r.hyperlink).slice(0, MAX_SEARCH_RESULTS);
+      if (!hits.length) return '這份文件裡沒有超連結。';
+      return `超連結共 ${hits.length} 個：\n段落\t網址\t文字\n`
+        + hits.map((h) => `${h.i}\t${h.r.hyperlink}\t${snip(h.r.text, 60)}`).join('\n');
+    }
+
+    const url = String(args.url || '').trim();
+    if (!url) throw new Error('url 是必要的');
+    // Only http(s) and mailto become links. A document can come from outside the
+    // company, and turning whatever it says into a clickable target is not
+    // something this tool should do on its behalf.
+    if (!/^(https?:|mailto:)/i.test(url)) {
+      throw new Error('url 只接受 http://、https:// 或 mailto: 開頭的位址。');
+    }
+
+    const result = await withTracking(ctx, args, async () => {
+      if (args.find) {
+        const hits = ctx.document.body.search(String(args.find), { matchCase: !!args.match_case });
+        hits.load('items');
+        await ctx.sync();
+        if (!hits.items.length) throw new Error(`找不到「${args.find}」，沒有加上連結。`);
+        for (const r of hits.items) r.hyperlink = url;
+        await ctx.sync();
+        return hits.items.length;
+      }
+      const paras = await loadParagraphs(ctx);
+      const text = String(args.text || url);
+      let anchor;
+      if (args.paragraph && paras.length) {
+        const { from } = resolveRange(paras, args);
+        anchor = paras[from - 1].insertParagraph(text, String(args.at) === 'before' ? 'Before' : 'After');
+      } else {
+        anchor = ctx.document.body.insertParagraph(text, 'End');
+      }
+      anchor.getRange().hyperlink = url;
+      await ctx.sync();
+      return 1;
+    });
+
+    return args.find
+      ? `已把 ${result.value} 處「${args.find}」設成連往 ${url} 的超連結。` + trackingNote(result)
+      : `已插入連往 ${url} 的超連結。` + trackingNote(result);
+  });
+}
+
+// ── Page design ───────────────────────────────────────────────────────────────
+
+/**
+ * A watermark, the way Word itself makes one: a VML shape in the header.
+ *
+ * There is no watermark API. Word's own 「浮水印」 button writes exactly this —
+ * a WordArt-ish shape anchored in the primary header so it repeats on every
+ * page and sits behind the text.
+ */
+function watermarkOoxml(text, color) {
+  const t = xmlEscape(text);
+  return OOXML_HEAD
+    + '<w:p><w:r><w:pict>'
+    + '<v:shapetype xmlns:v="urn:schemas-microsoft-com:vml" id="_x0000_t136" coordsize="21600,21600"'
+    + ' o:spt="136" adj="10800" path="m@7,l@8,m@5,21600l@6,21600e">'
+    + '<v:formulas><v:f eqn="sum #0 0 10800"/><v:f eqn="prod #0 2 1"/><v:f eqn="sum 21600 0 @1"/>'
+    + '<v:f eqn="sum 0 0 @2"/><v:f eqn="sum 21600 0 @3"/><v:f eqn="if @0 @3 0"/>'
+    + '<v:f eqn="if @0 21600 @1"/><v:f eqn="if @0 0 @2"/><v:f eqn="if @0 @4 21600"/>'
+    + '</v:formulas><v:path textpathok="t"/></v:shapetype>'
+    + `<v:shape xmlns:v="urn:schemas-microsoft-com:vml" id="JVisionWatermark" type="#_x0000_t136"`
+    + ` style="position:absolute;margin-left:0;margin-top:0;width:450pt;height:150pt;`
+    + `rotation:315;z-index:-251654144;mso-position-horizontal:center;`
+    + `mso-position-horizontal-relative:margin;mso-position-vertical:center;`
+    + `mso-position-vertical-relative:margin" fillcolor="${xmlEscape(color)}" stroked="f">`
+    + `<v:fill opacity=".5"/>`
+    + `<v:textpath style="font-family:&quot;Microsoft JhengHei&quot;;font-size:1pt" string="${t}"/>`
+    + '</v:shape></w:pict></w:r></w:p>'
+    + OOXML_TAIL;
+}
+
+const BORDER_STYLES = { single: 'single', double: 'double', thick: 'thick', dashed: 'dashed', dotted: 'dotted' };
+
+/**
+ * Page borders and page colour.
+ *
+ * Both live in parts of the document Office.js does not expose — the section
+ * properties and the document background — so the only route is to read the
+ * body's OOXML, edit it, and write it back.
+ *
+ * That is a whole-body rewrite, and it is the reason this tool asks for
+ * confirmation even though a border destroys nothing: replacing the body is a
+ * blunt instrument, and a person should know it is about to happen to a document
+ * that may have revisions and comments in it. The snapshot covers it either way.
+ */
+async function pageDesign(args) {
+  return Word.run(async (ctx) => {
+    const notes = [];
+
+    if (args.watermark) {
+      const sections = ctx.document.sections;
+      sections.load('items');
+      await ctx.sync();
+      for (const section of sections.items) {
+        const header = section.getHeader('Primary');
+        header.insertOoxml(watermarkOoxml(String(args.watermark), String(args.watermark_color || '#C0C0C0')), 'End');
+      }
+      await ctx.sync();
+      notes.push(`已加上浮水印「${args.watermark}」（每一頁都會出現，位置在文字後面）`);
+    }
+
+    if (args.border || args.page_color) {
+      const ooxml = ctx.document.body.getOoxml();
+      await ctx.sync();
+      let xml = String(ooxml.value || '');
+      if (!xml) throw new Error('讀不到文件內容，無法設定頁面框線。');
+
+      if (args.border) {
+        const style = BORDER_STYLES[String(args.border).toLowerCase()] || 'single';
+        const color = String(args.border_color || '#000000').replace('#', '');
+        const size = Math.max(2, Math.min(Number(args.border_width) || 12, 96));
+        const edge = (side) =>
+          `<w:${side} w:val="${style}" w:sz="${size}" w:space="24" w:color="${color}"/>`;
+        const borders = '<w:pgBorders w:offsetFrom="page">'
+          + edge('top') + edge('left') + edge('bottom') + edge('right') + '</w:pgBorders>';
+        xml = xml.replace(/<w:pgBorders[\s\S]*?<\/w:pgBorders>/g, '');
+        xml = xml.includes('<w:sectPr')
+          ? xml.replace(/(<w:sectPr[^>]*>)/, `$1${borders}`)
+          : xml.replace('</w:body>', `<w:sectPr>${borders}</w:sectPr></w:body>`);
+        notes.push('已加上頁面框線');
+      }
+
+      if (args.page_color) {
+        const color = String(args.page_color).replace('#', '');
+        xml = xml.replace(/<w:background[^>]*\/>/g, '');
+        xml = xml.replace(/(<w:document[^>]*>)/, `$1<w:background w:color="${color}"/>`);
+        notes.push(`已把頁面底色設成 ${args.page_color}（列印時預設不會印出底色，這是 Word 的行為）`);
+      }
+
+      ctx.document.body.insertOoxml(xml, 'Replace');
+      await ctx.sync();
+    }
+
+    if (!notes.length) throw new Error('要指定 watermark、border 或 page_color 其中至少一項。');
+    return notes.join('；') + '。';
+  });
+}
+
+// ── Text boxes ────────────────────────────────────────────────────────────────
+
+/**
+ * A floating text box — the thing a designed cover page is made of.
+ *
+ * WordApiDesktop 1.2, which is a desktop-only requirement set. That is fine for
+ * this add-in (the manifest needs SharedRuntime, which is desktop-only anyway),
+ * but it is newer than everything else here, so the tool drops out of
+ * supportedTools() rather than failing in front of someone.
+ *
+ * Sizes and positions are in POINTS, measured from the top-left of the page.
+ * A4 is 595 × 842pt, US Letter 612 × 792pt.
+ */
+async function insertTextBox(args) {
+  if (!hasDesktopApi('1.2')) {
+    throw new Error('這個 Word 版本不支援從增益集建立文字方塊（需要 WordApiDesktop 1.2）。');
+  }
+  const text = String(args.text || '');
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      const anchor = args.paragraph && items.length
+        ? items[resolveRange(items, args).from - 1].getRange('Start')
+        : ctx.document.body.getRange('Start');
+
+      const shape = anchor.insertTextBox(text, {
+        left: Number(args.left) || 0,
+        top: Number(args.top) || 0,
+        width: Number(args.width) || 400,
+        height: Number(args.height) || 100,
+      });
+      if (args.fill) shape.fill.setSolidColor(String(args.fill));
+      if (args.transparency !== undefined) shape.fill.transparency = Number(args.transparency);
+      shape.name = 'JVision ' + (args.name || 'TextBox');
+
+      const body = shape.body;
+      const font = body.font;
+      if (args.font_color) font.color = String(args.font_color);
+      if (args.font_size) font.size = Number(args.font_size);
+      if (args.font) font.name = String(args.font);
+      if (args.bold !== undefined) font.bold = !!args.bold;
+      await ctx.sync();
+      return null;
+    });
+    return `已插入文字方塊（${Number(args.width) || 400} × ${Number(args.height) || 100} pt，`
+      + `位置 ${Number(args.left) || 0}, ${Number(args.top) || 0}）。`
+      + '它是浮動物件，使用者可以直接拖曳、改字、改顏色。' + trackingNote(result);
+  });
+}
+
 // ── Undo ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -1490,6 +1826,11 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_header_footer':
       case 'word_insert_break':
       case 'word_insert_chart':
+      case 'word_insert_equation':
+      case 'word_checkbox':
+      case 'word_insert_link':
+      case 'word_page_design':
+      case 'word_insert_textbox':
       case 'word_replace_all': {
         // Every one of these changes the document, so every one is photographed
         // first — including the ones that did not need a click. Tracked changes
@@ -1507,6 +1848,11 @@ export async function executeTool(tool, args, opts = {}) {
           word_header_footer: headerFooter,
           word_insert_break: insertBreak,
           word_insert_chart: insertChart,
+          word_insert_equation: insertEquation,
+          word_checkbox: checkbox,
+          word_insert_link: link,
+          word_page_design: pageDesign,
+          word_insert_textbox: insertTextBox,
           word_replace_all: replaceAll,
         }[tool];
         return { ok: true, content: await run(a), snapshot };
@@ -1580,6 +1926,11 @@ export const meta = {
     word_header_footer: t('正在設定頁首頁尾…'),
     word_insert_break: t('正在調整分頁…'),
     word_insert_chart: t('正在繪製圖表…'),
+    word_insert_equation: t('正在插入公式…'),
+    word_checkbox: t('正在處理核取方塊…'),
+    word_insert_link: t('正在設定超連結…'),
+    word_page_design: t('正在設計版面…'),
+    word_insert_textbox: t('正在插入文字方塊…'),
     word_replace_all: t('等待你確認取代…'),
     word_tracked_changes: t('正在處理追蹤修訂…'),
     word_comment: t('正在加註解…'),
@@ -1592,6 +1943,7 @@ export const meta = {
     word_insert_text: t('正在草擬要插入的內容…'),
     word_insert_table: t('正在整理表格…'),
     word_insert_chart: t('正在設計圖表…'),
+    word_insert_equation: t('正在推導公式…'),
     word_format_range: t('正在決定格式…'),
   }),
 
