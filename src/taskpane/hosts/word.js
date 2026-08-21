@@ -28,7 +28,7 @@
  */
 import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
-import { equationOoxml } from './omml.js';
+import { equationOoxml, xmlImbalance } from './omml.js';
 
 /** Cheap and synchronous; Office.js answers from a local table. */
 export function hasApi(version) {
@@ -69,6 +69,7 @@ const BASE_TOOLS = [
   'word_insert_equation',
   'word_insert_link',
   'word_page_design',
+  'word_normalize_layout',
   'word_replace_all',
   // Compute and edit inside Word instead of hauling the document through the
   // model's context. Same rationale as excel_run_script.
@@ -182,7 +183,36 @@ function renderParagraphs(items, from, to) {
 
 // ── Tracked changes ───────────────────────────────────────────────────────────
 
+const ALIGNMENTS = { left: 'Left', center: 'Centered', centered: 'Centered', right: 'Right', justify: 'Justified', justified: 'Justified' };
+
 const TRACK_MODES = { off: 'Off', mine: 'TrackMineOnly', all: 'TrackAll' };
+
+/**
+ * Which writes go in as revisions, and why it is not all of them.
+ *
+ * The first version tracked everything, and the result was a document that came
+ * out entirely red and underlined with a column of revision balloons down the
+ * side — because the assistant had WRITTEN it, and every word was an insertion.
+ * That is not a review; it is a document nobody can read until they accept 200
+ * changes they never had a chance to disagree with.
+ *
+ * Tracked changes answer one question: **what did you change about what I
+ * already had?** They are worth a lot when the answer exists and worth nothing
+ * when it does not. So the line is drawn there:
+ *
+ *   - touching text that was already in the document — rewriting, replacing,
+ *     deleting — is tracked, because there is a before and after to compare.
+ *   - adding new content — paragraphs, tables, charts, equations, a contents
+ *     page — is not, because there is nothing to compare it against. The undo
+ *     button still takes it all back in one click, which is the control that
+ *     actually fits "I did not want any of this".
+ *
+ * Either default can be overridden per call with `track`.
+ */
+const TRACKED_BY_DEFAULT = new Set(['word_write_range', 'word_replace_all', 'word_delete_range']);
+
+/** Opt-in tracking: the caller adds new content, so silence is the right default. */
+const optIn = (args) => ({ track: args.track === true });
 
 /**
  * Run a write with revision marking on, then put the setting back.
@@ -199,6 +229,10 @@ const TRACK_MODES = { off: 'Off', mine: 'TrackMineOnly', all: 'TrackAll' };
  */
 async function withTracking(ctx, args, fn) {
   const wanted = args.track === false ? null : TRACK_MODES.all;
+  // NOTE for callers: `args` here decides the DEFAULT as well as the override.
+  // Pass the caller's args to track by default (rewrites); pass
+  // `{ track: args.track === true }` to require opting in (new content).
+  // Which of those a tool wants is explained at trackedByDefault below.
   if (!wanted || !hasApi('1.4')) {
     const value = await fn();
     return { value, tracked: false, reason: hasApi('1.4') ? 'track=false' : 'unsupported' };
@@ -460,7 +494,7 @@ async function insertText(args) {
   const at = String(args.at || 'end');
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const result = await withTracking(ctx, optIn(args), async () => {
       let anchor;
       if (at === 'start' || (at === 'before' && !args.paragraph)) {
         anchor = ctx.document.body.insertParagraph(lines[0] ?? '', 'Start');
@@ -470,10 +504,34 @@ async function insertText(args) {
         const { from } = resolveRange(items, args);
         anchor = items[from - 1].insertParagraph(lines[0] ?? '', at === 'before' ? 'Before' : 'After');
       }
-      for (let i = 1; i < lines.length; i++) anchor = anchor.insertParagraph(lines[i], 'After');
-      if (args.style) {
-        // Applied to the run we just inserted only — never to what was there.
-        anchor.styleBuiltIn = String(args.style).replace(/\s+/g, '');
+      const inserted = [anchor];
+      for (let i = 1; i < lines.length; i++) {
+        anchor = anchor.insertParagraph(lines[i], 'After');
+        inserted.push(anchor);
+      }
+
+      // ── Two bugs lived in these four lines ──
+      //
+      // The style was applied to `anchor` only, which after the loop above is the
+      // LAST paragraph — so 「插入五段，style=Normal」 styled one of them.
+      //
+      // Worse, insertParagraph INHERITS the anchor paragraph's formatting, and
+      // that formatting is direct, not from a style. Insert body text after a
+      // centred cover title and every paragraph comes out centred; insert after
+      // that and it keeps going. One centred title at the top of a document
+      // silently centred the entire report.
+      //
+      // So each inserted paragraph gets the style stated (Normal when the caller
+      // said nothing), and its alignment and indents are set rather than
+      // inherited. Explicit beats inherited: a caller who wants centring asks
+      // for it.
+      const style = String(args.style || 'Normal').replace(/\s+/g, '');
+      const align = ALIGNMENTS[String(args.alignment || 'left').toLowerCase()] || 'Left';
+      for (const p of inserted) {
+        p.styleBuiltIn = style;
+        p.alignment = align;
+        p.leftIndent = Number(args.left_indent) || 0;
+        p.firstLineIndent = Number(args.first_line_indent) || 0;
       }
       await ctx.sync();
       return null;
@@ -497,7 +555,6 @@ async function deleteRange(args) {
   });
 }
 
-const ALIGNMENTS = { left: 'Left', center: 'Centered', centered: 'Centered', right: 'Right', justify: 'Justified', justified: 'Justified' };
 
 /**
  * Formatting.
@@ -572,7 +629,7 @@ async function insertTable(args) {
 
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const result = await withTracking(ctx, optIn(args), async () => {
       let table;
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
@@ -664,6 +721,8 @@ async function insertToc(args) {
 
     const heading = args.heading === false ? '' : String(args.heading || '目錄');
     const ooxml = tocOoxml(entries, heading);
+    const broken = xmlImbalance(ooxml);
+    if (broken) throw new Error(`目錄的 XML 結構不對（${broken}）。這是程式的問題，不是文件的問題。`);
 
     // Deliberately NOT tracked, even though every other write is.
     //
@@ -844,7 +903,7 @@ async function insertBreak(args) {
   const kind = BREAKS[String(args.type || 'page').toLowerCase()] || 'Page';
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const result = await withTracking(ctx, optIn(args), async () => {
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
         items[from - 1].insertBreak(kind, String(args.at) === 'before' ? 'Before' : 'After');
@@ -1093,7 +1152,7 @@ async function insertChart(args) {
 
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const result = await withTracking(ctx, optIn(args), async () => {
       let anchor;
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
@@ -1139,6 +1198,12 @@ async function insertEquation(args) {
   if (!latex) throw new Error('latex 是必要的');
 
   const ooxml = equationOoxml(latex, args.display !== false);
+  // Check before Word sees it. A nesting bug here would come back from Word as a
+  // bare rejection of the whole insertion, with nothing to say which tag was
+  // wrong; failing here names the problem and leaves the document untouched.
+  const broken = xmlImbalance(ooxml);
+  if (broken) throw new Error(`這段 LaTeX 轉出來的 XML 結構不對（${broken}）。換一種寫法，或把公式拆成兩個。`);
+
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
     const result = await withTracking(ctx, { track: args.track === true }, async () => {
@@ -1207,7 +1272,7 @@ async function checkbox(args) {
     if (!items.length) throw new Error('items 是必要的，例如 ["確認圖面版次", "確認材料規格"]。');
 
     const paras = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const result = await withTracking(ctx, optIn(args), async () => {
       let anchor = null;
       for (const label of items) {
         if (anchor) {
@@ -1218,6 +1283,12 @@ async function checkbox(args) {
         } else {
           anchor = ctx.document.body.insertParagraph(label, 'End');
         }
+        // Same inheritance trap as insertText: a checklist placed after a centred
+        // heading came out centred. State the formatting instead of taking it.
+        anchor.styleBuiltIn = 'Normal';
+        anchor.alignment = 'Left';
+        anchor.leftIndent = 0;
+        anchor.firstLineIndent = 0;
         // The control wraps an empty range at the head of the line, so the box
         // sits before the label rather than swallowing it.
         anchor.getRange('Start').insertContentControl('CheckBox');
@@ -1259,7 +1330,9 @@ async function link(args) {
       throw new Error('url 只接受 http://、https:// 或 mailto: 開頭的位址。');
     }
 
-    const result = await withTracking(ctx, args, async () => {
+    // Turning existing words into a link edits what is already there; inserting a
+    // new linked line does not. Same rule, applied inside one tool.
+    const result = await withTracking(ctx, args.find ? args : optIn(args), async () => {
       if (args.find) {
         const hits = ctx.document.body.search(String(args.find), { matchCase: !!args.match_case });
         hits.load('items');
@@ -1433,6 +1506,66 @@ async function insertTextBox(args) {
     return `已插入文字方塊（${Number(args.width) || 400} × ${Number(args.height) || 100} pt，`
       + `位置 ${Number(args.left) || 0}, ${Number(args.top) || 0}）。`
       + '它是浮動物件，使用者可以直接拖曳、改字、改顏色。' + trackingNote(result);
+  });
+}
+
+
+/**
+ * Put the whole document's body text back onto one set of rules.
+ *
+ * ── Why this is a tool and not just a habit ──
+ * Alignment drifts. Every paragraph inserted after a centred one inherits the
+ * centring, a display equation is legitimately centred and everything after it
+ * catches it too, and the agent working question by question has no view of the
+ * document as a whole — so what comes out is a page that is centred in patches.
+ * The reader does not see "a few paragraphs with the wrong alignment", they see
+ * a document that was not proofread.
+ *
+ * Consistency of this kind cannot come from being careful at each insertion. It
+ * comes from one pass at the end that states the rule for every paragraph at
+ * once, which is what this does.
+ *
+ * What it deliberately leaves alone: headings, captions, table-of-contents
+ * entries, list items, and any paragraph holding an equation. Those are centred
+ * or indented ON PURPOSE, and a normaliser that flattens them has replaced one
+ * kind of mess with another.
+ */
+const KEEP_AS_IS = /^(Heading|TOC|Caption|Title|Subtitle|Quote|IntenseQuote|ListParagraph|NoSpacing)/i;
+
+async function normalizeLayout(args) {
+  const align = ALIGNMENTS[String(args.alignment || 'left').toLowerCase()] || 'Left';
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    if (!items.length) return '這份文件是空的。';
+
+    // Equations live in their own centred paragraphs and must stay that way.
+    // A paragraph holding one reports no text, so that is how they are spotted.
+    const changed = [];
+    const { from, to } = args.from === undefined
+      ? { from: 1, to: items.length }
+      : resolveRange(items, args);
+
+    for (let i = from; i <= to; i++) {
+      const p = items[i - 1];
+      const style = String(p.styleBuiltIn || p.style || '').replace(/\s+/g, '');
+      if (KEEP_AS_IS.test(style)) continue;
+      if (p.isListItem) continue;
+      if (!String(p.text || '').trim()) continue;
+
+      p.alignment = align;
+      p.leftIndent = Number(args.left_indent) || 0;
+      p.firstLineIndent = Number(args.first_line_indent) || 0;
+      if (args.line_spacing !== undefined) p.lineSpacing = Number(args.line_spacing);
+      if (args.space_after !== undefined) p.spaceAfter = Number(args.space_after);
+      if (args.style_body) p.styleBuiltIn = String(args.style_body).replace(/\s+/g, '');
+      changed.push(i);
+    }
+    await ctx.sync();
+
+    if (!changed.length) return '內文段落的排版本來就是一致的，沒有改動。';
+    return `已把 ${changed.length} 個內文段落統一成${align === 'Left' ? '靠左' : align}對齊`
+      + `${args.first_line_indent ? `、首行縮排 ${args.first_line_indent} 點` : ''}。`
+      + '標題、圖說、目錄、清單和公式段落沒有動——那些的對齊是刻意的。';
   });
 }
 
@@ -1830,6 +1963,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_checkbox':
       case 'word_insert_link':
       case 'word_page_design':
+      case 'word_normalize_layout':
       case 'word_insert_textbox':
       case 'word_replace_all': {
         // Every one of these changes the document, so every one is photographed
@@ -1852,6 +1986,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_checkbox: checkbox,
           word_insert_link: link,
           word_page_design: pageDesign,
+          word_normalize_layout: normalizeLayout,
           word_insert_textbox: insertTextBox,
           word_replace_all: replaceAll,
         }[tool];
@@ -1930,6 +2065,7 @@ export const meta = {
     word_checkbox: t('正在處理核取方塊…'),
     word_insert_link: t('正在設定超連結…'),
     word_page_design: t('正在設計版面…'),
+    word_normalize_layout: t('正在統一排版…'),
     word_insert_textbox: t('正在插入文字方塊…'),
     word_replace_all: t('等待你確認取代…'),
     word_tracked_changes: t('正在處理追蹤修訂…'),

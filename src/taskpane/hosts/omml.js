@@ -417,6 +417,36 @@ function plain(nodes) {
   }).join('');
 }
 
+/**
+ * Refuse to hand Word XML that cannot possibly be right.
+ *
+ * insertOoxml on a malformed package is not a graceful failure — Word rejects
+ * the whole insertion, and what the add-in gets back is a generic error with no
+ * hint as to which of several hundred generated tags was wrong. Worse, a run
+ * died mid-equation during testing with an exit code and no stderr, which is
+ * indistinguishable from the pane being killed; ruling this out cheaply is worth
+ * more than the microseconds it costs.
+ *
+ * Only structural balance is checked. That is the failure this generator can
+ * actually have — a nesting bug in a recursive emitter — and it is the one Word
+ * is least forgiving about.
+ */
+export function xmlImbalance(xml) {
+  const stack = [];
+  const re = /<(\/?)([A-Za-z:][\w:.-]*)([^>]*?)(\/?)>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const [, closing, name, , selfClose] = m;
+    if (selfClose === '/') continue;
+    if (closing === '/') {
+      if (stack.pop() !== name) return `</${name}> 對不上開頭的標籤`;
+    } else {
+      stack.push(name);
+    }
+  }
+  return stack.length ? `這些標籤沒有關閉：${stack.slice(0, 5).join(', ')}` : '';
+}
+
 /** The maths itself, without any Word paragraph around it. */
 export function latexToOmml(latex) {
   const toks = tokenize(latex);
