@@ -194,7 +194,7 @@ cp .env.example .env      # 首次
 ### 集中部署（正式的答案）
 
 Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益集 → 上傳自訂應用程式 →
-上傳 `manifests/excel.xml` 和 `manifests/word.xml`（**兩份分開上傳**，它們是兩個獨立的增益集）
+上傳 `manifests/excel.xml`、`manifests/word.xml` 和 `manifests/powerpoint.xml`（**三份分開上傳**，它們是三個獨立的增益集）
 → 指派給使用者或群組。使用者端**完全不用動作**，下次開 Excel
 按鈕就在那裡，IT 也能隨時收回。這是 Claude for Excel 給企業客戶的方式，也應該是我們的終局。
 
@@ -223,15 +223,16 @@ Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益
 
 ### 單一執行檔（發給一般使用者用這個）
 
-[installer/JVisionSetup.exe](installer/JVisionSetup.exe) 把兩份 manifest **嵌進 exe 裡**，
+[installer/JVisionSetup.exe](installer/JVisionSetup.exe) 把三份 manifest **嵌進 exe 裡**，
 所以發出去的就是一個檔案，沒有「記得連 manifests 資料夾一起包」這種事。
 雙擊會開一個對話框，可以勾要裝哪幾個主應用程式、改伺服器網址。
 
 IT 派送：
 
 ```powershell
-JVisionSetup.exe /silent                          # 兩個都裝
+JVisionSetup.exe /silent                          # 三個都裝
 JVisionSetup.exe /silent /hosts:word              # 只裝 Word
+JVisionSetup.exe /silent /hosts:excel,ppt         # 不裝 Word
 JVisionSetup.exe /silent /url:https://jvision.panjit.com.tw
 JVisionSetup.exe /silent /uninstall
 ```
@@ -245,7 +246,7 @@ JVisionSetup.exe /silent /uninstall
 npm run installer:build          # 用 .NET Framework 內建的 csc.exe，不需要裝 SDK
 ```
 
-建置時會檢查兩份 manifest 的版本號一致——不一致的話使用者會看到一個版本、裝到另一個。
+建置時會檢查三份 manifest 的版本號一致——不一致的話使用者會看到一個版本、裝到另一個。
 
 **還沒簽章。** 沒簽章的 exe 會被 SmartScreen 攜，企業環境的防毒也常常直接隔離；
 要大量派送的話，`npm run installer:build -- -Sign -CertThumbprint <指紋>` 可以帶公司憑證簽。

@@ -1,4 +1,4 @@
-// JVision for Excel — 安裝程式
+// JVision for Office — 安裝程式
 //
 // 為什麼是一個 .exe 而不是原本的 .cmd
 // ------------------------------------
@@ -69,26 +69,49 @@ namespace JVisionSetup
             public readonly string File;
             public readonly string App;
             public readonly string Process;
-            public HostSpec(string key, string file, string app, string process)
+            /// <summary>The other thing people type. See Resolve() for why it matters.</summary>
+            public readonly string Alias;
+            public HostSpec(string key, string file, string app, string process, string alias)
             {
-                Key = key; File = file; App = app; Process = process;
+                Key = key; File = file; App = app; Process = process; Alias = alias;
+            }
+
+            /// <summary>Key, alias or app name — all case-insensitive.</summary>
+            public bool Matches(string s)
+            {
+                return string.Equals(Key, s, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Alias, s, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(App, s, StringComparison.OrdinalIgnoreCase);
             }
         }
 
         public static readonly HostSpec[] Hosts = new HostSpec[]
         {
-            new HostSpec("excel", "excel.xml", "Excel", "EXCEL"),
-            new HostSpec("word",  "word.xml",  "Word",  "WINWORD"),
+            // The third field is the running-process name, which is NOT derivable
+            // from the app name for two of the three: Word runs as WINWORD and
+            // PowerPoint as POWERPNT.
+            new HostSpec("excel", "excel.xml",      "Excel",      "EXCEL",    "xl"),
+            new HostSpec("word",  "word.xml",       "Word",       "WINWORD",  "winword"),
+            new HostSpec("ppt",   "powerpoint.xml", "PowerPoint", "POWERPNT", "powerpoint"),
         };
 
-        /// <summary>沒指定就是全部。不認得的名字直接忽略，不要因為一個錯字就什麼都不裝。</summary>
+        /// <summary>
+        /// 沒指定就是全部。不認得的名字直接忽略，不要因為一個錯字就什麼都不裝。
+        ///
+        /// ── 為什麼要收別名 ──
+        /// PowerPoint 的 key 是 ppt，而會去打 /hosts: 的人有一半會直接打 powerpoint。
+        /// 底下那句「一個都沒對上就全裝」原本是善意的預設，但配上一個猜不到的 key
+        /// 就變成陷阱：/hosts:powerpoint 一個都沒對上，於是**三個全裝**——
+        /// 使用者要求只裝 PowerPoint，結果 Excel 和 Word 也一起進去了，而且沒有任何提示。
+        /// 所以 key、別名、應用程式名稱都收，三種寫法都對得上。
+        /// </summary>
         public static HostSpec[] Resolve(string[] keys)
         {
             if (keys == null || keys.Length == 0) return Hosts;
             List<HostSpec> picked = new List<HostSpec>();
             foreach (HostSpec h in Hosts)
                 foreach (string k in keys)
-                    if (string.Equals(h.Key, k, StringComparison.OrdinalIgnoreCase) && !picked.Contains(h))
+                    if (h.Matches(k) && !picked.Contains(h))
                         picked.Add(h);
             return picked.Count > 0 ? picked.ToArray() : Hosts;
         }
@@ -137,7 +160,8 @@ namespace JVisionSetup
                 "命令列（給 IT 派送用）：\n" +
                 "  /silent              不顯示畫面，直接安裝\n" +
                 "  /url:<網址>          指定任務窗格伺服器\n" +
-                "  /hosts:excel,word    只裝指定的主應用程式（不給就全裝）\n" +
+                "  /hosts:excel,word,ppt  只裝指定的主應用程式（不給就全裝）\n" +
+                "                       也接受 powerpoint / PowerPoint 這種寫法\n" +
                 "  /log:<檔案路徑>      寫入記錄檔\n" +
                 "  /uninstall           移除\n\n" +
                 "離開代碼：0 成功、1 失敗、2 這台電腦沒有 Office 16.0、3 使用者取消\n\n" +
@@ -220,7 +244,7 @@ namespace JVisionSetup
         public bool Help;
         public string Url;
         public string LogPath;
-        /// <summary>null / 空 = 全部。例：/hosts:word 或 /hosts:excel,word</summary>
+        /// <summary>null / 空 = 全部。例：/hosts:ppt 或 /hosts:excel,word</summary>
         public string[] Hosts;
 
         public static Options Parse(string[] args)
@@ -628,7 +652,7 @@ namespace JVisionSetup
             pick.SetBounds(26, 88, 200, 20);
             Controls.Add(pick);
 
-            // 全選為預設，因為大多數人兩個都要。只想裝一個的人取消勾選就好，
+            // 全選為預設，因為大多數人全都要。只想裝一部分的人取消勾選就好，
             // 而 IT 派送用 /hosts: ——兩邊走同一個 Resolve()。
             Program.HostSpec[] preset = Program.Resolve(_opts.Hosts);
             _hostBoxes = new CheckBox[Program.Hosts.Length];
@@ -639,7 +663,7 @@ namespace JVisionSetup
                 cb.Text = h.App;
                 cb.Tag = h;
                 cb.Checked = Array.IndexOf(preset, h) >= 0;
-                cb.SetBounds(28 + i * 96, 110, 92, 24);
+                cb.SetBounds(28 + i * 106, 110, 102, 24);
                 cb.CheckedChanged += OnHostToggled;
                 Controls.Add(cb);
                 _hostBoxes[i] = cb;

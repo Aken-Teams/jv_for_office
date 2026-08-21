@@ -42,6 +42,7 @@
  */
 const MODULES = {
   Excel: () => import('./excel.js'),
+  PowerPoint: () => import('./powerpoint.js'),
   Word: () => import('./word.js'),
 };
 

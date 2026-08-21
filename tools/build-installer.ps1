@@ -69,7 +69,7 @@ using System.Reflection;
 [assembly: AssemblyTitle("JVision for Office 安裝程式")]
 [assembly: AssemblyProduct("JVision for Office")]
 [assembly: AssemblyCompany("PANJIT")]
-[assembly: AssemblyDescription("安裝 JVision for Office 增益集（Excel / Word）")]
+[assembly: AssemblyDescription("安裝 JVision for Office 增益集（Excel / Word / PowerPoint）")]
 [assembly: AssemblyVersion("$version")]
 [assembly: AssemblyFileVersion("$version")]
 "@ | Set-Content -Path $asmInfo -Encoding UTF8

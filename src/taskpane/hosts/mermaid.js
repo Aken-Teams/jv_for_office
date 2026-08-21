@@ -142,6 +142,12 @@ export async function renderMermaid(code, opts = {}) {
 
   return {
     data: canvas.toDataURL('image/png').split(',')[1],
+    // The SVG source is carried alongside the raster, not instead of it. Word
+    // can only take the PNG; PowerPoint can take either, and with ImageCoercion
+    // 1.2 it takes this one — vector, sharp on a projector, and convertible to
+    // editable shapes. Rendering twice to serve both would be wasteful when the
+    // SVG is already in hand.
+    svg,
     width: w,
     height: h,
   };
