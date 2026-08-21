@@ -11,21 +11,28 @@
  * between an instruction hidden in a downloaded spreadsheet and someone's real
  * data. Do not "streamline" it away.
  */
-import {
-  executeTool, inspectWrite, restoreSnapshot, selectCell, getWorkbookName, supportedTools,
-  getActiveSheetName, watchActiveSheet, getSelectionRef, watchSelection, getWorkbookKey,
-} from './excelTools.js';
-import { t, setLocale, applyStaticText } from './i18n.js';
+import { loadHost } from './hosts/index.js';
+import { t, setLocale, applyStaticText, applyHostText } from './i18n.js';
+
+/**
+ * The module that knows how to drive whichever Office app this is.
+ *
+ * Resolved once in Office.onReady and reached through this one binding
+ * everywhere after. Nothing below this line names Excel or Word: `host.meta`
+ * carries the tool names, the API segment, the citation syntax and the
+ * vocabulary; `host.*` runs the calls. See hosts/index.js for the contract.
+ */
+let host = null;
 
 /** Last-resort fallback if config.json is missing or unreadable. */
 const DEFAULT_API_BASE = 'http://localhost:12054';
-const LS_TOKEN = 'jv_excel_token';
+const LS_TOKEN = 'jv_token';
 /**
  * Only set when someone typed an address into the revealed 伺服器 field. Kept
  * separate from the configured value so a deployment that changes config.json
  * isn't silently overridden by whatever happened to be cached in this pane.
  */
-const LS_API_OVERRIDE = 'jv_excel_api_override';
+const LS_API_OVERRIDE = 'jv_api_override';
 /**
  * Whether writes execute without a click. Persisted, unlike `sources`: this one
  * is a standing preference about how someone wants to work, and re-arming it
@@ -34,9 +41,9 @@ const LS_API_OVERRIDE = 'jv_excel_api_override';
  * an injected instruction lands — which is why the header button is coloured as
  * a warning whenever it is on, and why irreversible operations still ask.
  */
-const LS_AUTO_APPROVE = 'jv_excel_auto_approve';
+const LS_AUTO_APPROVE = 'jv_auto_approve';
 /** Chosen model. A working preference, so it survives restarts. */
-const LS_MODEL = 'jv_excel_model';
+const LS_MODEL = 'jv_model';
 /**
  * Reply language for the whole add-in.
  *
@@ -45,9 +52,30 @@ const LS_MODEL = 'jv_excel_model';
  * every conversation, because a language that only held for one thread would be
  * a setting you have to remember to set again, which is worse than none.
  */
-const LS_LOCALE = 'jv_excel_locale';
+const LS_LOCALE = 'jv_locale';
 
-/** Must stay in step with LOCALE_NAMES in the server's excelContext.ts. */
+/** Remembered per pane so a returning user doesn't re-pick their own company. */
+const LS_DOMAIN = 'jv_ad_domain';
+
+/**
+ * The keys above dropped their `excel` when one pane became three.
+ *
+ * Renaming a storage key normally signs everyone out; this copies the old value
+ * across on first load instead, so nobody notices. All hosts are served from one
+ * origin and therefore share one localStorage — deliberately, because signing in
+ * once should cover all of them. What was not acceptable was a key called
+ * jv_excel_token holding a Word session, which would mislead whoever debugged
+ * it next.
+ */
+for (const key of [LS_TOKEN, LS_API_OVERRIDE, LS_AUTO_APPROVE, LS_MODEL, LS_LOCALE, LS_DOMAIN]) {
+  const legacy = key.replace(/^jv_/, 'jv_excel_');
+  const value = localStorage.getItem(legacy);
+  if (value === null) continue;
+  if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
+  localStorage.removeItem(legacy);
+}
+
+/** Must stay in step with LOCALE_NAMES in the server's context module. */
 const LOCALES = [
   { id: '',      label: '跟隨帳號設定', note: '用 AI Agents Office 上的語言' },
   { id: 'zh-TW', label: '繁體中文' },
@@ -64,15 +92,15 @@ const state = {
   streaming: false,
   /** Lets the person call off a run that is taking too long. See stopRun(). */
   abort: null,
-  workbookName: '',
-  /** Stable id for this file, minted on first send. See getWorkbookKey(). */
-  workbookKey: '',
+  documentName: '',
+  /** Stable id for this file, minted on first send. See getDocumentKey(). */
+  documentKey: '',
   /** Set by 開新對話: the next send starts a fresh thread instead of resuming. */
   startFresh: false,
   /** The live transcript, parked while a past thread is on screen. */
   liveLog: null,
-  /** The sheet the user is on — shown so it is clear where the agent is working. */
-  sheetName: '',
+  /** Where in the file the user is — shown so it is clear where the agent works. */
+  location: '',
   /** Chosen model id, or '' for whatever the server defaults to. */
   model: localStorage.getItem(LS_MODEL) || '',
   /** Catalogue from the server — includes any local models this deployment has. */
@@ -130,10 +158,11 @@ function escapeHtml(s) {
  * selected nothing. Do not re-escape here; do not call this with raw text.
  */
 function linkCitations(html) {
-  return html.replace(
-    /\[\[([^\]!]+)!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)\]\]/g,
-    (_m, sheet, addr) => `<a href="#" class="cite" data-sheet="${sheet}" data-addr="${addr}">${sheet}!${addr}</a>`,
-  );
+  const { pattern, label } = host.meta.citation;
+  // Two capture groups, and the shell does not know what either one means — only
+  // that goTo() will understand them when the link is clicked.
+  return html.replace(pattern, (_m, a, b) =>
+    `<a href="#" class="cite" data-a="${a}" data-b="${b || ''}">${label(a, b)}</a>`);
 }
 
 /**
@@ -646,7 +675,7 @@ function askConfirm(summary, detail, meta, highRisk) {
     card.innerHTML = `
       <div class="confirm-head">
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
-        <span class="confirm-title">${escapeHtml(highRisk ? t('這個動作沒辦法復原') : t('AI 想要修改這份活頁簿'))}</span>
+        <span class="confirm-title">${escapeHtml(highRisk ? t('這個動作沒辦法復原') : t(host.meta.words.confirmTitle))}</span>
       </div>
       <div class="confirm-body">${escapeHtml(summary)}</div>
       ${meta ? `<div class="confirm-meta">${escapeHtml(meta)}</div>` : ''}
@@ -693,7 +722,7 @@ function askConfirm(summary, detail, meta, highRisk) {
 
 async function postToolResult(runId, callId, result) {
   try {
-    await fetch(`${state.apiBase}/api/excel/tool-result`, {
+    await fetch(`${state.apiBase}/api/${host.meta.api}/tool-result`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
       body: JSON.stringify({
@@ -710,43 +739,19 @@ async function postToolResult(runId, callId, result) {
   }
 }
 
-const TOOL_LABEL = () => ({
-  excel_get_overview: t('正在讀取活頁簿結構…'),
-  excel_get_selection: t('正在讀取選取範圍…'),
-  excel_read_range: t('正在讀取資料…'),
-  excel_search: t('正在搜尋…'),
-  excel_write_range: t('等待你確認寫入…'),
-  excel_manage_sheet: t('正在調整工作表…'),
-  excel_format_range: t('正在套用格式…'),
-  excel_create_chart: t('正在建立圖表…'),
-  excel_structure_op: t('等待你確認結構變更…'),
-  excel_table_ops: t('正在整理表格…'),
-  excel_create_pivot: t('等待你確認建立樞紐…'),
-  excel_trace_precedents: t('正在追蹤公式來源…'),
-  excel_sheet_style: t('正在調整版面…'),
-  excel_run_script: t('正在執行程式…'),
-});
+/** MCP tools reach the pane prefixed: mcp__excel__excel_run_script. */
+function shortToolName(name) {
+  const p = host.meta.mcpPrefix;
+  const n = String(name);
+  return n.startsWith(p) ? n.slice(p.length) : n;
+}
 
-/**
- * What the model is doing BEFORE the call is dispatched.
- *
- * Distinct from TOOL_LABEL, which describes the call executing. Composing a long
- * tool call is generation time — for excel_run_script that is the model writing
- * an entire script, and it is usually the longest single stretch of a turn.
- */
-const PREPARING_LABEL = () => ({
-  excel_run_script: t('正在寫程式…'),
-  excel_write_range: t('正在整理要寫入的資料…'),
-  excel_create_chart: t('正在設定圖表…'),
-  excel_create_pivot: t('正在設定樞紐分析表…'),
-  excel_format_range: t('正在決定格式…'),
-  excel_manage_sheet: t('正在準備工作表變更…'),
-});
-
-/** MCP tools arrive prefixed (`mcp__excel__excel_run_script`). */
+/** What the model is doing BEFORE the call is dispatched. */
 function preparingLabel(name) {
-  const short = String(name).replace(/^mcp__excel__/, '');
-  return PREPARING_LABEL()[short] || TOOL_LABEL()[short] || t('正在準備 {0}…', short);
+  const short = shortToolName(name);
+  return host.meta.preparingLabels()[short]
+    || host.meta.toolLabels()[short]
+    || t('正在準備 {0}…', short);
 }
 
 const fmtSize = (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : t('{0} 字元', n || 0));
@@ -756,11 +761,11 @@ async function handleToolRequest(payload) {
   // Prefer the server's specific description ("讀取 工作表1!A1:AZ375") over the
   // generic per-tool label — it is the same line the confirmation card shows, so
   // the trace and the dialog agree about what happened.
-  setStatus(summary || TOOL_LABEL()[tool] || t('正在執行 {0}…', tool));
+  setStatus(summary || host.meta.toolLabels()[tool] || t('正在執行 {0}…', tool));
 
   // Answered by a person, not by Office.js — so it is handled here and never
   // reaches executeTool. The bridge gives this call a human-scale timeout.
-  if (tool === 'excel_ask_user') {
+  if (tool === host.meta.askUserTool) {
     const answer = await askChoice(args || {});
     await postToolResult(state.runId, callId, { ok: true, content: answer });
     setStatus(t('思考中…'));
@@ -776,8 +781,8 @@ async function handleToolRequest(payload) {
     // Only cell writes can be inspected this way — for a sheet delete or a sort
     // there is no "target range" to count, so those fall back to the summary line.
     let detail = null;
-    if (tool === 'excel_write_range') {
-      try { detail = await inspectWrite(args); } catch { /* fall back to the plain summary */ }
+    if (tool === host.meta.inspectTool) {
+      try { detail = await host.inspectWrite(args); } catch { /* fall back to the plain summary */ }
       if (detail && detail.ok === false) {
         await postToolResult(state.runId, callId, { ok: false, error: detail.error });
         setStatus('');
@@ -812,7 +817,7 @@ async function handleToolRequest(payload) {
   // needsConfirm true means a person saw this call and said yes (or has auto-approve
   // on). False means the server judged it a read — and if it turns out not to be,
   // the guard inside runScript stops it rather than trusting that judgement.
-  const result = await executeTool(tool, args, { writeApproved: !!needsConfirm });
+  const result = await host.executeTool(tool, args, { writeApproved: !!needsConfirm });
   // Approving WITH a note means "do this, and here is something you should know".
   // Riding it back on the tool result gets it to the agent within the same turn,
   // instead of the person having to repeat themselves in the next message.
@@ -825,7 +830,7 @@ async function handleToolRequest(payload) {
     state.undoStack.push(result.snapshot);
     updateUndoButton();
     noteUndoScope();
-  } else if (tool === 'excel_run_script' && needsConfirm) {
+  } else if (tool === host.meta.scriptTool && needsConfirm) {
     // An approved script that came back without a before-image: the workbook was
     // over the snapshot ceiling. Nothing to push, so say why the undo count did
     // not move.
@@ -875,19 +880,15 @@ async function undoLast() {
   if (!snap) return false;
   updateUndoButton();
   try {
-    const done = await restoreSnapshot(snap);
-    addNote(t('已復原 {0}', done.kind === 'range'
-      ? `${done.sheet}!${done.address}`
-      : t('{0} 張工作表的內容', done.sheets)), 'ok');
-    // Separate lines, because neither of these is a content restore: one removes
-    // a sheet and the other brings one back somewhere else, stripped of its
-    // formatting. Nobody should have to work that out by looking.
-    if (done.deleted && done.deleted.length) {
-      addNote(t('已移除 AI 新增的工作表：{0}', done.deleted.join('、')), 'note');
-    }
-    if (done.recreated && done.recreated.length) {
-      addNote(t('AI 刪掉的工作表已重建：{0}。內容回來了，格式沒有，位置在最後面。', done.recreated.join('、')), 'note');
-    }
+    // The host describes what it put back, already worded and translated: only
+    // it knows whether that was a range of cells or four sheets' worth, and
+    // 「{0} 張工作表」 is not a sentence the shell should be able to say.
+    const done = await host.restoreSnapshot(snap);
+    addNote(t('已復原 {0}', done.label), 'ok');
+    // Extra lines for the parts that are not content restores — a sheet removed,
+    // a sheet rebuilt somewhere else without its formatting. Nobody should have
+    // to work that out by looking.
+    for (const line of done.notes || []) addNote(line, 'note');
     return true;
   } catch (e) {
     addNote(t('復原失敗：{0}', e.message), 'err');
@@ -923,7 +924,7 @@ function attachUndo(card, snap) {
 function noteUndoScope() {
   if (state.saidUndoScope) return;
   state.saidUndoScope = true;
-  addNote(t('提醒：AI 做的修改不會進到 Excel 的復原紀錄，Ctrl+Z 退不回來。要退回請用這裡的復原鍵。'), 'note');
+  addNote(t(host.meta.words.undoScope), 'note');
 }
 
 /**
@@ -935,7 +936,7 @@ function noteUndoScope() {
 function noteNoSnapshot() {
   if (state.saidNoSnapshot) return;
   state.saidNoSnapshot = true;
-  addNote(t('這份活頁簿太大，程式執行前沒辦法先備份，所以這次的修改復原鍵拿不回來。'), 'note');
+  addNote(t(host.meta.words.noSnapshot), 'note');
 }
 
 function updateUndoButton() {
@@ -1007,20 +1008,20 @@ async function openHistory() {
   $('history').setAttribute('aria-expanded', 'true');
   $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('載入中…'))}</div>`;
 
-  if (!state.workbookKey) {
-    // Minted on first send, so a workbook nobody has asked about yet has no id
-    // and therefore no history — which is the honest thing to say.
-    try { state.workbookKey = (await getWorkbookKey()) || ''; } catch { /* fall through */ }
+  if (!state.documentKey) {
+    // Minted on first send, so a file nobody has asked about yet has no id and
+    // therefore no history — which is the honest thing to say.
+    try { state.documentKey = (await host.getDocumentKey()) || ''; } catch { /* fall through */ }
   }
-  const key = state.workbookKey || state.workbookName;
+  const key = state.documentKey || state.documentName;
   try {
     const res = await fetch(
-      `${state.apiBase}/api/excel/conversations?workbookKey=${encodeURIComponent(key || '')}`,
+      `${state.apiBase}/api/${host.meta.api}/conversations?documentKey=${encodeURIComponent(key || '')}`,
       { headers: { Authorization: `Bearer ${state.token}` } });
     const body = await res.json();
     const list = (body.conversations || []).filter(c => c.turns > 0);
     if (!list.length) {
-      $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('這份活頁簿還沒有對話紀錄。'))}</div>`;
+      $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t(host.meta.words.noHistory))}</div>`;
       return;
     }
     $('hist-list').innerHTML = list.map(c => `
@@ -1057,7 +1058,7 @@ async function showPastConversation(id, title) {
   if (state.liveLog === null) state.liveLog = $('log').innerHTML;
   $('log').innerHTML = `<div class="note">${escapeHtml(t('載入中…'))}</div>`;
   try {
-    const res = await fetch(`${state.apiBase}/api/excel/conversations/${encodeURIComponent(id)}/messages`,
+    const res = await fetch(`${state.apiBase}/api/${host.meta.api}/conversations/${encodeURIComponent(id)}/messages`,
       { headers: { Authorization: `Bearer ${state.token}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { messages = [] } = await res.json();
@@ -1121,17 +1122,17 @@ async function send(message) {
     // First turn only: later turns resume the CLI session, which already has it.
     // Minted here rather than at startup: it writes a custom property, which
     // marks the file as modified, and merely opening the pane should not do that.
-    if (!state.workbookKey) {
-      try { state.workbookKey = (await getWorkbookKey()) || ''; } catch { /* fall back to the name */ }
+    if (!state.documentKey) {
+      try { state.documentKey = (await host.getDocumentKey()) || ''; } catch { /* fall back to the name */ }
     }
 
-    let workbookContext;
+    let documentContext;
     if (!state.sessionId) {
-      const r = await executeTool('excel_get_overview', { preview_rows: 5 });
-      if (r.ok) workbookContext = r.content;
+      const r = await host.executeTool(host.meta.overview.tool, host.meta.overview.args);
+      if (r.ok) documentContext = r.content;
     }
 
-    const res = await fetch(`${state.apiBase}/api/excel/chat`, {
+    const res = await fetch(`${state.apiBase}/api/${host.meta.api}/chat`, {
       signal: state.abort.signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
@@ -1139,8 +1140,8 @@ async function send(message) {
         message,
         runId: state.runId,
         sessionId: state.sessionId || undefined,
-        workbookName: state.workbookName || undefined,
-        workbookContext,
+        documentName: state.documentName || undefined,
+        documentContext,
         // What this build can execute. The server hides everything else from the
         // model, so a stale pane degrades to "fewer abilities" instead of an
         // agent looping on 未知的工具.
@@ -1151,11 +1152,11 @@ async function send(message) {
         selection: (!state.selectionDropped && state.selection) ? state.selection.context : undefined,
         // The id keys the conversation; the name is what the web app shows as
         // its title. A renamed file keeps its history because only the id matters.
-        workbookKey: state.workbookKey || undefined,
+        documentKey: state.documentKey || undefined,
         newConversation: state.startFresh || undefined,
         model: state.model || undefined,
         locale: state.locale || undefined,
-        clientTools: supportedTools(),
+        clientTools: host.supportedTools(),
         dataSources: state.sources,
       }),
     });
@@ -1219,7 +1220,7 @@ async function send(message) {
             if (tool === 'ToolSearch') {
               // The CLI loading the deferred MCP tools — the single longest step
               // of the opening gap, so it gets named rather than hidden.
-              progressStep(t('載入 Excel 工具…'));
+              progressStep(t(host.meta.words.loadingTools));
             } else if (d.status === 'writing') {
               progressDetail(t('已寫出 {0}', fmtSize(d.chars)));
             } else if (d.status === 'running' && tool) {
@@ -1263,7 +1264,7 @@ async function send(message) {
     }
   } catch (e) {
     if (e && e.name === 'AbortError') {
-      addNote(t('已停止。已經做完的部分留在活頁簿裡，需要的話可以用上方的復原鍵退回。'), 'note');
+      addNote(t(host.meta.words.stopped), 'note');
     } else {
       addNote(t('連線失敗：{0}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 {1}。', e.message, location.origin), 'err');
     }
@@ -1274,7 +1275,7 @@ async function send(message) {
     state.startFresh = false;
     setSendMode('send');
     state.selectionDropped = false;
-    void getSelectionRef().then(setSelection).catch(() => {});
+    void host.getSelectionRef().then(setSelection).catch(() => {});
     progressDone(false);
   }
 }
@@ -1603,9 +1604,6 @@ const AD_DOMAINS = [
   { value: 'PJSD',   label: 'PJSD（山東強茂）' },
 ];
 
-/** Remembered per pane so a returning user doesn't re-pick their own company. */
-const LS_DOMAIN = 'jv_excel_ad_domain';
-
 function fillDomainOptions() {
   const sel = $('ad-domain');
   sel.innerHTML = AD_DOMAINS
@@ -1643,7 +1641,7 @@ function renderSelChip() {
   const show = !!sel && !state.selectionDropped;
   chip.hidden = !show;
   if (show) {
-    $('sel-label').textContent = sel.sheet ? `${sel.sheet}!${sel.label}` : sel.label;
+    $('sel-label').textContent = sel.scope ? `${sel.scope}!${sel.label}` : sel.label;
     chip.title = t('這則訊息會一起送出你選取的 {0}，讓 AI 知道你指的是哪裡。點 × 可以不帶。', sel.label);
   }
 }
@@ -1656,18 +1654,19 @@ function setSelection(sel) {
 }
 
 /**
- * Show which worksheet the agent is looking at.
+ * Show where in the file the agent is working — the worksheet in Excel, the
+ * current heading in Word.
  *
  * Hidden rather than blank when unknown: an empty chevron next to the filename
  * reads as a rendering bug, and on a host too old for the activation event the
  * name would simply never arrive.
  */
-function setSheetName(name) {
-  state.sheetName = name || '';
+function setLocation(name) {
+  state.location = name || '';
   const el = $('wb-sheet');
-  el.textContent = state.sheetName;
-  el.title = state.sheetName ? t('目前的工作表：{0}', state.sheetName) : '';
-  el.hidden = !state.sheetName;
+  el.textContent = state.location;
+  el.title = state.location ? t(host.meta.words.locationLabel, state.location) : '';
+  el.hidden = !state.location;
 }
 /**
  * The 每次確認 / 自動允許 button.
@@ -1777,7 +1776,7 @@ function toggleSourceMenu(show) {
 /** Ask the server which cross-source MCPs this user could actually mount. */
 async function loadDataSources() {
   try {
-    const res = await fetch(`${state.apiBase}/api/excel/ping`, {
+    const res = await fetch(`${state.apiBase}/api/${host.meta.api}/ping`, {
       headers: { Authorization: `Bearer ${state.token}` },
     });
     if (!res.ok) {
@@ -1811,26 +1810,34 @@ function autoGrow(el) {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 Office.onReady(async (info) => {
-  if (info.host !== Office.HostType.Excel) {
-    document.body.innerHTML = `<p style="padding:16px">${escapeHtml(t('這個增益集只能在 Excel 中使用。'))}</p>`;
+  // Everything below needs a host module, so this is the first thing that
+  // happens and nothing else runs if it fails. Word never loads Excel's module
+  // and Excel never loads Word's — see hosts/index.js.
+  host = await loadHost(info.host);
+  if (!host) {
+    document.body.innerHTML = `<p style="padding:16px">${escapeHtml(t('這個增益集只能在 Excel 或 Word 中使用。'))}</p>`;
     return;
   }
 
   setLocale(state.locale);
   applyStaticText();
+  // Rewrites everything the markup left in Excel's words. Before any of it is
+  // painted, so a Word user never sees 「活頁簿」 flash past.
+  applyHostText(host.meta.words);
+  document.title = t(host.meta.words.title);
   fillDomainOptions();
 
-  try { state.workbookName = await getWorkbookName(); } catch { /* non-fatal */ }
-  $('wb-name').textContent = state.workbookName || t('（未命名活頁簿）');
-  $('wb-name').title = state.workbookName || '';
+  try { state.documentName = await host.getDocumentName(); } catch { /* non-fatal */ }
+  $('wb-name').textContent = state.documentName || t(host.meta.words.untitled);
+  $('wb-name').title = state.documentName || '';
 
-  try { setSheetName(await getActiveSheetName()); } catch { /* non-fatal */ }
+  try { setLocation(await host.getLocation()); } catch { /* non-fatal */ }
   // Live, not just at startup: someone clicking to another tab has moved what
   // 「這一段」 and excel_get_selection refer to, and the bar should say so.
-  void watchActiveSheet(setSheetName);
+  void host.watchLocation(setLocation);
 
-  try { setSelection(await getSelectionRef()); } catch { /* non-fatal */ }
-  void watchSelection(setSelection);
+  try { setSelection(await host.getSelectionRef()); } catch { /* non-fatal */ }
+  void host.watchSelection(setSelection);
 
   for (const tab of document.querySelectorAll('#login-tabs .tab')) {
     tab.addEventListener('click', () => {
@@ -1937,6 +1944,7 @@ Office.onReady(async (info) => {
     // Everything already on screen too, not just what gets drawn next: a pane
     // half in one language is worse than a pane wholly in the wrong one.
     applyStaticText();
+    applyHostText(host.meta.words);
     renderSourceMenu();
     updateApproveToggle();
     renderSelChip();
@@ -1945,7 +1953,7 @@ Office.onReady(async (info) => {
     // In the transcript, because the change applies from the next message on and
     // the reply arriving in a different language should have a visible cause.
     addNote(state.locale
-      ? t('之後的回覆會用{0}。活頁簿裡既有的資料不會被翻譯。', l.label)
+      ? t(host.meta.words.localeChanged, l.label)
       : t('之後的回覆會跟著你帳號的語言設定。'), 'note');
   });
 
@@ -2011,8 +2019,8 @@ Office.onReady(async (info) => {
     // on should read once what they are turning off; someone scrolling back
     // should be able to see when it changed.
     addNote(state.autoApprove
-      ? t('已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。')
-      : t('已改回每次確認：AI 要修改活頁簿前都會先問過你。'), 'note');
+      ? t(host.meta.words.autoApproveOn)
+      : t(host.meta.words.autoApproveOff), 'note');
   });
 
   $('history').addEventListener('click', () => { void openHistory(); });
@@ -2033,8 +2041,8 @@ Office.onReady(async (info) => {
     const a = e.target.closest('.cite');
     if (!a) return;
     e.preventDefault();
-    const ok = await selectCell(a.dataset.sheet, a.dataset.addr);
-    if (!ok) addNote(t('找不到工作表「{0}」', a.dataset.sheet), 'err');
+    const ok = await host.goTo(a.dataset.a, a.dataset.b);
+    if (!ok) addNote(t(host.meta.words.locationMissing, a.dataset.a), 'err');
   });
 
   // External links open in the real browser. Letting one navigate the pane would

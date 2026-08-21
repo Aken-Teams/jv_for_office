@@ -1,7 +1,38 @@
-/* ── guard:start ─ test/script-guard.test.mjs slices the source from here ──── */
+/**
+ * guard — watch what a script DOES, instead of reading what it says.
+ *
+ * Shared by every host, because none of it is host-specific: the rules are
+ * "assigning to an Office object changes the file" and "a method that is not a
+ * known read changes the file", and those hold as much for Word.Paragraph as
+ * for Excel.Range. One implementation also means one set of tests covers the
+ * guard wherever it runs — see test/script-guard.test.mjs.
+ *
+ * The server decides whether to ask the user by pattern-matching the source of
+ * the script. That is a heuristic and it always was: `r["cle" + "ar"]()` defeats
+ * it, and so does any instruction that arrives from mail, KM or a web page and
+ * talks the model into writing something the patterns miss. This is the control
+ * the patterns never were.
+ *
+ * Every Office object handed to a script is wrapped in a Proxy. Two things count
+ * as changing the file:
+ *
+ *   - assigning ANY property on an Office object. Office.js has no read-only
+ *     property you are meant to assign to — reading is `.load()` — so the rule
+ *     needs no list to keep in step with the API, and `obj["val"+"ues"] = x`
+ *     trips it exactly like `obj.values = x`.
+ *   - calling any method that is not a KNOWN READ. See READ_METHODS.
+ *
+ * When writes were not approved, the attempt throws where it happens rather
+ * than at sync: the model gets an error naming the operation, which is
+ * something it can act on, and nothing was queued in the meantime.
+ *
+ * What this is NOT: a sandbox. A script that reaches the host's own globals
+ * instead of its bindings is outside what a Proxy can see. Closing that needs
+ * the script off this thread entirely, which is a bigger change than this one.
+ */
 
 /**
- * Methods that READ. Anything not in here counts as changing the workbook.
+ * Methods that READ. Anything not in here counts as changing the file.
  *
  * Stated in this direction after the other one failed. The first version carried
  * a list of MUTATING methods, and a denylist is only worth what its completeness
@@ -46,7 +77,7 @@ const isReadMethod = (name) => name.startsWith('get') || READ_METHODS.has(name);
 /** Reach the object underneath a wrapper, so Office.js never sees a Proxy. */
 const RAW = Symbol('raw');
 
-function makeScriptGuard(allowWrites) {
+export function makeScriptGuard(allowWrites, scriptTool = 'excel_run_script') {
   const cache = new WeakMap();
   /** Separate, because the same object can be reached in both modes. */
   const readOnlyCache = new WeakMap();
@@ -56,8 +87,8 @@ function makeScriptGuard(allowWrites) {
     touched = what;
     if (allowWrites) return;
     throw new Error(
-      `這段程式想修改活頁簿（${what}），但這次呼叫沒有申請寫入權限。`
-      + '請重新呼叫 excel_run_script 並帶上 mode="write"，使用者會看到確認視窗。'
+      `這段程式想修改檔案（${what}），但這次呼叫沒有申請寫入權限。`
+      + `請重新呼叫 ${scriptTool} 並帶上 mode="write"，使用者會看到確認視窗。`
       + '（若這其實只是讀取：唯讀的做法是 get… 開頭的方法、load、sync。）',
     );
   };
@@ -145,6 +176,3 @@ function makeScriptGuard(allowWrites) {
     didMutate: () => touched,
   };
 }
-
-
-export { makeScriptGuard };

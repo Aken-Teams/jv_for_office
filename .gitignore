@@ -3,5 +3,5 @@ node_modules/
 devserver.log
 .env
 config.json
-test/.guard-under-test.mjs
 test/.snapshot-under-test.mjs
+test/.fit-under-test.mjs

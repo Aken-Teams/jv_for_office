@@ -1,10 +1,14 @@
 /**
- * excelTools — the Office.js half of the bridge.
+ * hosts/excel — the Office.js half of the bridge, for Excel.
  *
  * The server sends `{tool, args}`; this module runs it against the workbook the
  * user actually has open and returns text the model can read. It contains NO AI
  * logic and no network code on purpose: it is the one part that can only be
  * tested inside a real Excel, so everything else was kept out of it.
+ *
+ * One of three interchangeable host modules — see hosts/index.js for the
+ * contract every one of them fills, and docs/multi-host.md for why they live in
+ * the same project as one shared shell rather than in three copies of it.
  *
  * Two rules shape all of it:
  *
@@ -15,6 +19,8 @@
  *     the context window, the 1MB request-body limit on the API, and the user's
  *     token budget, in that order.
  */
+import { t } from '../i18n.js';
+import { makeScriptGuard } from './guard.js';
 
 /**
  * The tools THIS build of the pane can actually execute.
@@ -71,6 +77,137 @@ export function hasApi(version) {
 export function supportedTools() {
   return hasApi('1.12') ? [...BASE_TOOLS, 'excel_create_pivot'] : [...BASE_TOOLS];
 }
+
+/**
+ * Everything the shell used to assume.
+ *
+ * app.js knew fourteen tool names, an API path, an MCP prefix, a citation
+ * syntax and the word 「活頁簿」. None of that was ever shell business — it was
+ * Excel business that happened to be written in the shell because there was
+ * only one host. Moved here, adding a host is adding a file.
+ *
+ * The strings are Traditional Chinese SOURCE text, not translations: they are
+ * the keys i18n.js looks up, so 活頁簿 and 文件 are separate dictionary entries
+ * and each host's wording gets translated on its own terms.
+ */
+export const meta = {
+  id: 'excel',
+  /** Which Office.HostType this module is for. */
+  officeHost: 'Excel',
+  /** URL segment — /api/excel/chat, /api/excel/tool-result. */
+  api: 'excel',
+  /** MCP tools reach the pane prefixed: mcp__excel__excel_run_script. */
+  mcpPrefix: 'mcp__excel__',
+  /**
+   * Handed over with the first message so the agent does not have to spend a
+   * round trip asking for what it always asks for first.
+   */
+  overview: { tool: 'excel_get_overview', args: { preview_rows: 5 } },
+  /** Answered by the pane's own UI (askChoice), never by Office.js. */
+  askUserTool: 'excel_ask_user',
+  /** The one write whose cost can be counted BEFORE it happens. */
+  inspectTool: 'excel_write_range',
+  /** Model-written code: needs a snapshot, and its own progress caption. */
+  scriptTool: 'excel_run_script',
+
+  /**
+   * [[損益表!C42]] → a link that selects that cell. Two capture groups; the
+   * shell does not care what they mean, only that goTo() understands them.
+   */
+  citation: {
+    pattern: /\[\[([^\]!]+)!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)\]\]/g,
+    label: (a, b) => `${a}!${b}`,
+  },
+
+  /** What a call is doing while it runs. */
+  toolLabels: () => ({
+    excel_get_overview: t('正在讀取活頁簿結構…'),
+    excel_get_selection: t('正在讀取選取範圍…'),
+    excel_read_range: t('正在讀取資料…'),
+    excel_search: t('正在搜尋…'),
+    excel_write_range: t('等待你確認寫入…'),
+    excel_manage_sheet: t('正在調整工作表…'),
+    excel_format_range: t('正在套用格式…'),
+    excel_create_chart: t('正在建立圖表…'),
+    excel_structure_op: t('等待你確認結構變更…'),
+    excel_table_ops: t('正在整理表格…'),
+    excel_create_pivot: t('等待你確認建立樞紐…'),
+    excel_trace_precedents: t('正在追蹤公式來源…'),
+    excel_sheet_style: t('正在調整版面…'),
+    excel_run_script: t('正在執行程式…'),
+  }),
+
+  /**
+   * What the model is doing BEFORE the call is dispatched. Composing a long
+   * call is generation time — for excel_run_script that is an entire script,
+   * usually the longest single stretch of a turn.
+   */
+  preparingLabels: () => ({
+    excel_run_script: t('正在寫程式…'),
+    excel_write_range: t('正在整理要寫入的資料…'),
+    excel_create_chart: t('正在設定圖表…'),
+    excel_create_pivot: t('正在設定樞紐分析表…'),
+    excel_format_range: t('正在決定格式…'),
+    excel_manage_sheet: t('正在準備工作表變更…'),
+  }),
+
+  /** Sentences that name what this host edits. See the note above. */
+  words: {
+    loadingTools: '載入 Excel 工具…',
+    // ── The pane's own furniture, reached from the markup by data-h ──────────
+    // Here rather than written into taskpane.html because all three hosts load
+    // the SAME page, and a Word user reading 「選一段儲存格」 is not a
+    // translation problem — it is a wrong-product problem.
+    title: 'JVision for Excel',
+    brandSub: 'for Excel',
+    loginLead: '登入你的 AI Agents Office 帳號，開始對這份活頁簿提問。',
+    histTip: '這份活頁簿的對話紀錄',
+    newChatTip: '開新對話（這份活頁簿的紀錄會留著）',
+    docNameTitle: '目前開啟的活頁簿',
+    emptyTitle: '問這份活頁簿任何事',
+    emptySub: '我讀得到儲存格、公式和你選取的範圍，也能在你確認後寫回去。',
+    placeholder: '對這份活頁簿提問…',
+    /** The four openers on the empty state. Questions this host can answer. */
+    chips: [
+      '這張表在算什麼？',
+      '幫我找出所有錯誤的公式',
+      '選取範圍幫我做一張摘要',
+      '這些數字有什麼趨勢？',
+    ],
+    /**
+     * First-run carousel, slides 1-3. The fourth is about the web app and is
+     * the same wherever you are, so it stays in the markup.
+     */
+    intro: [
+      {
+        title: '在 Excel 裡直接問',
+        body: '不用切視窗，也不用把資料複製到別的地方。選一段儲存格，用講的就好。',
+        feats: ['選了就懂', '用問的', '就地作答'],
+      },
+      {
+        title: '它看得懂這張表',
+        body: '讀得到儲存格、公式和你選取的範圍。可以解釋這張表在算什麼、幫你找出壞掉的公式。',
+        feats: ['追公式來源', '揪出錯誤', '解釋算法'],
+      },
+      {
+        title: '動手前都會問過你',
+        body: '寫公式、排版、做圖表和樞紐分析表都做得到。每一次要動你的活頁簿之前都會先問，做完也還能復原。',
+        feats: ['先問過你', '隨時復原', '隨時喊停'],
+      },
+    ],
+    untitled: '（未命名活頁簿）',
+    confirmTitle: 'AI 想要修改這份活頁簿',
+    noHistory: '這份活頁簿還沒有對話紀錄。',
+    stopped: '已停止。已經做完的部分留在活頁簿裡，需要的話可以用上方的復原鍵退回。',
+    localeChanged: '之後的回覆會用{0}。活頁簿裡既有的資料不會被翻譯。',
+    autoApproveOn: '已改成自動允許：AI 修改活頁簿時不會再詢問。刪除工作表或整列整欄仍會問，因為那沒辦法復原。',
+    autoApproveOff: '已改回每次確認：AI 要修改活頁簿前都會先問過你。',
+    noSnapshot: '這份活頁簿太大，程式執行前沒辦法先備份，所以這次的修改復原鍵拿不回來。',
+    undoScope: '提醒：AI 做的修改不會進到 Excel 的復原紀錄，Ctrl+Z 退不回來。要退回請用這裡的復原鍵。',
+    locationLabel: '目前的工作表：{0}',
+    locationMissing: '找不到工作表「{0}」',
+  },
+};
 
 /** Hard ceiling per read. ~20k cells of typical data lands near 100-200KB of CSV. */
 const MAX_READ_CELLS = 20000;
@@ -382,7 +519,7 @@ async function writeRange(args) {
     if (sheet.isNullObject) throw new Error(`找不到工作表「${sheetName}」`);
 
     const target = sheet.getRange(String(args.start_cell)).getResizedRange(rows - 1, cols - 1);
-    target.load('address,formulas,numberFormat');
+    target.load('address,formulas,numberFormat,rowIndex,columnIndex');
     await ctx.sync();
 
     const snapshot = {
@@ -396,8 +533,24 @@ async function writeRange(args) {
     else target.values = grid;
     await ctx.sync();
 
+    // Grow whatever the new content no longer fits in. Widen-only, which is what
+    // makes it safe on every single write: it can remove ### and clipped text, and
+    // it cannot undo a layout somebody chose. Purely cosmetic, so a failure here
+    // must not fail a write that already landed.
+    let fitted = null;
+    try {
+      fitted = await fitLayout(ctx, [{
+        sheet,
+        rowIndex: target.rowIndex,
+        columnIndex: target.columnIndex,
+        rowCount: rows,
+        columnCount: cols,
+      }]);
+    } catch { /* 版面沒調到不影響已寫入的資料 */ }
+
     return {
-      text: `已寫入 ${sheetName}!${bareAddress(target.address)}（${rows} 列 × ${cols} 欄，${asFormulas ? '公式' : '值'}）。`,
+      text: `已寫入 ${sheetName}!${bareAddress(target.address)}（${rows} 列 × ${cols} 欄，${asFormulas ? '公式' : '值'}）。`
+        + describeFit(fitted),
       snapshot,
     };
   });
@@ -485,9 +638,155 @@ async function manageSheet(args) {
  */
 const charsToPoints = (chars) => Math.round(Number(chars) * 7 + 5);
 
+/* ── fit:start ─ test/fit-layout.test.mjs slices the source from here ─ */
+
 /** Floor and ceiling for anything that sets a column width, autofit included. */
 const MIN_COL_POINTS = 30;    // ≈ 3.5 characters — narrower than this is unreadable
 const MAX_COL_POINTS = 400;   // ≈ 56 characters — one long cell shouldn't span the screen
+
+/** Same idea for heights. Row height is in points in Excel's own UI too, so no conversion. */
+const MIN_ROW_POINTS = 15;    // Excel's default at Calibri 11
+const MAX_ROW_POINTS = 180;   // ≈ 9 wrapped lines
+
+/**
+ * How much of one write gets measured. Autofit is a round trip to Excel per
+ * column, so an unbounded sweep over a 50 000-row sheet is seconds of freeze
+ * spent on columns nobody is looking at. Generous for the report-shaped output
+ * this add-in produces, cheap for everything else.
+ */
+const MAX_FIT_COLUMNS = 60;
+const MAX_FIT_ROWS = 200;
+/** Sheets swept after a script. A workbook with more than this is not a report. */
+const MAX_FIT_SHEETS = 8;
+
+/**
+ * Size columns and rows to the content that is in them.
+ *
+ * This exists because of what a generated workbook actually looked like. The
+ * model builds a report with excel_run_script, reaches for
+ * `format.columnWidth = 12` meaning 12 CHARACTERS, Office.js reads it as 12
+ * POINTS — about a character and a half — and the finished report is a wall of
+ * `####` in columns sixteen pixels wide. charsToPoints above fixes that for
+ * excel_format_range, but a raw script bypasses that path entirely, and no
+ * wording in a tool description prevents it reliably. So the layout is repaired
+ * afterwards, from the content, where the right answer is knowable instead of
+ * guessed.
+ *
+ * `shrink: false` — the default — only ever GROWS a column or row, and that is
+ * the whole reason this is safe to run automatically on every write: a wide
+ * column, a tall banner row, any layout a person tuned by hand cannot be taken
+ * away by a write that happened to touch one cell. Only the unreadable direction
+ * gets corrected. Hidden rows and columns are skipped for the same reason — a
+ * width of zero is a decision, not a mistake.
+ *
+ * @param targets  [{ sheet, rowIndex, columnIndex, rowCount, columnCount }]
+ * @returns {{columns: number, rows: number}} how many actually changed size
+ */
+async function fitLayout(ctx, targets, opts = {}) {
+  const shrink = !!opts.shrink;
+  const cols = [];
+  const rows = [];
+
+  for (const t of targets || []) {
+    if (!t || !t.sheet) continue;
+    const nc = Math.min(Number(t.columnCount) || 0, MAX_FIT_COLUMNS);
+    for (let i = 0; i < nc; i++) {
+      // The ENTIRE column, not the block that was written: autofitColumns()
+      // measures only the cells inside the range it is called on, so autofitting
+      // a header row alone sizes every column to its 2-3 character title and the
+      // numbers underneath collapse into ###. Whole column is what Excel's own
+      // 「自動調整欄寬」 means, so that is what this does.
+      cols.push(t.sheet.getRangeByIndexes(0, t.columnIndex + i, 1, 1).getEntireColumn());
+    }
+    // All-or-nothing on rows, rather than the first 200 of a long block: a big
+    // data dump has uniform automatic heights and nothing to fix, while the
+    // hand-built report where a height WAS set by hand is always small.
+    const nr = Number(t.rowCount) || 0;
+    if (nr > 0 && nr <= MAX_FIT_ROWS) {
+      for (let i = 0; i < nr; i++) {
+        rows.push(t.sheet.getRangeByIndexes(t.rowIndex + i, 0, 1, 1).getEntireRow());
+      }
+    }
+  }
+  if (!cols.length && !rows.length) return { columns: 0, rows: 0 };
+
+  for (const c of cols) c.load('format/columnWidth,columnHidden');
+  for (const r of rows) r.load('format/rowHeight,rowHidden');
+  await ctx.sync();
+  const wasWidth = cols.map(c => c.format.columnWidth);
+  const wasHeight = rows.map(r => r.format.rowHeight);
+  const colHidden = cols.map(c => !!c.columnHidden);
+  const rowHidden = rows.map(r => !!r.rowHidden);
+
+  // Columns first, always. How tall a wrapped row needs to be depends on how wide
+  // its columns ended up, so measuring rows first measures a layout that is about
+  // to change — which is the "one row is half the screen" look.
+  const columns = await fitAxis(ctx, cols, wasWidth, colHidden, {
+    autofit: (x) => x.format.autofitColumns(),
+    read: (x) => x.format.columnWidth,
+    write: (x, v) => { x.format.columnWidth = v; },
+    prop: 'format/columnWidth',
+    min: MIN_COL_POINTS,
+    max: MAX_COL_POINTS,
+    shrink,
+  });
+  const fittedRows = await fitAxis(ctx, rows, wasHeight, rowHidden, {
+    autofit: (x) => x.format.autofitRows(),
+    read: (x) => x.format.rowHeight,
+    write: (x, v) => { x.format.rowHeight = v; },
+    prop: 'format/rowHeight',
+    min: MIN_ROW_POINTS,
+    max: MAX_ROW_POINTS,
+    shrink,
+  });
+  return { columns, rows: fittedRows };
+}
+
+/**
+ * One axis of fitLayout: autofit, measure what that gave, then correct whatever
+ * came back out of bounds — including putting a size back when autofit shrank
+ * something it was not allowed to shrink.
+ */
+async function fitAxis(ctx, items, was, hidden, spec) {
+  if (!items.length) return 0;
+
+  for (let i = 0; i < items.length; i++) if (!hidden[i]) spec.autofit(items[i]);
+  await ctx.sync();
+
+  for (const it of items) it.load(spec.prop);
+  await ctx.sync();
+
+  let changed = 0;
+  const fixes = [];
+  for (let i = 0; i < items.length; i++) {
+    if (hidden[i]) continue;
+    const before = was[i];
+    const fitted = spec.read(items[i]);
+    if (typeof before !== 'number' || typeof fitted !== 'number' || before <= 0) continue;
+    // Autofit alone is not enough at either end. Excel refuses to widen a column
+    // whose cells wrap — it grows the row instead — so a wrapped column comes back
+    // at whatever narrow width it already had; and a column holding one
+    // 500-character note autofits to something absurd. Hence the clamp.
+    let want = Math.min(spec.max, Math.max(spec.min, fitted));
+    if (!spec.shrink && before > want) want = before;
+    if (Math.abs(want - fitted) > 0.5) fixes.push([items[i], want]);
+    if (Math.abs(want - before) > 0.5) changed++;
+  }
+  for (const [it, v] of fixes) spec.write(it, v);
+  if (fixes.length) await ctx.sync();
+  return changed;
+}
+
+/** The half-sentence a tool result adds when fitLayout actually moved something. */
+function describeFit(fitted) {
+  if (!fitted) return '';
+  const parts = [];
+  if (fitted.columns) parts.push(`${fitted.columns} 欄的欄寬`);
+  if (fitted.rows) parts.push(`${fitted.rows} 列的列高`);
+  return parts.length ? `已依內容自動調整${parts.join('、')}。` : '';
+}
+
+/* ── fit:end ──────────────────────────────────────── */
 
 const BORDER_EDGES = {
   all: ['EdgeTop', 'EdgeBottom', 'EdgeLeft', 'EdgeRight', 'InsideHorizontal', 'InsideVertical'],
@@ -561,38 +860,18 @@ async function formatRange(args) {
     await ctx.sync();
 
     // Autofit runs after the content-affecting changes land, or it measures the
-    // old text.
-    //
-    // getEntireColumn() matters: Range.format.autofitColumns() measures ONLY the
-    // cells inside the given range. Autofitting a header row alone therefore sizes
-    // every column to its 2-3 character title, and the numbers underneath collapse
-    // into ###. Measuring the whole column is what "自動調整欄寬" means in Excel's
-    // own UI, so that is what this does.
+    // old text. `shrink: true` because this one was asked for explicitly — unlike
+    // the automatic pass after a write, "自動調整欄寬" here means the real thing,
+    // narrowing included.
     if (args.autofit_columns) {
-      r.getEntireColumn().format.autofitColumns();
-      await ctx.sync();
-
-      // Autofit alone is not enough. Excel refuses to widen a column whose cells
-      // have wrapText on — it grows the row instead — so a wrapped column can be
-      // left at whatever narrow width it already had. And a column holding one
-      // 500-character note autofits to something absurd. Clamp both ends.
-      const cols = [];
-      for (let i = 0; i < Math.min(range.columnCount, 60); i++) {
-        const c = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex + i, 1, 1).getEntireColumn();
-        c.load('format/columnWidth');
-        cols.push(c);
-      }
-      await ctx.sync();
-
-      let clamped = 0;
-      for (const c of cols) {
-        const w = c.format.columnWidth;
-        if (typeof w !== 'number') continue;
-        const fixed = Math.min(MAX_COL_POINTS, Math.max(MIN_COL_POINTS, w));
-        if (fixed !== w) { c.format.columnWidth = fixed; clamped++; }
-      }
-      if (clamped) await ctx.sync();
-      applied.push(clamped ? `自動欄寬（${clamped} 欄超出範圍已調整）` : '自動欄寬');
+      const fitted = await fitLayout(ctx, [{
+        sheet,
+        rowIndex: range.rowIndex,
+        columnIndex: range.columnIndex,
+        rowCount: 0,   // rows are handled by autofit_rows below, after the widths settle
+        columnCount: range.columnCount,
+      }], { shrink: true });
+      applied.push(fitted.columns ? `自動欄寬（${fitted.columns} 欄）` : '自動欄寬');
     }
 
     // Rows last, and after the columns are final: row height depends on how wide
@@ -1101,9 +1380,10 @@ async function finishWorkbookSnapshot(snapshot) {
 /**
  * Put a snapshot back. Restoring formulas covers both constants and formulas.
  *
- * Returns a description of what was actually restored, for the pane to report —
- * the two snapshot shapes undo very different amounts of ground and the note in
- * the transcript should not flatten that into one sentence.
+ * Returns `{ label, notes }` already worded and translated, because the two
+ * snapshot shapes undo very different amounts of ground and only this module
+ * knows which — 「{0} 張工作表」 is not a sentence the shell should be able to
+ * say, now that the shell also runs in Word.
  */
 export async function restoreSnapshot(snapshot) {
   if (snapshot && snapshot.kind === 'workbook') return restoreWorkbook(snapshot);
@@ -1113,7 +1393,13 @@ export async function restoreSnapshot(snapshot) {
     target.numberFormat = snapshot.numberFormat;
     target.formulas = snapshot.formulas;
     await ctx.sync();
-    return { kind: 'range', sheet: snapshot.sheet, address: snapshot.address };
+    return {
+      kind: 'range',
+      sheet: snapshot.sheet,
+      address: snapshot.address,
+      label: `${snapshot.sheet}!${snapshot.address}`,
+      notes: [],
+    };
   });
 }
 
@@ -1124,8 +1410,15 @@ export async function restoreSnapshot(snapshot) {
  * Clearing the current used range before writing the before-image back is what
  * makes this an undo rather than a partial one — a script that wrote past the
  * old used range (A1:F10 before, A1:F400 after) would otherwise leave rows
- * 11-400 sitting there. clearContents and not clear(): formatting that was
- * already on those cells is not this snapshot's to throw away.
+ * 11-400 sitting there. `clear('Contents')` and not a bare `clear()`, which is
+ * clear-everything: formatting that was already on those cells is not this
+ * snapshot's to throw away.
+ *
+ * Note there is no `Range.clearContents()` in Office.js however much the name
+ * suggests itself — that spelling is Excel VBA's. It was what this used to call,
+ * and every undo of a script that had written anything died on
+ * 「current[i].clearContents is not a function」 while an undo of a script that
+ * had only ADDED sheets went through, because that path never reached the call.
  */
 async function restoreWorkbook(snapshot) {
   return Excel.run(async (ctx) => {
@@ -1155,7 +1448,7 @@ async function restoreWorkbook(snapshot) {
       // of the tab strip and without its formatting. Reported, not hidden.
       const sheet = exists ? coll.getItem(s.name) : coll.add(s.name);
       if (!exists) recreated.push(s.name);
-      if (exists && current[i] && !current[i].isNullObject) current[i].clearContents();
+      if (exists && current[i] && !current[i].isNullObject) current[i].clear('Contents');
       if (s.address) {
         const target = sheet.getRange(s.address);
         target.numberFormat = s.numberFormat;
@@ -1164,14 +1457,26 @@ async function restoreWorkbook(snapshot) {
     });
     await ctx.sync();
 
-    return { kind: 'workbook', sheets: snapshot.sheets.length, deleted, recreated };
+    const notes = [];
+    if (deleted.length) notes.push(t('已移除 AI 新增的工作表：{0}', deleted.join('、')));
+    if (recreated.length) {
+      notes.push(t('AI 刪掉的工作表已重建：{0}。內容回來了，格式沒有，位置在最後面。', recreated.join('、')));
+    }
+    return {
+      kind: 'workbook',
+      sheets: snapshot.sheets.length,
+      deleted,
+      recreated,
+      label: t('{0} 張工作表的內容', snapshot.sheets.length),
+      notes,
+    };
   });
 }
 
 /* ── snapshot:end ──────────────────────────────────────── */
 
 /** Scroll to and select a cell — powers the [[Sheet!A1]] citation links. */
-export async function selectCell(sheetName, address) {
+export async function goTo(sheetName, address) {
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
     sheet.load('isNullObject');
@@ -1223,9 +1528,9 @@ export async function getSelectionRef() {
     const head = `使用者在側邊欄提問時選取的範圍：${sh.name}!${local}（${size}）`;
 
     if (cells > MAX_SELECTION_PREVIEW_CELLS) {
-      return { label: local, sheet: sh.name, context: `${head}\n（範圍較大，內容請自己用 excel_read_range 讀）` };
+      return { label: local, scope: sh.name, context: `${head}\n（範圍較大，內容請自己用 excel_read_range 讀）` };
     }
-    return { label: local, sheet: sh.name, context: `${head}\n內容：\n${toCsv(r.values)}` };
+    return { label: local, scope: sh.name, context: `${head}\n內容：\n${toCsv(r.values)}` };
   });
 }
 
@@ -1251,7 +1556,7 @@ export async function watchSelection(onChange) {
   } catch { /* older host: no live tracking */ }
 }
 
-export async function getWorkbookName() {
+export async function getDocumentName() {
   return Excel.run(async (ctx) => {
     ctx.workbook.load('name');
     await ctx.sync();
@@ -1285,7 +1590,7 @@ const WORKBOOK_ID_PROP = 'JVisionWorkbookId';
  * host below ExcelApi 1.7). The caller falls back to the file name, which is
  * worse but not broken.
  */
-export async function getWorkbookKey() {
+export async function getDocumentKey() {
   if (!hasApi('1.7')) return null;
   try {
     return await Excel.run(async (ctx) => {
@@ -1309,7 +1614,7 @@ export async function getWorkbookKey() {
   }
 }
 
-export async function getActiveSheetName() {
+export async function getLocation() {
   return Excel.run(async (ctx) => {
     const sh = ctx.workbook.worksheets.getActiveWorksheet();
     sh.load('name');
@@ -1325,11 +1630,11 @@ export async function getActiveSheetName() {
  * Failure is non-fatal — the name simply stops tracking, which is better than a
  * broken pane on a host that lacks the event (it needs ExcelApi 1.7).
  */
-export async function watchActiveSheet(onChange) {
+export async function watchLocation(onChange) {
   try {
     await Excel.run(async (ctx) => {
       ctx.workbook.worksheets.onActivated.add(async () => {
-        try { onChange(await getActiveSheetName()); } catch { /* ignore */ }
+        try { onChange(await getLocation()); } catch { /* ignore */ }
       });
       await ctx.sync();
     });
@@ -1413,185 +1718,6 @@ function stringifyResult(v, cap, tailNote) {
  * needing confirmation (see scriptMutatesWorkbook), and the pane will not run it
  * until a human clicks.
  */
-/**
- * Watch what a script DOES, instead of reading what it says.
- *
- * The server decides whether to ask by pattern-matching the source
- * (scriptMutatesWorkbook). That is a heuristic and it always was: `r["cle" +
- * "ar"]()` defeats it, and so does any instruction that arrives from mail, KM or
- * a web page and talks the model into writing something the patterns miss. What
- * follows is the control the patterns never were.
- *
- * Every Office object handed to a script is wrapped in a Proxy. Two things count
- * as changing the workbook:
- *
- *   - assigning ANY property on an Office object. Office.js has no read-only
- *     property you are meant to assign to — reading is `.load()` — so the rule
- *     needs no list to keep in step with the API, and `obj["val"+"ues"] = x`
- *     trips it exactly like `obj.values = x`.
- *   - calling any method that is not a KNOWN READ. Stated in that direction on
- *     purpose — see READ_METHODS — so this rule needs no list of mutations to
- *     keep in step with the API either. It matches the method actually invoked
- *     rather than the text of the call.
- *
- * When writes were not approved, the attempt throws where it happens rather than
- * at sync: the model gets an error naming the operation, which is something it
- * can act on, and nothing was queued in the meantime.
- *
- * What this is NOT: a sandbox. A script that reaches the host's own globals
- * instead of its bindings is outside what a Proxy can see. Closing that needs
- * the script off this thread entirely, which is a bigger change than this one.
- */
-/* ── guard:start ─ test/script-guard.test.mjs slices the source from here ──── */
-
-/**
- * Methods that READ. Anything not in here counts as changing the workbook.
- *
- * Stated in this direction after the other one failed. The first version carried
- * a list of MUTATING methods, and a denylist is only worth what its completeness
- * is worth: `worksheet.copy()`, `range.autoFill()`, `range.setCellProperties()`,
- * `workbook.close()`, `table.clearFilters()` and the whole `applyValuesFilter`
- * family were all absent from it. Every one of those wrote to the workbook with
- * no confirmation card and no snapshot — and the server's own pattern matcher
- * missed them too, so nothing was watching. Office.js gains methods with every
- * release, so the list would have gone stale again on its own schedule.
- *
- * Reading has a shape that writing does not: `get…` for navigation and
- * retrieval, plus the handful of names below. So this rule can be stated once
- * and stay true, which is the same property the assignment rule above has, and
- * the reason the two now read alike — reading is a closed set, writing is
- * whatever is left over.
- *
- * The price is false positives: a read this set does not know about is treated
- * as a write and the model is told to re-request with mode="write", which puts
- * a confirmation card in front of something harmless. That is the exact habit
- * this add-in works to avoid, so a read found missing belongs in here — not
- * tolerated as an acceptable cost.
- */
-const READ_METHODS = new Set([
-  'load', 'sync', 'toJSON', 'run', 'track', 'untrack',
-  // Search hands back ranges without touching them. Not named get*, but reads.
-  'find', 'findOrNullObject', 'findAll', 'findAllOrNullObject',
-]);
-
-/**
- * Sub-objects whose whole method surface reads.
- *
- * `workbook.functions` is Excel's function library — `functions.sum(range)`,
- * `functions.vlookup(…)`. Every one of them computes and returns, none are named
- * get*, and enumerating them would be its own stale list. `trackedObjects.add()`
- * manages Office.js proxy lifetimes, not workbook content, and its name would
- * otherwise trip the rule on the way past.
- */
-const READ_ONLY_SUBTREES = new Set(['functions', 'trackedObjects']);
-
-const isReadMethod = (name) => name.startsWith('get') || READ_METHODS.has(name);
-
-/** Reach the object underneath a wrapper, so Office.js never sees a Proxy. */
-const RAW = Symbol('raw');
-
-function makeScriptGuard(allowWrites) {
-  const cache = new WeakMap();
-  /** Separate, because the same object can be reached in both modes. */
-  const readOnlyCache = new WeakMap();
-  let touched = null;
-
-  const deny = (what) => {
-    touched = what;
-    if (allowWrites) return;
-    throw new Error(
-      `這段程式想修改活頁簿（${what}），但這次呼叫沒有申請寫入權限。`
-      + '請重新呼叫 excel_run_script 並帶上 mode="write"，使用者會看到確認視窗。'
-      + '（若這其實只是讀取：唯讀的做法是 get… 開頭的方法、load、sync。）',
-    );
-  };
-
-  // Plain data comes back from Office as ordinary arrays and objects — .values is
-  // a real Array. Wrapping those would cost a proxy per cell and catch nothing,
-  // because assigning into them changes a JS array, not the workbook.
-  const isOfficeObject = (v) => {
-    if (v === null) return false;
-    const k = typeof v;
-    if (k !== 'object' && k !== 'function') return false;
-    if (Array.isArray(v) || v instanceof Date || v instanceof Promise) return false;
-    const c = v.constructor;
-    return !(c === Object || c === undefined);
-  };
-
-  const unwrap = (v) => (isOfficeObject(v) && v[RAW]) || v;
-
-  // `force` exists for the Excel namespace itself. It is a plain object, so the
-  // heuristic below rejects it — and leaving it unwrapped hands any script an
-  // unguarded context through Excel.run(cb).
-  //
-  // `readOnly` marks everything reached through a READ_ONLY_SUBTREES branch, so
-  // `functions.sum()` is not mistaken for a mutation on the way past.
-  function wrap(target, force, readOnly) {
-    // A collection's `.items` is a plain Array holding real Office objects, and
-    // the isOfficeObject heuristic rejects arrays — right for `.values` and
-    // `.formulas`, which hold primitives, but it handed `worksheets.items` back
-    // UNWRAPPED and every object inside it was an open door:
-    //
-    //     sheets.load('items/name'); await ctx.sync();
-    //     sheets.items[0].getRange('A1').values = [[1]];   // nothing watching
-    //
-    // which is not an exotic way to write it — it is what the Office.js samples
-    // do. Arrays of Office objects get wrapped element by element; data arrays
-    // are handed back exactly as they came.
-    if (Array.isArray(target)) {
-      return (target.length && isOfficeObject(target[0]))
-        ? target.map(v => wrap(v, false, readOnly))
-        : target;
-    }
-    if (!force && !isOfficeObject(target)) return target;
-    if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return target;
-    const store = readOnly ? readOnlyCache : cache;
-    const hit = store.get(target);
-    if (hit) return hit;
-
-    const proxy = new Proxy(target, {
-      get(t, prop) {
-        if (prop === RAW) return t;
-        // Reflect against the target, not the receiver: Office objects keep state
-        // in internal slots and reject a Proxy as `this`.
-        const v = Reflect.get(t, prop, t);
-        const name = String(prop);
-        const childReadOnly = readOnly || READ_ONLY_SUBTREES.has(name);
-        if (typeof v !== 'function') return wrap(v, false, childReadOnly);
-        return function (...a) {
-          if (!readOnly && !isReadMethod(name)) deny(name + '()');
-          // A callback passed to Office (Excel.run, forEach) is handed raw
-          // objects when Office calls it back — re-wrap them on the way in, or
-          // the script gets an unguarded context through the front door.
-          const args = a.map(x => (typeof x === 'function'
-            ? (...back) => x(...back.map(b => wrap(b, false, readOnly)))
-            : unwrap(x)));
-          return wrap(Reflect.apply(v, t, args), false, readOnly);
-        };
-      },
-      set(t, prop, value) {
-        deny(String(prop) + ' =');
-        return Reflect.set(t, prop, unwrap(value), t);
-      },
-      deleteProperty(t, prop) {
-        deny('delete ' + String(prop));
-        return Reflect.deleteProperty(t, prop);
-      },
-    });
-
-    store.set(target, proxy);
-    return proxy;
-  }
-
-  return {
-    wrap: (v) => wrap(v, false, false),
-    wrapNamespace: (v) => wrap(v, true, false),
-    didMutate: () => touched,
-  };
-}
-
-/* ── guard:end ────────────────────────────────────────────────────────────── */
-
 async function runScript(args, allowWrites) {
   const code = String(args.code || '').trim();
   if (!code) throw new Error('code 是必要的');
@@ -1644,8 +1770,44 @@ async function runScript(args, allowWrites) {
     )),
   ]);
 
+  // A script builds a whole report in one go, and that is exactly where the
+  // layout goes wrong: nothing between the model and Office.js converts
+  // `columnWidth = 12` from the characters it meant into the points Office reads,
+  // so a report arrives as columns of ###. Repair it from the content the same
+  // widen-only way a write does — see fitLayout. Only worth doing for a script
+  // that actually changed something, and never worth failing a good script over.
+  let fitted = null;
+  if (allowWrites && guard.didMutate()) {
+    try {
+      fitted = await Excel.run(async (ctx) => {
+        const sheets = ctx.workbook.worksheets;
+        sheets.load('items/name');
+        await ctx.sync();
+
+        // Which sheets the script touched is not knowable — the guard records that
+        // something was written, not where — so every sheet's used range is
+        // measured. valuesOnly, or a sheet that merely has formatting way out at
+        // BZ400 drags the sweep across four hundred empty columns.
+        const used = sheets.items.slice(0, MAX_FIT_SHEETS)
+          .map(s => ({ sheet: s, range: s.getUsedRangeOrNullObject(true) }));
+        for (const u of used) u.range.load('isNullObject,rowIndex,columnIndex,rowCount,columnCount');
+        await ctx.sync();
+
+        return fitLayout(ctx, used.filter(u => !u.range.isNullObject).map(u => ({
+          sheet: u.sheet,
+          rowIndex: u.range.rowIndex,
+          columnIndex: u.range.columnIndex,
+          rowCount: u.range.rowCount,
+          columnCount: u.range.columnCount,
+        })));
+      });
+    } catch { /* 版面沒調到不影響 script 已經寫好的內容 */ }
+  }
+
   const parts = [];
   if (logs.length) parts.push('log:\n' + logs.join('\n'));
+  const fitNote = describeFit(fitted);
+  if (fitNote) parts.push(fitNote);
   // Remind the model what it parked and under which name — otherwise the next
   // script guesses the key and gets undefined.
   const stored = describeStore();

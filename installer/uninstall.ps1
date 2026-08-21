@@ -14,8 +14,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$AppName      = 'JVision for Excel'
-$AppShortName = 'JVisionForExcel'
+$AppName      = 'JVision for Office'
+$AppShortName = 'JVisionForOffice'
 $InstallDir   = Join-Path $env:LOCALAPPDATA $AppName
 $WefKey       = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer'
 $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppShortName"
@@ -24,19 +24,21 @@ Write-Host ""
 Write-Host "=== 解除安裝 $AppName ===" -ForegroundColor Cyan
 Write-Host ""
 
-# ── 1. 取消 Excel 的註冊 ──────────────────────────────────────────────────────
+# ── 1. 取消 Office 的註冊 ──────────────────────────────────────────────────────
 # 從已安裝的 manifest 讀回 Id。讀不到（檔案被手動刪了）就退而求其次，
 # 掃整個 Developer 機碼，清掉任何指向我們安裝資料夾的值 —— 留下一個指向不存在
 # 檔案的登錄值，會讓 Excel 每次啟動都嘗試載入一個載不到的增益集。
-$targetManifest = Join-Path $InstallDir 'manifest.xml'
-$addinId = $null
-if (Test-Path $targetManifest) {
-  try { [xml]$m = Get-Content -Path $targetManifest -Encoding UTF8 -Raw; $addinId = $m.OfficeApp.Id } catch { }
+# 每個主應用程式一份 manifest，所以這裡收集的是一串 Id，不是一個。
+$addinIds = @()
+if (Test-Path $InstallDir) {
+  foreach ($f in Get-ChildItem -Path $InstallDir -Filter '*.xml' -ErrorAction SilentlyContinue) {
+    try { [xml]$m = Get-Content -Path $f.FullName -Encoding UTF8 -Raw; if ($m.OfficeApp.Id) { $addinIds += $m.OfficeApp.Id } } catch { }
+  }
 }
 
 if (Test-Path $WefKey) {
-  if ($addinId) {
-    Remove-ItemProperty -Path $WefKey -Name $addinId -ErrorAction SilentlyContinue
+  foreach ($id in $addinIds) {
+    Remove-ItemProperty -Path $WefKey -Name $id -ErrorAction SilentlyContinue
   }
   $key = Get-Item -Path $WefKey
   foreach ($name in $key.GetValueNames()) {
@@ -45,7 +47,7 @@ if (Test-Path $WefKey) {
       Remove-ItemProperty -Path $WefKey -Name $name -ErrorAction SilentlyContinue
     }
   }
-  Write-Host "  已取消 Excel 的註冊"
+  Write-Host "  已取消 Office 的註冊"
 }
 
 # ── 2. 從「應用程式和功能」移除 ───────────────────────────────────────────────

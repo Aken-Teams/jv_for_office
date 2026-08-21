@@ -13,12 +13,12 @@
  */
 import fs from 'fs';
 
-const src = fs.readFileSync(new URL('../src/taskpane/excelTools.js', import.meta.url), 'utf8');
+const src = fs.readFileSync(new URL('../src/taskpane/hosts/excel.js', import.meta.url), 'utf8');
 const from = src.indexOf('/* ── snapshot:start');
 const to = src.indexOf('/* ── snapshot:end');
 const bareAt = src.indexOf('function bareAddress(');
 if (from < 0 || to < 0 || bareAt < 0) {
-  console.error('找不到 snapshot:start / snapshot:end 標記，excelTools.js 的結構變了。');
+  console.error('找不到 snapshot:start / snapshot:end 標記，hosts/excel.js 的結構變了。');
   process.exit(1);
 }
 const mod = src.slice(bareAt, src.indexOf('\n}\n', bareAt) + 3)
@@ -27,7 +27,10 @@ const mod = src.slice(bareAt, src.indexOf('\n}\n', bareAt) + 3)
   // module-private helpers need one adding.
   + '\nexport { captureWorkbook, finishWorkbookSnapshot };\n';
 const tmp = new URL('./.snapshot-under-test.mjs', import.meta.url);
-fs.writeFileSync(tmp, mod);
+// The slice calls t() for the sentences it hands back to the pane, so give it the
+// real dictionary rather than a stub: a translation that goes missing then shows
+// up here instead of in front of someone.
+fs.writeFileSync(tmp, "import { t } from '../src/taskpane/i18n.js';\n" + mod);
 
 // ── A very small Excel ────────────────────────────────────────────────────────
 // Cells hold a formula string and a number format. Enough for the snapshot,
@@ -75,7 +78,15 @@ class FakeRange {
       for (let c = 0; c < v[r].length; c++) this.sheet.set(this.box.r1 + r, this.box.c1 + c, key, v[r][c]);
     }
   }
-  clearContents() {
+  /**
+   * `clear(applyTo)` and nothing else, because that is all Office.js has. The
+   * fake used to answer to `clearContents()` as well, which is VBA's name — and
+   * with the fake accepting both, this suite passed green for a version of undo
+   * that threw 「clearContents is not a function」 the moment it ran in Excel.
+   * A stand-in that is more forgiving than the real API tests nothing.
+   */
+  clear(applyTo) {
+    if (applyTo !== 'Contents') throw new Error(`FakeRange.clear：只實作了 'Contents'，收到 ${applyTo}`);
     for (let r = this.box.r1; r <= this.box.r2; r++) {
       for (let c = this.box.c1; c <= this.box.c2; c++) this.sheet.set(r, c, 'f', '');
     }
@@ -175,6 +186,9 @@ const checks = [
   ['使用者自己加的內容還在', read(book.worksheets.getItem('我的筆記'), 'A1') === '手寫的'],
   ['回報了移除的工作表', result.deleted.join() === '報表'],
   ['回報了重建的工作表', result.recreated.join() === '原始資料'],
+  // The shell prints these two verbatim; it knows nothing else about the undo.
+  ['交給外殼的描述已經是一句話', /張工作表/.test(result.label)],
+  ['移除與重建各自有一行說明', result.notes.length === 2],
 ];
 
 // A workbook past the ceiling must report "no snapshot" rather than a partial

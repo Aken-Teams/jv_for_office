@@ -160,6 +160,45 @@ const zhCN = {
   '訊息': '消息',
   'Enter 送出 · Shift+Enter 換行': 'Enter 发送 · Shift+Enter 换行',
   '這個增益集只能在 Excel 中使用。': '这个加载项只能在 Excel 中使用。',
+
+  // ── Word ──────────────────────────────────────────────────────────────────
+  '這份文件的對話紀錄': '这份文档的对话记录',
+  '開新對話（這份文件的紀錄會留著）': '开新对话（这份文档的记录会留着）',
+  '目前開啟的文件': '当前打开的文档',
+  '（未命名文件）': '（未命名文档）',
+  'AI 想要修改這份文件': 'AI 想要修改这份文档',
+  '這份文件還沒有對話紀錄。': '这份文档还没有对话记录。',
+  '已停止。已經做完的部分留在文件裡，需要的話可以用上方的復原鍵退回。': '已停止。已经做完的部分留在文档里，需要的话可以用上方的撤销键退回。',
+  '之後的回覆會用{0}。文件裡既有的內容不會被翻譯。': '之后的回复会用{0}。文档里现有的内容不会被翻译。',
+  '已改成自動允許：AI 修改這份文件時不會再詢問。刪除整段仍會問，因為那沒辦法復原。': '已改成自动允许：AI 修改这份文档时不会再询问。删除整段仍会问，因为那没办法撤销。',
+  '已改回每次確認：AI 要修改文件前都會先問過你。': '已改回每次确认：AI 要修改文档前都会先问过你。',
+  '這份文件太大，改動前沒辦法先備份，所以這次的修改復原鍵拿不回來。': '这份文档太大，改动前没办法先备份，所以这次的修改撤销键拿不回来。',
+  '提醒：AI 的改動是以追蹤修訂寫入的，可以在 Word 的「校閱」裡逐條接受或拒絕；要一次全退回請用這裡的復原鍵。': '提醒：AI 的改动是以修订形式写入的，可以在 Word 的“审阅”里逐条接受或拒绝；要一次全退回请用这里的撤销键。',
+  '目前的章節：{0}': '当前的章节：{0}',
+  '找不到段落 {0}': '找不到段落 {0}',
+  '問這份文件任何事': '问这份文档任何事',
+  '我讀得到章節、樣式和你選取的段落。改動會以追蹤修訂寫入，你可以逐條決定。': '我读得到章节、样式和你选取的段落。改动会以修订形式写入，你可以逐条决定。',
+  '對這份文件提問…': '对这份文档提问…',
+  '幫我摘要這份文件的重點': '帮我摘要这份文档的重点',
+  '把選取的段落改寫成正式公文': '把选取的段落改写成正式公文',
+  '檢查全文的錯字和用詞': '检查全文的错字和用词',
+  '整理標題階層並產生目錄': '整理标题层级并生成目录',
+  '這份文件的內容': '这份文档的内容',
+  '載入 Word 工具…': '载入 Word 工具…',
+  '正在讀取文件結構…': '正在读取文档结构…',
+  '正在閱讀內文…': '正在阅读正文…',
+  '等待你確認改寫…': '等待你确认改写…',
+  '正在插入內容…': '正在插入内容…',
+  '等待你確認刪除…': '等待你确认删除…',
+  '正在插入表格…': '正在插入表格…',
+  '正在建立目錄…': '正在建立目录…',
+  '正在整理清單…': '正在整理列表…',
+  '等待你確認取代…': '等待你确认替换…',
+  '正在處理追蹤修訂…': '正在处理修订…',
+  '正在加註解…': '正在加批注…',
+  '正在草擬改寫內容…': '正在起草改写内容…',
+  '正在草擬要插入的內容…': '正在起草要插入的内容…',
+  '這個增益集只能在 Excel 或 Word 中使用。': '这个加载项只能在 Excel 或 Word 中使用。',
 };
 
 const en = {
@@ -296,6 +335,45 @@ const en = {
   '對這份活頁簿提問…': 'Ask about this workbook…',
   '訊息': 'Message',
   'Enter 送出 · Shift+Enter 換行': 'Enter to send · Shift+Enter for a new line',
+
+  // ── Word ──────────────────────────────────────────────────────────────────
+  '這份文件的對話紀錄': 'This document\'s history',
+  '開新對話（這份文件的紀錄會留著）': 'New chat (this document’s history is kept)',
+  '目前開啟的文件': 'The document you have open',
+  '（未命名文件）': '(Untitled document)',
+  'AI 想要修改這份文件': 'The assistant wants to change this document',
+  '這份文件還沒有對話紀錄。': 'No conversations about this document yet.',
+  '已停止。已經做完的部分留在文件裡，需要的話可以用上方的復原鍵退回。': 'Stopped. What was already done stays in the document; use the undo button above to take it back.',
+  '之後的回覆會用{0}。文件裡既有的內容不會被翻譯。': 'Replies will be in {0} from now on. Existing content in the document is not translated.',
+  '已改成自動允許：AI 修改這份文件時不會再詢問。刪除整段仍會問，因為那沒辦法復原。': 'Auto-approve is on: the assistant will not ask before changing this document. Deleting whole paragraphs still asks, because that cannot be undone.',
+  '已改回每次確認：AI 要修改文件前都會先問過你。': 'Back to asking every time: the assistant will ask before changing the document.',
+  '這份文件太大，改動前沒辦法先備份，所以這次的修改復原鍵拿不回來。': 'This document is too large to back up first, so the undo button cannot take this change back.',
+  '提醒：AI 的改動是以追蹤修訂寫入的，可以在 Word 的「校閱」裡逐條接受或拒絕；要一次全退回請用這裡的復原鍵。': 'Note: changes go in as tracked revisions — accept or reject them one by one under Word’s Review tab. To take them all back at once, use the undo button here.',
+  '目前的章節：{0}': 'Current section: {0}',
+  '找不到段落 {0}': 'Paragraph {0} not found',
+  '問這份文件任何事': 'Ask anything about this document',
+  '我讀得到章節、樣式和你選取的段落。改動會以追蹤修訂寫入，你可以逐條決定。': 'I can read the outline, the styles and whatever you select. Changes go in as tracked revisions for you to accept or reject.',
+  '對這份文件提問…': 'Ask about this document…',
+  '幫我摘要這份文件的重點': 'Summarise the key points',
+  '把選取的段落改寫成正式公文': 'Rewrite my selection as a formal memo',
+  '檢查全文的錯字和用詞': 'Check the whole document for typos',
+  '整理標題階層並產生目錄': 'Fix the heading levels and add a contents page',
+  '這份文件的內容': 'this document\'s contents',
+  '載入 Word 工具…': 'Loading Word tools…',
+  '正在讀取文件結構…': 'Reading the document structure…',
+  '正在閱讀內文…': 'Reading…',
+  '等待你確認改寫…': 'Waiting for you to approve the rewrite…',
+  '正在插入內容…': 'Inserting…',
+  '等待你確認刪除…': 'Waiting for you to approve the deletion…',
+  '正在插入表格…': 'Inserting a table…',
+  '正在建立目錄…': 'Adding a contents page…',
+  '正在整理清單…': 'Formatting the list…',
+  '等待你確認取代…': 'Waiting for you to approve the replacement…',
+  '正在處理追蹤修訂…': 'Working through the tracked changes…',
+  '正在加註解…': 'Adding a comment…',
+  '正在草擬改寫內容…': 'Drafting the rewrite…',
+  '正在草擬要插入的內容…': 'Drafting what to insert…',
+  '這個增益集只能在 Excel 或 Word 中使用。': 'This add-in only works in Excel or Word.',
   '這個增益集只能在 Excel 中使用。': 'This add-in only works in Excel.',
 };
 
@@ -328,6 +406,38 @@ export function t(zh, ...args) {
  * so a string added to the HTML is translated by the same edit that adds it —
  * a separate list is a list that goes stale.
  */
+/**
+ * Re-render the text that depends on WHICH Office app this is.
+ *
+ * The same machinery as applyStaticText with one indirection added: `data-h`
+ * holds a path into the host module's `words` (「chips.2」, 「intro.0.title」),
+ * and what comes back is a Traditional Chinese source string that then goes
+ * through t() like everything else. So one attribute serves both the pre-login
+ * screens — where there is deliberately no dictionary entry and falling through
+ * to the source is the right answer, see SCOPE above — and everything after.
+ *
+ * The markup keeps Excel's wording as its literal content so the file still
+ * reads as a page on its own. This runs before anyone sees it.
+ */
+export function applyHostText(words, root = document) {
+  const pick = (path) => String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), words);
+  const map = [
+    ['data-h', (el, v) => { el.textContent = v; }],
+    ['data-h-ph', (el, v) => { el.placeholder = v; }],
+    ['data-h-tip', (el, v) => el.setAttribute('data-tip', v)],
+    ['data-h-al', (el, v) => el.setAttribute('aria-label', v)],
+    ['data-h-title', (el, v) => { el.title = v; }],
+  ];
+  for (const [attr, set] of map) {
+    for (const el of root.querySelectorAll(`[${attr}]`)) {
+      const word = pick(el.getAttribute(attr));
+      // A host that does not define a key keeps whatever the markup said. Better
+      // a stale sentence than an empty element where a heading should be.
+      if (typeof word === 'string') set(el, t(word));
+    }
+  }
+}
+
 export function applyStaticText(root = document) {
   const map = [
     ['data-t', (el, v) => { el.textContent = v; }],

@@ -1,27 +1,19 @@
 /**
  * Drive makeScriptGuard against a stand-in for Office.js.
  *
+ * Excel's objects, but nothing here is Excel-specific: the guard sees property
+ * assignments and method names, and Word.Paragraph.insertText() is caught by the
+ * same rule that catches Range.autoFill() — neither is a known read.
+ *
  * The cases that matter are the ones the source-text patterns cannot see:
  * computed property names, aliased objects, a mutator reached through a
  * callback. If the Proxy only caught what the regex already caught, it would
  * not be worth the layer.
  */
-import fs from 'fs';
-
-// Sliced out of the real source between the guard:start / guard:end markers, so
-// this runs the shipping code rather than a copy of it. Move the markers and
-// this test tells you immediately.
-const src = fs.readFileSync(new URL('../src/taskpane/excelTools.js', import.meta.url), 'utf8');
-const from = src.indexOf('/* ── guard:start');
-const to = src.indexOf('/* ── guard:end');
-if (from < 0 || to < 0) {
-  console.error('找不到 guard:start / guard:end 標記，excelTools.js 的結構變了。');
-  process.exit(1);
-}
-const mod = src.slice(from, to) + '\nexport { makeScriptGuard };\n';
-const tmp = new URL('./.guard-under-test.mjs', import.meta.url);
-fs.writeFileSync(tmp, mod);
-const { makeScriptGuard } = await import(tmp);
+// The guard is its own module now, shared by every host — so this imports it
+// instead of slicing it out of a host file, and the thing under test is exactly
+// the thing that ships.
+import { makeScriptGuard } from '../src/taskpane/hosts/guard.js';
 
 class Range {
   constructor() { this.values = null; this.formulas = null; this.format = new Fmt(); }

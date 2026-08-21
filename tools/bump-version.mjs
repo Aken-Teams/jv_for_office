@@ -19,12 +19,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const MANIFEST = path.join(ROOT, 'manifest.xml');
+const DIR = path.join(ROOT, 'manifests');
+// All hosts move together. multi-host.md keeps the version in one place on
+// purpose: three manifests that drift are three answers to 「裝的是哪一版」.
+const MANIFESTS = fs.readdirSync(DIR).filter(f => f.endsWith('.xml')).map(f => path.join(DIR, f));
 
-const xml = fs.readFileSync(MANIFEST, 'utf-8');
-const match = xml.match(/<Version>(\d+)\.(\d+)\.(\d+)\.(\d+)<\/Version>/);
+const first = fs.readFileSync(MANIFESTS[0], 'utf-8');
+const match = first.match(/<Version>(\d+)\.(\d+)\.(\d+)\.(\d+)<\/Version>/);
 if (!match) {
-  console.error('manifest.xml 裡找不到四段式的 <Version>。');
+  console.error(`${path.basename(MANIFESTS[0])} 裡找不到四段式的 <Version>。`);
   process.exit(1);
 }
 
@@ -33,9 +36,13 @@ const [, major, minor, patch] = match.map(Number);
 // rejects a version below 1.0.
 const next = `${major}.${minor}.${patch + 1}.0`;
 
-fs.writeFileSync(MANIFEST, xml.replace(match[0], `<Version>${next}</Version>`), 'utf-8');
+for (const file of MANIFESTS) {
+  const xml = fs.readFileSync(file, 'utf-8');
+  fs.writeFileSync(file, xml.replace(/<Version>[\d.]+<\/Version>/, `<Version>${next}</Version>`), 'utf-8');
+}
 
 console.log(`manifest 版本：${match[1]}.${match[2]}.${match[3]}.${match[4]} → ${next}`);
+console.log(`已更新：${MANIFESTS.map(f => path.basename(f)).join('、')}`);
 console.log('');
 console.log('接下來（順序不能顛倒）：');
 console.log('  1. 完全關閉 Excel');
