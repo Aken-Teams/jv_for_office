@@ -130,10 +130,28 @@ const OVERVIEW_PREVIEW_CHARS = 1500;
  */
 async function loadParagraphs(ctx) {
   const paras = ctx.document.body.paragraphs;
-  paras.load('items/text,items/style,items/styleBuiltIn,items/isListItem');
+  // tableNestingLevel is 0 outside a table and >0 inside one. Loaded with
+  // everything else rather than resolved separately, because the alternative —
+  // asking each paragraph for its parent cell — is a whole extra round trip
+  // across the bridge for something Word already knows.
+  paras.load('items/text,items/style,items/styleBuiltIn,items/isListItem,items/tableNestingLevel');
   await ctx.sync();
   return paras.items;
 }
+
+/**
+ * Is this paragraph inside a table?
+ *
+ * `body.paragraphs` includes every cell of every table, which is easy to forget
+ * and expensive to forget: a whole-document restyle set the body colour on the
+ * header row of a table whose built-in style had deliberately made that row
+ * white on dark blue. Dark grey on dark blue, produced by the tool whose entire
+ * job is to make the document look considered.
+ *
+ * A table style already decides its own typography — that is what choosing one
+ * is FOR — so a document-wide pass has no business overriding it.
+ */
+const inTable = (p) => Number(p.tableNestingLevel || 0) > 0;
 
 /**
  * Just the handles. No text, no styles, nothing to serialise.
@@ -1816,6 +1834,7 @@ async function normalizeLayout(args) {
       const style = String(p.styleBuiltIn || p.style || '').replace(/\s+/g, '');
       if (KEEP_AS_IS.test(style)) continue;
       if (p.isListItem) continue;
+      if (inTable(p)) continue;   // the table's own style decides its cells
       if (!String(p.text || '').trim()) continue;
 
       p.alignment = align;
@@ -1836,7 +1855,7 @@ async function normalizeLayout(args) {
     if (!changed.length) return fixed;
     return fixed + `已把 ${changed.length} 個內文段落統一成${align === 'Left' ? '靠左' : align}對齊`
       + `${args.first_line_indent ? `、首行縮排 ${args.first_line_indent} 點` : ''}。`
-      + '標題、圖說、目錄、清單和公式段落沒有動——那些的對齊是刻意的。';
+      + '標題、圖說、目錄、清單、表格和公式段落沒有動——那些的對齊是刻意的。';
   });
 }
 
@@ -1922,13 +1941,16 @@ async function applyTheme(args) {
     const items = await loadParagraphs(ctx);
     if (!items.length) return '這份文件是空的，沒有東西可以套樣式。';
 
-    const counts = { title: 0, heading: 0, body: 0, aside: 0 };
+    const counts = { title: 0, heading: 0, body: 0, aside: 0, table: 0 };
     for (const p of items) {
       const role = roleOf(p);
       // A paragraph with no text is an equation, a picture or a spacer. Setting a
       // body font on it would restyle the mathematics into the body face, which
       // is exactly the thing that makes an equation stop looking like one.
       if (!String(p.text || '').trim()) continue;
+      // Inside a table the table style is in charge — including the white-on-dark
+      // header row that a body colour would quietly destroy.
+      if (inTable(p)) { counts.table++; continue; }
 
       const f = p.font;
       f.name = font;
@@ -1980,7 +2002,12 @@ async function applyTheme(args) {
       + `行距 ${theme.lineSpacing}pt、段後距 ${theme.spaceAfter}pt。\n`
       + `處理了 ${counts.title} 個標題、${counts.heading} 個章節標題、${counts.body} 個內文段落`
       + `${counts.aside ? `、${counts.aside} 個圖說或目錄項` : ''}。\n`
-      + '公式、圖片段落沒有動——把它們改成內文字型會讓公式不像公式。';
+      + '公式和圖片段落沒有動——把它們改成內文字型會讓公式不像公式。'
+      + (counts.table
+        ? `\n表格裡的 ${counts.table} 個段落也沒有動：表格的字型和顏色由表格樣式決定，`
+          + '從外面蓋掉會讓表頭那一列的白字變成內文色，配深色底就看不見了。'
+          + '要換表格外觀請改 word_insert_table 的 style。'
+        : '');
   });
 }
 
