@@ -4,7 +4,9 @@
 也能在你按下確認後寫回去。對標 Claude for Excel，但後端是我們自己的
 [ai-agents-office](../ai-agents-office)，資料流全程在自己的機器上。
 
-**目前已完成 Excel。** PowerPoint 與 Word 共用同一份外殼，放在同一個專案裡；
+**目前已完成 Excel 與 Word。** 兩者共用同一份外殼（`src/taskpane/app.js`），
+主應用程式專屬的那一層在 `src/taskpane/hosts/`，由 `Office.onReady` 動態載入——
+Word 不會載入 Excel 那份。PowerPoint 還沒做；
 為什麼這樣放、以及更版怎麼互不影響，見 [docs/multi-host.md](docs/multi-host.md)。
 下面的說明以 Excel 為例。
 
@@ -133,7 +135,13 @@ pnpm run dev:server
 雙擊 [installer/安裝.cmd](installer/安裝.cmd)，然後**完全關閉 Excel 再重新開啟**。
 
 常用分頁最右邊會出現「JVision 助手」。之後改網頁程式碼只要重新整理窗格；
-只有改了 `manifest.xml` 才需要重跑一次安裝。
+只有改了 `manifests/` 裡的 manifest 才需要重跑一次安裝。
+
+只想裝其中一個主應用程式的話：
+
+```powershell
+.\installer\install.ps1 -Hosts word
+```
 
 要移除就雙擊 [installer/解除安裝.cmd](installer/解除安裝.cmd)，或到 Windows 的
 「應用程式和功能」找 JVision for Excel。
@@ -171,7 +179,8 @@ cp .env.example .env      # 首次
 ### 集中部署（正式的答案）
 
 Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益集 → 上傳自訂應用程式 →
-上傳 `manifest.xml` → 指派給使用者或群組。使用者端**完全不用動作**，下次開 Excel
+上傳 `manifests/excel.xml` 和 `manifests/word.xml`（**兩份分開上傳**，它們是兩個獨立的增益集）
+→ 指派給使用者或群組。使用者端**完全不用動作**，下次開 Excel
 按鈕就在那裡，IT 也能隨時收回。這是 Claude for Excel 給企業客戶的方式，也應該是我們的終局。
 
 前提是 manifest 裡的網址要是使用者連得到的內網主機，不能是 localhost。
@@ -180,7 +189,7 @@ Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益
 
 [installer/](installer/) 底下那兩個 `.cmd` 就是給一般使用者雙擊的。它做的事：
 
-1. 把 `manifest.xml` 複製到 `%LOCALAPPDATA%\JVision for Excel\`
+1. 把選定的每份 manifest 複製到 `%LOCALAPPDATA%\JVision for Office\`
    —— 放在下載資料夾的檔案遲早會被刪掉，之後 Excel 就會載入失敗
 2. 在 `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` 寫一個字串值
    （名稱＝manifest 的 `<Id>`，資料＝manifest 路徑），Excel 啟動時就會讀到它
@@ -197,14 +206,15 @@ Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益
 
 所以你只要維護一份 manifest，不必為每個環境各存一份。
 
-發佈時把 `installer\` 和 `manifest.xml` 一起壓成 zip 給使用者就行。想更像「一個程式」的話，
+發佈時把 `installer\` 和 `manifests\` 一起壓成 zip 給使用者就行。想更像「一個程式」的話，
 可以用 Inno Setup 把這兩個腳本包成單一個 `.exe` 並簽章——那一層還沒做，需要的話再加。
 
 ## 除錯
 
 - **先在 Excel 網頁版開發**。同一份 manifest 可以側載到 Excel for the web，F12 就有完整
   DevTools，迭代速度差一個數量級。桌面版只用來做最後驗證。
-- 桌面版要接 DevTools：`npx office-addin-debugging start manifest.xml desktop`。
+- 桌面版要接 DevTools：`npx office-addin-debugging start manifests/excel.xml desktop`
+  （Word 就換成 `manifests/word.xml`）。
 - **MCP 那一段看不到 stderr**：Claude CLI 會吃掉 MCP 的 stderr。開發模式下
   `excelMcp` 會把每次工具呼叫寫進 `ai-agents-office/workspace/excel-mcp-debug.log`，
   agent 說「我沒有 Excel 工具」的時候第一個看這裡。
@@ -218,7 +228,7 @@ Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益
 | 症狀 | 原因 | 解法 |
 |---|---|---|
 | 改了 `taskpane.*` 但窗格沒變 | WebView 的頁面快取 | 重新整理窗格 |
-| 改了 `app.js` / `excelTools.js` 但行為沒變 | **SharedRuntime 讓 JS 常駐**，關窗格不會重載 | **完全關閉 Excel 再開** |
+| 改了 `app.js` / `hosts/*.js` 但行為沒變 | **SharedRuntime 讓 JS 常駐**，關窗格不會重載 | **完全關閉 Excel 再開** |
 | 換了圖示但功能區還是舊的／顯示通用方塊 | Office 依「增益集 ID + manifest 版本」判斷要不要重讀，版本沒動就不重抓 | `npm run bump` → 重跑安裝 → 清快取 → 開 Excel |
 
 第三種最容易誤判成「圖檔壞了」。先用 `Invoke-WebRequest https://localhost:3443/assets/icon-32.png`

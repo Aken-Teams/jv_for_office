@@ -156,6 +156,15 @@ Word   manifest → /v1.0.49/taskpane.html   ← 沒動
 
 ## 動工順序
 
+> **2026-08-21 更新：**第 1~5 步已完成，Word 版已實作（順序上排在 PowerPoint 之前，
+> 是使用者的決定）。實際的結果跟下面的規劃有兩處不同：
+>
+> - 多了 `hosts/guard.js`——script guard 實際上跟主應用程式無關（規則是
+>   「賛值算寫入」「非已知讀取的方法算寫入」），所以抽成共用，一套測試同時覆蓋兩邊。
+> - `conversations.workbook_key` 沒改名。Word 的紀錄也寫進這一欄，用 `category`
+>   （`excel-addin` / `word-addin`）區分。欄位名稱是 Excel 的，意思是「哪一份檔」——
+>   為了改名而動一張正在用的表，此刻不劃算。
+
 1. **先做主應用程式抽象化重構，只用 Excel 驗證。** 不要邊寫 PowerPoint 邊抽——那樣
    會同時在 debug 兩個主應用程式和一個還沒定型的抽象層。重構前後 Excel 的行為必須
    完全一樣。
