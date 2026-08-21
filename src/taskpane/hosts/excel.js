@@ -1926,9 +1926,9 @@ export async function getSelectionRef() {
     const head = `使用者在側邊欄提問時選取的範圍：${sh.name}!${local}（${size}）`;
 
     if (cells > MAX_SELECTION_PREVIEW_CELLS) {
-      return { label: local, scope: sh.name, context: `${head}\n（範圍較大，內容請自己用 excel_read_range 讀）` };
+      return { label: `${sh.name}!${local}`, context: `${head}\n（範圍較大，內容請自己用 excel_read_range 讀）` };
     }
-    return { label: local, scope: sh.name, context: `${head}\n內容：\n${toCsv(r.values)}` };
+    return { label: `${sh.name}!${local}`, context: `${head}\n內容：\n${toCsv(r.values)}` };
   });
 }
 

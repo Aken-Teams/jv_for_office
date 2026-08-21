@@ -50,6 +50,9 @@ const BASE_TOOLS = [
   'word_insert_table',
   'word_insert_toc',
   'word_manage_list',
+  'word_header_footer',
+  'word_insert_break',
+  'word_insert_chart',
   'word_replace_all',
   // Compute and edit inside Word instead of hauling the document through the
   // model's context. Same rationale as excel_run_script.
@@ -567,42 +570,103 @@ async function insertTable(args) {
 }
 
 /**
- * A real table of contents, which in Word means a field rather than text.
+ * A real table of contents — which in Word means a field, not text.
  *
- * There is no Office.js call for this, so it goes in as OOXML. The field is
- * inert until Word updates it — that is how every TOC in Word behaves, whether
- * a person or an add-in inserted it, so the result says so rather than letting
- * the model report an empty contents page as a success.
+ * ── Why the first version came out empty ──
+ * It inserted the TOC field and nothing else. That is technically a correct
+ * table of contents, and it displays as a blank space with the word 目錄 above
+ * it, because a field shows nothing until Word evaluates it — and Word does not
+ * evaluate a freshly inserted one. Telling the user to press 「更新目錄」 was a
+ * true instruction attached to something that looked broken.
+ *
+ * So the field goes in WITH a cached result: the headings we already read,
+ * styled TOC1/TOC2/TOC3, sitting between `separate` and `end` exactly where
+ * Word puts its own. The contents page is readable immediately, and the moment
+ * anyone updates fields it is replaced by the real thing with page numbers.
+ *
+ * Page numbers are the one part we cannot supply — Office.js does not expose
+ * pagination — so they are absent rather than wrong.
  */
-const TOC_OOXML = `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">
-  <pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml">
-    <pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/>
-    </Relationships></pkg:xmlData>
-  </pkg:part>
-  <pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">
-    <pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
-      <w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>目錄</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>
-    </w:body></w:document></pkg:xmlData>
-  </pkg:part>
-</pkg:package>`;
+const xmlEscape = (v) => String(v).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]
+));
+
+const OOXML_HEAD = '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">'
+  + '<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml">'
+  + '<pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/document.xml"/>'
+  + '</Relationships></pkg:xmlData></pkg:part>'
+  + '<pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">'
+  + '<pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>';
+const OOXML_TAIL = '</w:body></w:document></pkg:xmlData></pkg:part></pkg:package>';
+
+/** One paragraph, optionally styled. */
+const para = (text, style) =>
+  '<w:p>' + (style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : '')
+  + (text ? `<w:r><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>` : '')
+  + '</w:p>';
+
+function tocOoxml(entries, heading) {
+  const body = [];
+  if (heading) body.push(para(heading, 'TOCHeading'));
+
+  // The field opens inside the FIRST entry's paragraph and closes in a paragraph
+  // of its own — the shape Word itself writes, and the one it re-reads cleanly.
+  const first = entries[0];
+  body.push(
+    `<w:p><w:pPr><w:pStyle w:val="TOC${first.level}"/></w:pPr>`
+    + '<w:r><w:fldChar w:fldCharType="begin" w:dirty="1"/></w:r>'
+    + '<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\h \\z \\u </w:instrText></w:r>'
+    + '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    + `<w:r><w:t xml:space="preserve">${xmlEscape(first.text)}</w:t></w:r></w:p>`,
+  );
+  for (const e of entries.slice(1)) body.push(para(e.text, `TOC${e.level}`));
+  body.push('<w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>');
+
+  return OOXML_HEAD + body.join('') + OOXML_TAIL;
+}
 
 async function insertToc(args) {
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
-    const result = await withTracking(ctx, args, async () => {
+    const entries = items
+      .map((p) => ({ level: Math.min(3, headingLevel(p)), text: String(p.text || '').trim() }))
+      .filter((e) => e.level > 0 && e.text);
+
+    // An empty contents page is worse than no contents page: it looks like the
+    // tool failed. Say what is actually missing instead.
+    if (!entries.length) {
+      throw new Error(
+        '這份文件沒有任何段落套用「標題」樣式，所以目錄會是空的。'
+        + '請先用 word_format_range 把各章節標題設成 Heading1／Heading2（style 參數），再插入目錄。',
+      );
+    }
+
+    const heading = args.heading === false ? '' : String(args.heading || '目錄');
+    const ooxml = tocOoxml(entries, heading);
+
+    // Deliberately NOT tracked, even though every other write is.
+    //
+    // A TOC is a field: what a reviewer would see in the revisions pane is an
+    // insertion of machinery, not of words, and there is nothing meaningful to
+    // accept or reject. It is also the one write that is purely derived — it
+    // says nothing the headings did not already say. The snapshot still covers
+    // it, so 復原上一步 takes it straight back out.
+    const result = await withTracking(ctx, { track: false }, async () => {
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
-        items[from - 1].insertOoxml(TOC_OOXML, String(args.at) === 'before' ? 'Before' : 'After');
+        items[from - 1].insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
       } else {
-        ctx.document.body.insertOoxml(TOC_OOXML, 'Start');
+        ctx.document.body.insertOoxml(ooxml, 'Start');
       }
       await ctx.sync();
       return null;
     });
-    return '已插入目錄欄位。Word 的目錄是欄位不是文字，第一次要按「參考資料 → 更新目錄」'
-      + '（或 Ctrl+A 後按 F9）才會列出項目——這是 Word 本來的行為，不是插入失敗。'
-      + '目錄只會收錄套了「標題 1-3」樣式的段落。' + trackingNote(result);
+
+    return `已插入目錄，收錄 ${entries.length} 個標題（${entries.filter(e => e.level === 1).length} 個第一層）。`
+      + '項目現在就看得到了；頁碼要等使用者按一次「參考資料 → 更新目錄」才會出現，'
+      + '因為 Office.js 讀不到分頁資訊。之後標題有增減，同樣按更新就會同步。'
+      + trackingNote(result);
   });
 }
 
@@ -691,6 +755,351 @@ async function comment(args) {
   });
 }
 
+
+// ── Layout ────────────────────────────────────────────────────────────────────
+
+/**
+ * Header and footer, with a page number that is visible straight away.
+ *
+ * Same trap as the table of contents: a page number is a FIELD, and a field
+ * Word has not evaluated shows nothing. So it goes in with a cached result — a
+ * literal 1 sitting where the field's answer belongs — and every page after the
+ * first is correct as soon as Word repaginates, which it does on its own.
+ */
+function pageNumberOoxml(style) {
+  const field = (instr, cached) =>
+    '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    + `<w:r><w:instrText xml:space="preserve"> ${instr} </w:instrText></w:r>`
+    + '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    + `<w:r><w:t>${cached}</w:t></w:r>`
+    + '<w:r><w:fldChar w:fldCharType="end"/></w:r>';
+
+  const runs = style === 'x_of_y'
+    ? '<w:r><w:t xml:space="preserve">第 </w:t></w:r>' + field('PAGE', '1')
+      + '<w:r><w:t xml:space="preserve"> 頁，共 </w:t></w:r>' + field('NUMPAGES', '1')
+      + '<w:r><w:t xml:space="preserve"> 頁</w:t></w:r>'
+    : field('PAGE', '1');
+
+  return OOXML_HEAD
+    + `<w:p><w:pPr><w:jc w:val="center"/></w:pPr>${runs}</w:p>`
+    + OOXML_TAIL;
+}
+
+const HF_ALIGN = { left: 'Left', center: 'Centered', centered: 'Centered', right: 'Right' };
+
+async function headerFooter(args) {
+  const where = String(args.where || 'footer').toLowerCase();
+  const isHeader = where === 'header';
+  return Word.run(async (ctx) => {
+    const sections = ctx.document.sections;
+    sections.load('items');
+    await ctx.sync();
+    if (!sections.items.length) throw new Error('讀不到文件的節（section），無法設定頁首頁尾。');
+
+    let touched = 0;
+    for (const section of sections.items) {
+      const body = isHeader ? section.getHeader('Primary') : section.getFooter('Primary');
+      if (args.clear) { body.clear(); touched++; continue; }
+      body.clear();
+      if (args.text) {
+        const p = body.insertParagraph(String(args.text), 'Start');
+        p.alignment = HF_ALIGN[String(args.alignment || 'center').toLowerCase()] || 'Centered';
+      }
+      if (args.page_number) {
+        body.insertOoxml(pageNumberOoxml(String(args.page_number)), 'End');
+      }
+      touched++;
+    }
+    await ctx.sync();
+
+    const what = args.clear ? '已清空' : '已設定';
+    return `${what}${isHeader ? '頁首' : '頁尾'}（${touched} 個節）。`
+      + (args.page_number ? '頁碼是欄位，第一頁現在就看得到，其餘頁 Word 重新分頁後會自己算。' : '');
+  });
+}
+
+const BREAKS = { page: 'Page', line: 'Line', section: 'SectionNext', section_continuous: 'SectionContinuous' };
+
+async function insertBreak(args) {
+  const kind = BREAKS[String(args.type || 'page').toLowerCase()] || 'Page';
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    const result = await withTracking(ctx, args, async () => {
+      if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        items[from - 1].insertBreak(kind, String(args.at) === 'before' ? 'Before' : 'After');
+      } else {
+        ctx.document.body.insertBreak(kind, 'End');
+      }
+      await ctx.sync();
+      return null;
+    });
+    const label = kind === 'Page' ? '分頁符號' : kind === 'Line' ? '換行符號' : '分節符號';
+    return `已插入${label}。` + trackingNote(result);
+  });
+}
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+
+/**
+ * Charts, drawn in the pane and inserted as a picture.
+ *
+ * Word's JavaScript API has no chart object — Excel's `charts.add()` has no
+ * counterpart here, and the only way to put a NATIVE chart into a document is
+ * to build an OOXML part containing an embedded workbook, which is a
+ * disproportionate amount of machinery to maintain for something that would
+ * still not be editable from this add-in.
+ *
+ * So the pane draws it. It is a web page with a canvas; a bar chart is fifty
+ * lines of arithmetic. What goes into the document is a PNG.
+ *
+ * The honest cost: the reader cannot click the chart and change the numbers,
+ * and it does not re-render if the underlying figures change. Both are stated
+ * in the tool description so the model does not promise otherwise. What it buys
+ * is that 「幫我把這段數字畫成圖」 works at all, and looks like something you
+ * would put in front of a customer.
+ */
+const CHART_COLORS = ['#2563eb', '#16a34a', '#ea580c', '#9333ea', '#0891b2', '#ca8a04', '#dc2626', '#4b5563'];
+/** Rendered at 2x so it stays crisp when Word scales it to the text column. */
+const CHART_SCALE = 2;
+
+export function drawChart(spec) {
+  const W = 900;
+  const H = spec.type === 'pie' ? 460 : 500;
+  const canvas = document.createElement('canvas');
+  canvas.width = W * CHART_SCALE;
+  canvas.height = H * CHART_SCALE;
+  const c = canvas.getContext('2d');
+  c.scale(CHART_SCALE, CHART_SCALE);
+  c.fillStyle = '#ffffff';
+  c.fillRect(0, 0, W, H);
+  c.textBaseline = 'middle';
+  const font = (size, weight) => `${weight || ''} ${size}px "Microsoft JhengHei UI", "Microsoft JhengHei", sans-serif`;
+
+  const cats = spec.categories;
+  const series = spec.series;
+  let top = 24;
+
+  if (spec.title) {
+    c.fillStyle = '#111827';
+    c.font = font(22, '600');
+    c.textAlign = 'center';
+    c.fillText(spec.title, W / 2, top + 12);
+    top += 44;
+  }
+
+  // Legend, only when there is more than one thing to tell apart.
+  if (series.length > 1) {
+    c.font = font(14);
+    c.textAlign = 'left';
+    const widths = series.map(s => c.measureText(s.name).width + 30);
+    let x = (W - widths.reduce((a, b) => a + b, 0)) / 2;
+    series.forEach((sr, i) => {
+      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fillRect(x, top + 4, 12, 12);
+      c.fillStyle = '#374151';
+      c.fillText(sr.name, x + 18, top + 10);
+      x += widths[i];
+    });
+    top += 30;
+  }
+
+  if (spec.type === 'pie') {
+    const values = series[0].values.map(v => Math.max(0, Number(v) || 0));
+    const total = values.reduce((a, b) => a + b, 0) || 1;
+    const cx = W / 2 - 90;
+    const cy = top + (H - top) / 2 - 10;
+    const r = Math.min(H - top - 60, 300) / 2;
+    let angle = -Math.PI / 2;
+    values.forEach((v, i) => {
+      const slice = (v / total) * Math.PI * 2;
+      c.beginPath();
+      c.moveTo(cx, cy);
+      c.arc(cx, cy, r, angle, angle + slice);
+      c.closePath();
+      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fill();
+      c.strokeStyle = '#ffffff';
+      c.lineWidth = 2;
+      c.stroke();
+      angle += slice;
+    });
+    // Labels beside the pie rather than on it: Chinese category names do not fit
+    // inside a slice, and a leader-line salad is worse than a list.
+    c.textAlign = 'left';
+    c.font = font(14);
+    const lx = cx + r + 40;
+    let ly = cy - (values.length - 1) * 13;
+    values.forEach((v, i) => {
+      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fillRect(lx, ly - 6, 12, 12);
+      c.fillStyle = '#374151';
+      c.fillText(`${cats[i] || ''}　${((v / total) * 100).toFixed(1)}%`, lx + 18, ly);
+      ly += 26;
+    });
+    return canvas;
+  }
+
+  // ── Column / bar / line share one plot area ──
+  const horizontal = spec.type === 'bar';
+  const all = series.flatMap(sr => sr.values.map(v => Number(v) || 0));
+  const rawMax = Math.max(...all, 0);
+  const rawMin = Math.min(...all, 0);
+  // Round the axis out to something a person would have chosen.
+  const span = rawMax - rawMin || 1;
+  const step = Math.pow(10, Math.floor(Math.log10(span / 4))) * [1, 2, 5, 10].find(m => span / 4 <= Math.pow(10, Math.floor(Math.log10(span / 4))) * m);
+  const max = Math.ceil(rawMax / step) * step;
+  const min = Math.min(0, Math.floor(rawMin / step) * step);
+
+  const fmt = (v) => (Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '萬' : String(Math.round(v * 100) / 100));
+  c.font = font(13);
+  const labelW = horizontal
+    ? Math.min(160, Math.max(...cats.map(t => c.measureText(String(t)).width)) + 16)
+    : Math.max(...[min, max].map(v => c.measureText(fmt(v)).width)) + 16;
+
+  const left = 20 + labelW;
+  const right = W - 28;
+  const bottom = H - 46;
+  const plotH = bottom - top;
+  const plotW = right - left;
+
+  // Gridlines, and the numbers that make them mean something.
+  const ticks = 4;
+  c.strokeStyle = '#e5e7eb';
+  c.lineWidth = 1;
+  c.fillStyle = '#6b7280';
+  for (let i = 0; i <= ticks; i++) {
+    const v = min + ((max - min) * i) / ticks;
+    if (horizontal) {
+      const x = left + (plotW * i) / ticks;
+      c.beginPath(); c.moveTo(x, top); c.lineTo(x, bottom); c.stroke();
+      c.textAlign = 'center';
+      c.fillText(fmt(v), x, bottom + 16);
+    } else {
+      const y = bottom - (plotH * i) / ticks;
+      c.beginPath(); c.moveTo(left, y); c.lineTo(right, y); c.stroke();
+      c.textAlign = 'right';
+      c.fillText(fmt(v), left - 10, y);
+    }
+  }
+
+  const at = (v) => (v - min) / (max - min || 1);
+  const slot = (horizontal ? plotH : plotW) / cats.length;
+
+  if (spec.type === 'line') {
+    series.forEach((sr, si) => {
+      c.strokeStyle = CHART_COLORS[si % CHART_COLORS.length];
+      c.lineWidth = 2.5;
+      c.beginPath();
+      sr.values.forEach((raw, i) => {
+        const x = left + slot * (i + 0.5);
+        const y = bottom - plotH * at(Number(raw) || 0);
+        i === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
+      });
+      c.stroke();
+      c.fillStyle = CHART_COLORS[si % CHART_COLORS.length];
+      sr.values.forEach((raw, i) => {
+        const x = left + slot * (i + 0.5);
+        const y = bottom - plotH * at(Number(raw) || 0);
+        c.beginPath(); c.arc(x, y, 4, 0, Math.PI * 2); c.fill();
+      });
+    });
+  } else {
+    const groupPad = slot * 0.22;
+    const barSize = (slot - groupPad * 2) / series.length;
+    series.forEach((sr, si) => {
+      c.fillStyle = CHART_COLORS[si % CHART_COLORS.length];
+      sr.values.forEach((raw, i) => {
+        const v = Number(raw) || 0;
+        if (horizontal) {
+          const y = top + slot * i + groupPad + barSize * si;
+          const x0 = left + plotW * at(Math.min(0, v));
+          const x1 = left + plotW * at(v);
+          c.fillRect(x0, y, Math.max(1, x1 - x0), barSize * 0.86);
+        } else {
+          const x = left + slot * i + groupPad + barSize * si;
+          const y0 = bottom - plotH * at(Math.min(0, v));
+          const y1 = bottom - plotH * at(v);
+          c.fillRect(x, Math.min(y0, y1), barSize * 0.86, Math.max(1, Math.abs(y1 - y0)));
+        }
+      });
+    });
+  }
+
+  // Category labels.
+  c.fillStyle = '#374151';
+  c.font = font(13);
+  cats.forEach((label, i) => {
+    if (horizontal) {
+      c.textAlign = 'right';
+      c.fillText(String(label), left - 10, top + slot * (i + 0.5));
+    } else {
+      c.textAlign = 'center';
+      c.fillText(String(label), left + slot * (i + 0.5), bottom + 18);
+    }
+  });
+
+  c.strokeStyle = '#9ca3af';
+  c.beginPath();
+  c.moveTo(left, top); c.lineTo(left, bottom); c.lineTo(right, bottom);
+  c.stroke();
+  return canvas;
+}
+
+async function insertChart(args) {
+  const type = String(args.type || 'column').toLowerCase();
+  const cats = Array.isArray(args.categories) ? args.categories.map(String) : [];
+  let series = Array.isArray(args.series) ? args.series : [];
+  // A single unnamed row of numbers is the common case; accept it without
+  // making the model wrap it in the full shape.
+  if (!series.length && Array.isArray(args.values)) series = [{ name: args.title || '數列 1', values: args.values }];
+  series = series
+    .filter(sr => sr && Array.isArray(sr.values))
+    .map((sr, i) => ({ name: String(sr.name || `數列 ${i + 1}`), values: sr.values }));
+
+  if (!cats.length || !series.length) {
+    throw new Error('需要 categories（分類名稱）和 series（數列）。例如 '
+      + 'categories=["Q1","Q2"], series=[{name:"營收", values:[120,140]}]。');
+  }
+  if (series.some(sr => sr.values.length !== cats.length)) {
+    throw new Error(`每個數列的數字個數必須跟 categories 一樣多（目前 categories 有 ${cats.length} 個）。`);
+  }
+  if (type === 'pie' && series.length > 1) {
+    throw new Error('圓餅圖只能有一個數列。要比較多個數列請用 column 或 bar。');
+  }
+
+  const canvas = drawChart({ type, title: String(args.title || ''), categories: cats, series });
+  const base64 = canvas.toDataURL('image/png').split(',')[1];
+
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    const result = await withTracking(ctx, args, async () => {
+      let anchor;
+      if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        anchor = items[from - 1].insertParagraph('', String(args.at) === 'before' ? 'Before' : 'After');
+      } else {
+        anchor = ctx.document.body.insertParagraph('', 'End');
+      }
+      anchor.alignment = 'Centered';
+      anchor.insertInlinePictureFromBase64(base64, 'Replace');
+      if (args.caption) {
+        const cap = anchor.insertParagraph(String(args.caption), 'After');
+        cap.alignment = 'Centered';
+        // The built-in Caption style is what a real document uses, and it is what
+        // 「插入圖表標號」 later picks up.
+        cap.styleBuiltIn = 'Caption';
+      }
+      await ctx.sync();
+      return null;
+    });
+    return `已插入${type === 'pie' ? '圓餅' : type === 'line' ? '折線' : type === 'bar' ? '橫條' : '直條'}圖`
+      + `（${cats.length} 個分類、${series.length} 個數列）。`
+      + '圖是以圖片插入的——Word 的增益集 API 沒有原生圖表物件，所以它不能在 Word 裡點開改數字；'
+      + '數字有變要重新產生一張。' + trackingNote(result);
+  });
+}
+
 // ── Undo ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -773,17 +1182,30 @@ export async function goTo(from, to) {
 }
 
 export async function getDocumentName() {
-  return Word.run(async (ctx) => {
-    const props = ctx.document.properties;
-    props.load('title');
-    await ctx.sync();
-    // Word's `title` property is often empty — it is document metadata, not the
-    // file name. The URL is the reliable source, and its last segment is what
-    // the person sees in their title bar.
-    const url = (Office.context.document && Office.context.document.url) || '';
-    const file = url ? decodeURIComponent(url.split(/[\\/]/).pop() || '') : '';
-    return file || String(props.title || '');
-  });
+  // Read the URL directly, not inside a Word.run: it is a synchronous property
+  // of the common Office context, and making the file name depend on a batch
+  // that can fail is how the bar ended up saying 「（未命名文件）」 for a
+  // document that has a perfectly good name.
+  const url = (Office.context.document && Office.context.document.url) || '';
+  if (url) {
+    // SharePoint and OneDrive hand back a web URL with a query string on it.
+    const clean = url.split(/[?#]/)[0];
+    const file = decodeURIComponent(clean.split(/[\\/]/).pop() || '');
+    if (file) return file;
+  }
+  // A document that has never been saved genuinely has no file name — Word calls
+  // it 文件1 and that string is not available to an add-in. The title property
+  // is the last thing worth trying before giving up.
+  try {
+    return await Word.run(async (ctx) => {
+      const props = ctx.document.properties;
+      props.load('title');
+      await ctx.sync();
+      return String(props.title || '');
+    });
+  } catch {
+    return '';
+  }
 }
 
 const DOCUMENT_ID_PROP = 'JVisionDocumentId';
@@ -818,63 +1240,123 @@ export async function getDocumentKey() {
   }
 }
 
-/** The heading the cursor is under — Word's answer to "which sheet am I on". */
+/**
+ * Where the cursor is, and what is selected — one read, many listeners.
+ *
+ * ── The bug this replaces ──
+ * The first version called `ctx.document.onSelectionChanged.add(...)`, which is
+ * an EXCEL api. Word.Document has no such event, so the call threw, the throw
+ * landed in a catch that treated it as "an older build has no event", and the
+ * selection chip silently never appeared. Word raises the COMMON Office.js
+ * event instead — the one that works in every host.
+ *
+ * ── Why one handler and not two ──
+ * Both the chip and the location bar need the same answer, and computing it
+ * loads every paragraph in the document. Registering the two watchers
+ * separately meant doing that twice per click. Now the handler runs once and
+ * fans out, debounced, because dragging a selection fires this continuously.
+ */
+const selectionListeners = [];
+const locationListeners = [];
+let handlerBound = false;
+let debounce = null;
+
+/** Long enough to swallow a drag, short enough that a click feels immediate. */
+const SELECTION_DEBOUNCE_MS = 200;
+
+function bindSelectionHandler() {
+  if (handlerBound) return;
+  handlerBound = true;
+  try {
+    Office.context.document.addHandlerAsync(
+      Office.EventType.DocumentSelectionChanged,
+      () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => { void fanOutSelection(); }, SELECTION_DEBOUNCE_MS);
+      },
+    );
+  } catch {
+    // No event on this build: the bar and the chip stay on whatever the opening
+    // read found. Degraded, not broken.
+    handlerBound = false;
+  }
+}
+
+async function fanOutSelection() {
+  let ref = null;
+  let where = '';
+  try {
+    await Word.run(async (ctx) => {
+      const info = await getSelectionInfo(ctx);
+      ref = selectionRefFrom(info);
+      where = locationFrom(info);
+    });
+  } catch { /* a failed read should not kill the handler for the next one */ }
+  for (const fn of selectionListeners) { try { fn(ref); } catch { /* ignore */ } }
+  for (const fn of locationListeners) { try { fn(where); } catch { /* ignore */ } }
+}
+
+/**
+ * The bar under the file name.
+ *
+ * Shows the paragraph NUMBER rather than the heading, because that number is
+ * the address: it is what word_read_range takes, and what [[段落 42]] means. Seeing
+ * it move as the cursor moves is what teaches someone that the two are the same
+ * thing. The heading rides along when there is room for it.
+ */
+function locationFrom(info) {
+  if (!info.from) return '';
+  const at = info.to > info.from ? `段落 ${info.from}-${info.to}` : `段落 ${info.from}`;
+  return info.heading ? `${at} · ${info.heading}` : at;
+}
+
 export async function getLocation() {
   try {
-    return await Word.run(async (ctx) => {
-      const info = await getSelectionInfo(ctx);
-      return info.heading || '';
-    });
+    return await Word.run(async (ctx) => locationFrom(await getSelectionInfo(ctx)));
   } catch {
     return '';
   }
 }
 
 export async function watchLocation(onChange) {
-  try {
-    await Word.run(async (ctx) => {
-      ctx.document.onSelectionChanged.add(async () => {
-        try { onChange(await getLocation()); } catch { /* ignore */ }
-      });
-      await ctx.sync();
-    });
-  } catch { /* older builds have no event; the bar just stays put */ }
+  locationListeners.push(onChange);
+  bindSelectionHandler();
 }
 
 /** Cap on what rides along with the message. A whole chapter is not a chip. */
 const MAX_SELECTION_PREVIEW_CHARS = 4000;
 
+function selectionRefFrom(info) {
+  const text = info.text.trim();
+  if (!text) return null;
+
+  const where = info.from
+    ? `段落 ${info.from}${info.to > info.from ? `-${info.to}` : ''}`
+    : `${text.length} 字`;
+  const head = `使用者在側邊欄提問時選取的範圍：${where}`
+    + `${info.heading ? `（位於「${info.heading}」底下）` : ''}`;
+
+  return {
+    // Already the finished chip text — the shell must not have to know that
+    // Excel joins with 「!」 and Word does not.
+    label: info.heading ? `${where} · ${info.heading}` : where,
+    context: text.length > MAX_SELECTION_PREVIEW_CHARS
+      ? `${head}
+（選取範圍較長，只附上開頭；完整內容請用 word_read_range 讀）
+${text.slice(0, MAX_SELECTION_PREVIEW_CHARS)}…`
+      : `${head}
+內容：
+${text}`,
+  };
+}
+
 export async function getSelectionRef() {
-  return Word.run(async (ctx) => {
-    const info = await getSelectionInfo(ctx);
-    const text = info.text.trim();
-    if (!text) return null;
-
-    const where = info.from
-      ? `段落 ${info.from}${info.to > info.from ? `-${info.to}` : ''}`
-      : `${text.length} 字`;
-    const head = `使用者在側邊欄提問時選取的範圍：${where}`
-      + `${info.heading ? `（位於「${info.heading}」底下）` : ''}`;
-
-    return {
-      label: where,
-      scope: info.heading,
-      context: text.length > MAX_SELECTION_PREVIEW_CHARS
-        ? `${head}\n（選取範圍較長，只附上開頭；完整內容請用 word_read_range 讀）\n${text.slice(0, MAX_SELECTION_PREVIEW_CHARS)}…`
-        : `${head}\n內容：\n${text}`,
-    };
-  });
+  return Word.run(async (ctx) => selectionRefFrom(await getSelectionInfo(ctx)));
 }
 
 export async function watchSelection(onChange) {
-  try {
-    await Word.run(async (ctx) => {
-      ctx.document.onSelectionChanged.add(async () => {
-        try { onChange(await getSelectionRef()); } catch { /* ignore */ }
-      });
-      await ctx.sync();
-    });
-  } catch { /* no event on this build */ }
+  selectionListeners.push(onChange);
+  bindSelectionHandler();
 }
 
 // ── run_script ────────────────────────────────────────────────────────────────
@@ -1005,6 +1487,9 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_table':
       case 'word_insert_toc':
       case 'word_manage_list':
+      case 'word_header_footer':
+      case 'word_insert_break':
+      case 'word_insert_chart':
       case 'word_replace_all': {
         // Every one of these changes the document, so every one is photographed
         // first — including the ones that did not need a click. Tracked changes
@@ -1019,6 +1504,9 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_table: insertTable,
           word_insert_toc: insertToc,
           word_manage_list: manageList,
+          word_header_footer: headerFooter,
+          word_insert_break: insertBreak,
+          word_insert_chart: insertChart,
           word_replace_all: replaceAll,
         }[tool];
         return { ok: true, content: await run(a), snapshot };
@@ -1089,6 +1577,9 @@ export const meta = {
     word_insert_table: t('正在插入表格…'),
     word_insert_toc: t('正在建立目錄…'),
     word_manage_list: t('正在整理清單…'),
+    word_header_footer: t('正在設定頁首頁尾…'),
+    word_insert_break: t('正在調整分頁…'),
+    word_insert_chart: t('正在繪製圖表…'),
     word_replace_all: t('等待你確認取代…'),
     word_tracked_changes: t('正在處理追蹤修訂…'),
     word_comment: t('正在加註解…'),
@@ -1100,6 +1591,7 @@ export const meta = {
     word_write_range: t('正在草擬改寫內容…'),
     word_insert_text: t('正在草擬要插入的內容…'),
     word_insert_table: t('正在整理表格…'),
+    word_insert_chart: t('正在設計圖表…'),
     word_format_range: t('正在決定格式…'),
   }),
 
@@ -1122,7 +1614,7 @@ export const meta = {
     // Word's version of this note says something different from Excel's, and
     // better: the changes ARE in a review mechanism the person already knows.
     undoScope: '提醒：AI 的改動是以追蹤修訂寫入的，可以在 Word 的「校閱」裡逐條接受或拒絕；要一次全退回請用這裡的復原鍵。',
-    locationLabel: '目前的章節：{0}',
+    locationLabel: '目前的位置：{0}',
     locationMissing: '找不到段落 {0}',
     emptyTitle: '問這份文件任何事',
     emptySub: '我讀得到章節、樣式和你選取的段落。改動會以追蹤修訂寫入，你可以逐條決定。',

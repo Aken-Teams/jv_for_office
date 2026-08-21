@@ -1284,6 +1284,7 @@ async function send(message) {
     setSendMode('send');
     state.selectionDropped = false;
     void host.getSelectionRef().then(setSelection).catch(() => {});
+    void refreshDocumentName();
     progressDone(false);
   }
 }
@@ -1649,7 +1650,9 @@ function renderSelChip() {
   const show = !!sel && !state.selectionDropped;
   chip.hidden = !show;
   if (show) {
-    $('sel-label').textContent = sel.scope ? `${sel.scope}!${sel.label}` : sel.label;
+    // Already finished by the host: 「損益表!A4:L4」 in Excel, 「段落 12 · 貳、範圍」
+    // in Word. The shell does not know how either one is spelled.
+    $('sel-label').textContent = sel.label;
     chip.title = t('這則訊息會一起送出你選取的 {0}，讓 AI 知道你指的是哪裡。點 × 可以不帶。', sel.label);
   }
 }
@@ -1669,6 +1672,20 @@ function setSelection(sel) {
  * reads as a rendering bug, and on a host too old for the activation event the
  * name would simply never arrive.
  */
+/**
+ * Re-read the file name and put it in the bar.
+ *
+ * Called again after every turn, not just at startup: a document that was
+ * unsaved when the pane opened has no name to show, and the moment someone
+ * saves it there is one. Leaving 「（未命名文件）」 up for the rest of the
+ * session makes the pane look like it lost track of the file.
+ */
+async function refreshDocumentName() {
+  try { state.documentName = await host.getDocumentName(); } catch { /* non-fatal */ }
+  $('wb-name').textContent = state.documentName || t(host.meta.words.untitled);
+  $('wb-name').title = state.documentName || '';
+}
+
 function setLocation(name) {
   state.location = name || '';
   const el = $('wb-sheet');
@@ -1835,9 +1852,7 @@ Office.onReady(async (info) => {
   document.title = t(host.meta.words.title);
   fillDomainOptions();
 
-  try { state.documentName = await host.getDocumentName(); } catch { /* non-fatal */ }
-  $('wb-name').textContent = state.documentName || t(host.meta.words.untitled);
-  $('wb-name').title = state.documentName || '';
+  await refreshDocumentName();
 
   try { setLocation(await host.getLocation()); } catch { /* non-fatal */ }
   // Live, not just at startup: someone clicking to another tab has moved what
