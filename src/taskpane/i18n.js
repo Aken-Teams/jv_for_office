@@ -238,6 +238,17 @@ const zhCN = {
   '正在設計圖表…': '正在设计图表…',
   '目前的位置：{0}': '当前的位置：{0}',
   '這個增益集只能在 Excel 或 Word 中使用。': '这个加载项只能在 Excel 或 Word 中使用。',
+  '正在讀取段落…': '正在读取段落…',
+  '共 {0} 段': '共 {0} 段',
+  '這份文件還沒有標題。': '这份文档还没有标题。',
+  '這份文件是空的。': '这份文档是空的。',
+  '{0} 個空白段落': '{0} 个空白段落',
+  '空白段落': '空白段落',
+  '點這裡看全部段落': '点这里看全部段落',
+  '只看標題': '只看标题',
+  '文件段落': '文档段落',
+  '點一列就跳到文件裡那個位置。AI 回覆中的「段落 12-15」指的就是這些編號。': '点一行就跳到文档里那个位置。AI 回复中的「段落 12-15」指的就是这些编号。',
+  '段落': '段落',
 };
 
 const en = {
@@ -453,6 +464,17 @@ const en = {
   '目前的位置：{0}': 'Currently at {0}',
   '這個增益集只能在 Excel 或 Word 中使用。': 'This add-in only works in Excel or Word.',
   '這個增益集只能在 Excel 中使用。': 'This add-in only works in Excel.',
+  '正在讀取段落…': 'Reading paragraphs…',
+  '共 {0} 段': '{0} paragraphs in total',
+  '這份文件還沒有標題。': 'This document has no headings yet.',
+  '這份文件是空的。': 'This document is empty.',
+  '{0} 個空白段落': '{0} blank paragraphs',
+  '空白段落': 'Blank paragraph',
+  '點這裡看全部段落': 'Click to see every paragraph',
+  '只看標題': 'Headings only',
+  '文件段落': 'Document paragraphs',
+  '點一列就跳到文件裡那個位置。AI 回覆中的「段落 12-15」指的就是這些編號。': 'Click a row to jump there. When a reply says 段落 12-15, these are the numbers it means.',
+  '段落': 'Paragraphs',
 };
 
 const DICTS = { 'zh-CN': zhCN, en };

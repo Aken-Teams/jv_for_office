@@ -1965,12 +1965,121 @@ async function refreshDocumentName() {
   $('wb-name').title = state.documentName || '';
 }
 
+/* ── Paragraph navigator ─────────────────────────────────────────────────────
+ *
+ * Word-only, and gated on host.meta.outline rather than on a host name — the
+ * shell has never named a host and is not going to start here.
+ *
+ * The problem it solves is one of discovery. Citations have always been
+ * clickable; the pane just never gave anyone a reason to believe the numbers in
+ * them meant anything. So the trigger is the location bar — the one place that
+ * was ALREADY showing 「段落 85 · 報價條件與說明」 to a person who had not asked
+ * for it. Clicking the thing that shows you where you are to see everywhere you
+ * could be needs no explaining.
+ */
+
+/** Re-read on open rather than kept in sync: the document changes under us. */
+async function openOutline() {
+  if (!host.meta.outline || !host.getOutline) return;
+  const panel = $('outline-panel');
+  panel.hidden = false;
+  $('outline-list').innerHTML = `<div class="outline-empty">${escapeHtml(t('正在讀取段落…'))}</div>`;
+  await refreshOutline();
+}
+
+function closeOutline() {
+  $('outline-panel').hidden = true;
+}
+
+async function refreshOutline() {
+  const data = await host.getOutline();
+  state.outline = data;
+  // Fetched after the outline, not with it: if the document is huge the list
+  // should already be on screen while this resolves.
+  state.outlineCursor = host.getCursorParagraph ? await host.getCursorParagraph() : 0;
+  renderOutline();
+}
+
+function renderOutline() {
+  const data = state.outline;
+  const list = $('outline-list');
+  if (!data) return;
+
+  if (data.error) {
+    list.innerHTML = `<div class="outline-empty">${escapeHtml(data.error)}</div>`;
+    $('outline-count').textContent = '';
+    return;
+  }
+
+  const headingsOnly = $('outline-headings-only').checked;
+  // Structure-only view still shows tables, because a table IS structure — and
+  // it is the row people most often want to jump to.
+  const rows = headingsOnly
+    ? data.rows.filter((r) => r.kind === 'heading' || r.kind === 'table')
+    : data.rows;
+
+  $('outline-count').textContent = t('共 {0} 段', String(data.total));
+
+  if (!rows.length) {
+    list.innerHTML = `<div class="outline-empty">${escapeHtml(
+      headingsOnly ? t('這份文件還沒有標題。') : t('這份文件是空的。'))}</div>`;
+    return;
+  }
+
+  const cursor = Number(state.outlineCursor) || 0;
+  list.innerHTML = rows.map((r) => {
+    const here = cursor >= r.n && cursor <= r.to;
+    // The range is the label when a row covers more than one paragraph, so the
+    // 「段落 19-78」 in a reply and the 「19-78」 in this list are the same string.
+    const ref = r.to > r.n ? `${r.n}-${r.to}` : String(r.n);
+    let body;
+    if (r.kind === 'blank') {
+      body = `<span class="o-blank">${escapeHtml(
+        r.span > 1 ? t('{0} 個空白段落', String(r.span)) : t('空白段落'))}</span>`;
+    } else if (r.kind === 'table') {
+      body = `<span class="o-tag">${escapeHtml(t('表格'))}</span>`
+        + `<span class="o-text">${escapeHtml(r.text || '')}</span>`;
+    } else {
+      body = `<span class="o-text">${escapeHtml(r.text)}</span>`;
+    }
+    return `<button type="button" class="outline-row o-${r.kind}"`
+      + (r.level ? ` data-level="${r.level}"` : '')
+      + ` data-a="${r.n}" data-b="${r.to > r.n ? r.to : ''}"`
+      + (here ? ' aria-current="true"' : '')
+      + `><span class="o-n">${escapeHtml(ref)}</span>${body}</button>`;
+  }).join('');
+
+  const current = list.querySelector('[aria-current="true"]');
+  if (current) current.scrollIntoView({ block: 'center' });
+}
+
 function setLocation(name) {
   state.location = name || '';
   const el = $('wb-sheet');
   el.textContent = state.location;
   el.title = state.location ? t(host.meta.words.locationLabel, state.location) : '';
   el.hidden = !state.location;
+
+  // Where a document has an outline, this bar is also the way in to it. The
+  // tooltip has to say so — a control that looks like a label and behaves like a
+  // button is worse than no control at all.
+  if (host.meta.outline) {
+    el.classList.add('wb-clickable');
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    // And it has to stay on screen even with no location, or the navigator is
+    // unreachable on exactly the document where it helps most: a fresh one
+    // nobody has clicked into yet.
+    if (!state.location) el.textContent = t('段落');
+    el.hidden = false;
+    el.title = state.location
+      ? `${el.title}　·　${t('點這裡看全部段落')}`
+      : t('點這裡看全部段落');
+  }
+
+  // The panel is a snapshot of a document that just moved, so re-point it rather
+  // than leaving it showing a stale cursor.
+  if (!$('outline-panel').hidden) void refreshOutline();
 }
 /**
  * The 每次確認 / 自動允許 button.
@@ -2219,6 +2328,7 @@ Office.onReady(async (info) => {
     if (e.key !== 'Escape') return;
     // The menu first: Esc should back out of whatever is on top, and closing a
     // menu is not what someone means when they are trying to call off a run.
+    if (!$('outline-panel').hidden) { e.preventDefault(); closeOutline(); return; }
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
     if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
@@ -2331,6 +2441,9 @@ Office.onReady(async (info) => {
   // Click-away closes it. A menu that can only be dismissed by the button that
   // opened it is one people leave open by accident.
   document.addEventListener('click', (e) => {
+    if (!$('outline-panel').hidden && !e.target.closest('#outline-panel') && !e.target.closest('#wb-sheet')) {
+      closeOutline();
+    }
     if (!$('hist-panel').hidden && !e.target.closest('#hist-panel') && !e.target.closest('#history')) {
       closeHistory();
     }
@@ -2385,6 +2498,30 @@ Office.onReady(async (info) => {
     const ok = await host.goTo(a.dataset.a, a.dataset.b);
     if (!ok) addNote(t(host.meta.words.locationMissing, a.dataset.a), 'err');
   });
+
+  if (host.meta.outline) {
+    const bar = $('wb-sheet');
+    bar.addEventListener('click', () => ($('outline-panel').hidden ? openOutline() : closeOutline()));
+    // Keyboard parity: it claims role="button", so it has to behave like one.
+    bar.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); bar.click(); }
+    });
+    $('outline-close').addEventListener('click', closeOutline);
+    $('outline-headings-only').addEventListener('change', renderOutline);
+
+    // Same delegation as citations, and deliberately the same behaviour: a row
+    // here and a 「段落 12-15」 in a reply are two doors onto one action.
+    $('outline-list').addEventListener('click', async (e) => {
+      const row = e.target.closest('.outline-row');
+      if (!row) return;
+      const ok = await host.goTo(row.dataset.a, row.dataset.b);
+      if (!ok) addNote(t(host.meta.words.locationMissing, row.dataset.a), 'err');
+      // Left open on purpose: jumping through a document is usually several
+      // jumps, and closing after each one would mean reopening after each one.
+      state.outlineCursor = Number(row.dataset.a) || 0;
+      renderOutline();
+    });
+  }
 
   // External links open in the real browser. Letting one navigate the pane would
   // replace the add-in with a web page and there is no back button in here.

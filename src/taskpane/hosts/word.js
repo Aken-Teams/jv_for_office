@@ -2610,6 +2610,114 @@ async function insertLayout(args) {
   });
 }
 
+
+// ── Outline ───────────────────────────────────────────────────────────────────
+
+/**
+ * The document as a list a person can read and click.
+ *
+ * ── Why this exists ──
+ * Every citation the model writes is a paragraph number — 「段落 19-78」 — and
+ * clicking one has always jumped to it. But nobody knew that. The number is the
+ * model's coordinate system, invented for the model, and it leaked into the
+ * conversation without anything ever showing the person what it referred to.
+ * So the reply says 段落 19-78 and the reader's honest reaction is: 78 of what?
+ *
+ * The fix is not to hide the numbers. It is to show the thing they index.
+ *
+ * ── The two collapses, which are the whole point ──
+ * A raw dump of `body.paragraphs` would make this worse, not better. The
+ * quotation that prompted this has 106 paragraphs, and about 70 of them are
+ * cells of one table. A navigator listing 「1」「式」「120,000」「120,000」 sixty
+ * times is noise, and it makes the numbering look arbitrary — which is exactly
+ * the confusion being fixed.
+ *
+ * So two runs get folded into one row each:
+ *
+ *   tables  every paragraph with tableNestingLevel > 0, as one row spanning
+ *           them. This is what makes 段落 19-78 finally legible: it is one
+ *           table, and the row says so.
+ *   blanks  spacer paragraphs. They are real and they DO consume numbers, which
+ *           is the other half of why the numbering looks strange. Collapsed but
+ *           never hidden: the row states the range it swallowed, so the gap
+ *           between 段落 7 and 段落 18 has a visible reason.
+ *
+ * Nothing is renumbered. `n` is always the true index the tools take.
+ */
+const OUTLINE_PREVIEW_CHARS = 46;
+/** Enough of a cell to recognise the table by; more would wrap the row. */
+const OUTLINE_CELL_CHARS = 10;
+const OUTLINE_CELLS_SHOWN = 4;
+
+export async function getOutline() {
+  try {
+    return await Word.run(async (ctx) => {
+      const items = await loadParagraphs(ctx);
+      const rows = [];
+      let i = 0;
+
+      while (i < items.length) {
+        const start = i;
+
+        if (inTable(items[i])) {
+          const cells = [];
+          while (i < items.length && inTable(items[i])) {
+            const s = snip(items[i].text, OUTLINE_CELL_CHARS);
+            if (s && cells.length < OUTLINE_CELLS_SHOWN) cells.push(s);
+            i++;
+          }
+          rows.push({
+            kind: 'table', n: start + 1, to: i,
+            span: i - start,
+            // The first few cells are the header row, so this reads as the
+            // table's name without needing one.
+            text: cells.join('　'),
+          });
+          continue;
+        }
+
+        if (!String(items[i].text || '').trim()) {
+          while (i < items.length && !inTable(items[i]) && !String(items[i].text || '').trim()) i++;
+          rows.push({ kind: 'blank', n: start + 1, to: i, span: i - start });
+          continue;
+        }
+
+        const p = items[i];
+        const level = headingLevel(p);
+        const style = String(p.styleBuiltIn || p.style || '');
+        rows.push({
+          kind: level ? 'heading' : (p.isListItem ? 'list' : 'body'),
+          n: i + 1, to: i + 1, level,
+          text: snip(p.text, OUTLINE_PREVIEW_CHARS),
+          style,
+        });
+        i++;
+      }
+
+      return { total: items.length, rows };
+    });
+  } catch (e) {
+    // The panel shows this rather than an empty list: 「讀不到」 and 「這份文件是空的」
+    // look identical otherwise, and only one of them is worth retrying.
+    return { total: 0, rows: [], error: (e && e.message) || String(e) };
+  }
+}
+
+/**
+ * Which paragraph the cursor is in, so the panel can point at it.
+ *
+ * Separate from getOutline rather than folded into it: the outline is re-read
+ * when the document changes, this is re-read every time the cursor moves, and
+ * they are very different costs.
+ */
+export async function getCursorParagraph() {
+  try {
+    return await Word.run(async (ctx) => Number((await getSelectionInfo(ctx)).from) || 0);
+  } catch {
+    return 0;
+  }
+}
+
 // ── Undo ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -3089,6 +3197,13 @@ export const meta = {
   attachmentTool: 'word_read_attachment',
   /** Also shell-answered, but it writes: see handleToolRequest in app.js. */
   insertAttachmentTool: 'word_insert_attachment',
+  /**
+   * Word only. Excel has A1 — a coordinate anybody already reads — so there is
+   * nothing to explain and no panel to open. Word's coordinate is an ordinal
+   * nobody can see, which is the entire reason this exists.
+   */
+  outline: { unit: '段落' },
+
   inspectTools: ['word_write_range'],
   scriptTool: 'word_run_script',
 

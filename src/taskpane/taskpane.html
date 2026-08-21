@@ -306,6 +306,24 @@
       <div id="hist-list" class="hist-list"></div>
     </div>
 
+    <!-- The document as a clickable list. Anchored under the bar that opens it,
+         and sized to the pane rather than the trigger for the same reason the
+         history panel is: paragraph text needs the width. -->
+    <div id="outline-panel" class="outline-panel" hidden role="dialog"
+         aria-label="文件段落" data-t-al="文件段落">
+      <div class="outline-head">
+        <span id="outline-count" class="outline-count"></span>
+        <label class="outline-filter">
+          <input type="checkbox" id="outline-headings-only" />
+          <span data-t="只看標題">只看標題</span>
+        </label>
+        <button type="button" id="outline-close" class="outline-close"
+                aria-label="關閉" data-t-al="關閉">×</button>
+      </div>
+      <div id="outline-list" class="outline-list"></div>
+      <div class="outline-foot" data-t="點一列就跳到文件裡那個位置。AI 回覆中的「段落 12-15」指的就是這些編號。">點一列就跳到文件裡那個位置。AI 回覆中的「段落 12-15」指的就是這些編號。</div>
+    </div>
+
     <div class="wb-bar">
       <svg class="ic ic-sm" viewBox="0 0 18 18" aria-hidden="true"><use href="#i-sheet"/></svg>
       <span id="wb-name" title="目前開啟的活頁簿" data-h-title="docNameTitle"></span>

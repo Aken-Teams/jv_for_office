@@ -513,6 +513,97 @@ header .actions { display: flex; gap: 2px; flex: none; }
 }
 .hist-banner button:hover { background: var(--surface-hover); }
 
+
+/* ── Paragraph navigator ─────────────────────────────────────────────────────
+   Same panel shell as the history drop-down, one bar lower: it hangs off the
+   document bar rather than the header row. */
+.outline-panel {
+  /* Flush under the document bar: header (48px) + wb-bar (30px). Hanging it off
+     the bar that opens it is what makes the connection obvious. */
+  position: absolute; top: 78px; left: 8px; right: 8px; z-index: 40;
+  display: flex; flex-direction: column;
+  padding: 6px; border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.outline-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 4px 7px; font-size: 11.5px; color: var(--fg-subtle);
+}
+.outline-count { flex: 1; }
+.outline-filter { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.outline-filter input { margin: 0; }
+.outline-close {
+  flex: none; width: 20px; height: 20px; border-radius: 5px;
+  color: var(--fg-subtle); font-size: 15px; line-height: 1;
+}
+.outline-close:hover { background: var(--surface-hover); color: var(--fg); }
+.outline-list { max-height: 52vh; overflow-y: auto; }
+.outline-list::-webkit-scrollbar { width: 10px; }
+.outline-list::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid var(--bg); border-radius: 5px; }
+.outline-list::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
+.outline-empty { padding: 12px 9px; font-size: 12px; color: var(--fg-subtle); }
+.outline-foot {
+  padding: 8px 6px 2px; margin-top: 4px; border-top: 1px solid var(--line);
+  font-size: 11px; line-height: 1.5; color: var(--fg-subtle);
+}
+
+.outline-row {
+  display: flex; align-items: baseline; gap: 8px;
+  width: 100%; text-align: left;
+  padding: 5px 7px; border-radius: 6px;
+  font-size: 12.5px; line-height: 1.45; color: var(--fg);
+  transition: background var(--speed);
+}
+.outline-row:hover { background: var(--surface-hover); }
+/* The number is the whole point of the panel, so it is fixed-width and always in
+   the same column — a ragged left edge would make it unscannable, which is the
+   one thing this must not be. */
+.o-n {
+  flex: none; min-width: 40px;
+  font-variant-numeric: tabular-nums; font-size: 11px;
+  color: var(--fg-subtle); text-align: right;
+}
+.o-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-tag {
+  flex: none; padding: 0 5px; border-radius: 4px;
+  background: var(--surface); color: var(--fg-muted); font-size: 10.5px;
+}
+/* Headings carry the document's shape; body text should recede so the shape is
+   visible at a glance rather than having to be read for. */
+.o-heading .o-text { font-weight: 600; }
+.o-heading[data-level="1"] .o-text { font-size: 13px; }
+.o-heading[data-level="2"] { padding-left: 18px; }
+.o-heading[data-level="3"] { padding-left: 32px; }
+.o-heading[data-level="4"], .o-heading[data-level="5"],
+.o-heading[data-level="6"] { padding-left: 44px; }
+.o-body .o-text, .o-list .o-text { color: var(--fg-muted); }
+/* A table row is a landmark, not prose: the cell preview is a hint at which
+   table it is, so it recedes the same way body text does. */
+.o-table .o-text { color: var(--fg-muted); font-size: 12px; }
+.o-list .o-text::before { content: "· "; color: var(--fg-subtle); }
+.o-blank { flex: 1; font-size: 11px; color: var(--fg-subtle); font-style: italic; }
+.outline-row[aria-current="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.outline-row[aria-current="true"] .o-n { color: var(--accent); font-weight: 600; }
+
+/* The location bar, when it opens the panel.
+
+   The caret is not decoration — it is the entire discoverability fix. The bar
+   has always shown 「段落 85 · 報價條件與說明」 and always looked like a label,
+   so nobody ever tried clicking it. A hover state only helps someone who already
+   guessed. The caret is visible before the guess. */
+.wb-clickable { cursor: pointer; border-radius: 5px; padding: 1px 4px 1px 5px; }
+.wb-clickable::after {
+  content: "▾"; margin-left: 5px; font-size: 9px;
+  color: var(--fg-subtle); vertical-align: 1px;
+}
+.wb-clickable:hover { background: var(--surface-hover); color: var(--fg); }
+.wb-clickable:hover::after { color: var(--fg); }
+.wb-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* ── Log ────────────────────────────────────────────────────────────────── */
 
 #log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 12px 4px; scroll-behavior: smooth; }
