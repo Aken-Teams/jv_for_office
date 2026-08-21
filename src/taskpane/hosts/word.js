@@ -65,6 +65,7 @@ const BASE_TOOLS = [
   'word_manage_list',
   'word_header_footer',
   'word_insert_break',
+  'word_insert_cover',
   'word_insert_chart',
   'word_insert_equation',
   'word_insert_link',
@@ -1910,6 +1911,26 @@ const THEMES = {
     lineSpacing: 24, spaceAfter: 12, sectionBefore: 24,
     titleAlign: 'Centered', bodyAlign: 'Justified', firstLineIndent: 24,
   },
+  // Lifted from 產品需求規格文件-PRD.docx: Heading1 16pt #2E74B5, Heading2 13pt,
+  // Heading3 12pt #1F4D78, body 12pt #333333. Word's own blue ramp, which is why
+  // it looks native rather than themed.
+  spec: {
+    label: '規格書',
+    font: '微軟正黑體', titleSize: 26, headingSize: 16, bodySize: 12,
+    titleColor: '#000000', headingColor: '#2E74B5', bodyColor: '#333333',
+    lineSpacing: 16, spaceAfter: 8, sectionBefore: 16,
+    titleAlign: 'Centered', bodyAlign: 'Left', firstLineIndent: 0,
+  },
+  // Lifted from 報價單 ZH2026072401.docx and 銀行設定表格.docx: navy headings,
+  // small body type, everything tight. What a form or a quotation looks like when
+  // it has to fit on one page and still be read across a desk.
+  business: {
+    label: '商務表單',
+    font: '微軟正黑體', titleSize: 20, headingSize: 13, bodySize: 10,
+    titleColor: '#16314F', headingColor: '#1F3864', bodyColor: '#6B7C90',
+    lineSpacing: 13, spaceAfter: 4, sectionBefore: 10,
+    titleAlign: 'Centered', bodyAlign: 'Left', firstLineIndent: 0,
+  },
   compact: {
     label: '緊湊',
     font: '微軟正黑體', titleSize: 20, headingSize: 12, bodySize: 10,
@@ -2094,6 +2115,137 @@ export async function insertImage(pic, args) {
         + trackingNote(result),
       snapshot,
     };
+  });
+}
+
+
+// ── Cover pages ───────────────────────────────────────────────────────────────
+
+/**
+ * Cover layouts, copied from documents that are already in use.
+ *
+ * ── Why not just a big title ──
+ * That was the first version, and it produced what you would expect: a title, a
+ * subtitle at almost the same size wrapping onto a second line, and a date
+ * floating in a page of white space. It looks like a placeholder because there
+ * is no structure in it — nothing tells the eye what is the name of the thing,
+ * what is the description, and what is filing information.
+ *
+ * Three real documents were read to fix this (a PRD, a data-collection form, a
+ * quotation) and they disagree about almost everything except that: a cover is
+ * a small amount of large type and a BLOCK of small type, and the small block
+ * carries the facts. Which block differs by document, hence three layouts:
+ *
+ *   report      title + a 文件資訊 table (name / version / date / status)
+ *   form        title, subtitle and a timestamp, centred, all small
+ *   letterhead  company block, centred document name, two columns of details
+ *
+ * Sizes and colours below are the ones those documents actually use, not
+ * invented: 26pt titles, 10-12pt everything else, navy rather than black.
+ */
+const COVER_INK = {
+  title: '#16314F',
+  sub: '#4F81BD',
+  meta: '#6B7C90',
+  faint: '#595959',
+};
+
+/** A line on the cover. Written through OOXML so nothing is inherited. */
+function coverLine(text, opts) {
+  const rPr = [];
+  if (opts.size) rPr.push(`<w:sz w:val="${Math.round(opts.size * 2)}"/><w:szCs w:val="${Math.round(opts.size * 2)}"/>`);
+  if (opts.color) rPr.push(`<w:color w:val="${String(opts.color).replace('#', '')}"/>`);
+  if (opts.bold) rPr.push('<w:b/>');
+  if (opts.font) rPr.push(`<w:rFonts w:ascii="${xmlEscape(opts.font)}" w:hAnsi="${xmlEscape(opts.font)}" w:eastAsia="${xmlEscape(opts.font)}"/>`);
+  const pPr = [`<w:jc w:val="${JC[opts.align || 'Left'] || 'left'}"/>`];
+  if (opts.spaceBefore) pPr.push(`<w:spacing w:before="${tw(opts.spaceBefore)}"/>`);
+  else if (opts.spaceAfter) pPr.push(`<w:spacing w:after="${tw(opts.spaceAfter)}"/>`);
+  return '<w:p>'
+    + `<w:pPr>${pPr.join('')}</w:pPr>`
+    + (text
+      ? `<w:r>${rPr.length ? `<w:rPr>${rPr.join('')}</w:rPr>` : ''}`
+        + `<w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>`
+      : '')
+    + '</w:p>';
+}
+
+async function insertCover(args) {
+  const layout = String(args.layout || 'report').toLowerCase();
+  const title = String(args.title || '').trim();
+  if (!title) throw new Error('title 是必要的。');
+  const font = String(args.font || '微軟正黑體');
+  const meta = args.meta && typeof args.meta === 'object' ? args.meta : {};
+  const rows = Object.entries(meta).map(([k, v]) => [String(k), String(v)]);
+
+  return Word.run(async (ctx) => {
+    const snapshot = null;   // executeTool takes the snapshot for this tool
+    const lines = [];
+
+    if (layout === 'letterhead') {
+      // 報價單: who is sending it, then what it is, then the details.
+      if (args.company) lines.push(coverLine(args.company, { size: 17, color: COVER_INK.title, bold: true, font }));
+      if (args.company_en) lines.push(coverLine(args.company_en, { size: 8, color: COVER_INK.meta, font }));
+      if (args.address) lines.push(coverLine(args.address, { size: 9, color: COVER_INK.meta, align: 'Right', font }));
+      lines.push(coverLine('', {}));
+      // Full-width spaces between the characters: what those documents do to a
+      // short document name so it reads as a heading rather than a label.
+      const spaced = title.length <= 6 ? [...title].join('\u3000') : title;
+      lines.push(coverLine(spaced, { size: 17, color: COVER_INK.title, bold: true, align: 'Centered', font, spaceAfter: 12 }));
+    } else if (layout === 'form') {
+      // 表單: everything centred, everything small, the timestamp smallest.
+      lines.push(coverLine(title, { size: 20, color: '#1F3864', bold: true, align: 'Centered', font }));
+      if (args.subtitle) lines.push(coverLine(args.subtitle, { size: 11, color: '#2E5C9A', align: 'Centered', font }));
+      if (args.note) lines.push(coverLine(args.note, { size: 9, color: COVER_INK.faint, align: 'Centered', font, spaceAfter: 12 }));
+    } else {
+      // 報告: one large title, one quiet subtitle, then the facts in a table.
+      lines.push(coverLine('', { spaceBefore: 120 }));
+      lines.push(coverLine(title, { size: 26, color: COVER_INK.title, bold: true, align: 'Centered', font }));
+      if (args.subtitle) {
+        lines.push(coverLine(args.subtitle, { size: 12, color: COVER_INK.sub, align: 'Centered', font, spaceAfter: 24 }));
+      }
+    }
+
+    const ooxml = OOXML_HEAD + lines.join('') + OOXML_TAIL;
+    const broken = xmlImbalance(ooxml);
+    if (broken) throw new Error(`封面的 XML 結構不對（${broken}）。`);
+
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      ctx.document.body.insertOoxml(ooxml, 'Start');
+      await ctx.sync();
+
+      // The facts. A table rather than 「文件版本：v1.0」 lines, because that is
+      // what the documents this came from do and because it stays aligned when
+      // someone edits a value.
+      if (rows.length) {
+        const paras = ctx.document.body.paragraphs;
+        paras.load('items');
+        await ctx.sync();
+        const anchor = paras.items[Math.min(lines.length - 1, paras.items.length - 1)];
+        const table = anchor.insertTable(rows.length, 2, 'After', rows);
+        table.styleBuiltIn = String(args.table_style || 'GridTable4_Accent1').replace(/\s+/g, '');
+        table.headerRowCount = 0;
+        table.styleFirstColumn = true;
+        await ctx.sync();
+      }
+
+      // The body starts on its own page. A run of empty paragraphs would move
+      // the moment anyone edits a word above it.
+      const all = ctx.document.body.paragraphs;
+      all.load('items');
+      await ctx.sync();
+      const last = all.items[Math.min(lines.length + rows.length, all.items.length - 1)];
+      if (last) last.insertBreak('Page', 'After');
+      await ctx.sync();
+      return null;
+    });
+
+    const what = layout === 'letterhead' ? '公司信頭式' : layout === 'form' ? '表單抬頭式' : '報告封面式';
+    return `已建立${what}封面：「${title}」`
+      + (rows.length ? `，含 ${rows.length} 列文件資訊表` : '')
+      + '，後面接了分頁符號，正文從第二頁開始。\n'
+      + '封面的字級和顏色是刻意壓低的——一頁上只有一個大字級，其餘都是小字，'
+      + '那是這幾份參考文件共通的做法。不要再另外套 word_format_range 把它放大。'
+      + trackingNote(result);
   });
 }
 
@@ -2489,6 +2641,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_manage_list':
       case 'word_header_footer':
       case 'word_insert_break':
+      case 'word_insert_cover':
       case 'word_insert_chart':
       case 'word_insert_equation':
       case 'word_checkbox':
@@ -2513,6 +2666,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_manage_list: manageList,
           word_header_footer: headerFooter,
           word_insert_break: insertBreak,
+          word_insert_cover: insertCover,
           word_insert_chart: insertChart,
           word_insert_equation: insertEquation,
           word_checkbox: checkbox,
@@ -2597,6 +2751,7 @@ export const meta = {
     word_manage_list: t('正在整理清單…'),
     word_header_footer: t('正在設定頁首頁尾…'),
     word_insert_break: t('正在調整分頁…'),
+    word_insert_cover: t('正在製作封面…'),
     word_insert_chart: t('正在繪製圖表…'),
     word_insert_equation: t('正在插入公式…'),
     word_read_attachment: t('正在看你貼的圖…'),
