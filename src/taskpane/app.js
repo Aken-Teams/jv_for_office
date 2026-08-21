@@ -87,6 +87,8 @@ const state = {
   undoStack: [],
   /** Whether the Ctrl+Z caveat has been said. Once is a note; twice is nagging. */
   saidUndoScope: false,
+  /** Same rule for the "too big to snapshot" caveat. */
+  saidNoSnapshot: false,
   /** Which cross-source MCPs the server says this user COULD mount. */
   available: { email: false, km: false },
   /** Why they aren't available, shown on the disabled toggle. */
@@ -119,12 +121,18 @@ function escapeHtml(s) {
  * Citations are the whole trust mechanism: [[損益表!C42]] becomes a link that
  * selects that cell. If the model cites nothing, the user has no way to check it —
  * which is why the system prompt insists on them.
+ *
+ * PRECONDITION: `html` has already been through escapeHtml — inlineMd is the
+ * only caller and escapes before anything else runs. So the captured sheet name
+ * arrives already escaped, and escaping it a second time is not merely cosmetic:
+ * a sheet called 「R&D」 rendered as 「R&amp;D」 AND landed in data-sheet as
+ * "R&amp;D", which is not the name of any sheet, so clicking the citation
+ * selected nothing. Do not re-escape here; do not call this with raw text.
  */
 function linkCitations(html) {
   return html.replace(
     /\[\[([^\]!]+)!(\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?)\]\]/g,
-    (_m, sheet, addr) =>
-      `<a href="#" class="cite" data-sheet="${escapeHtml(sheet)}" data-addr="${escapeHtml(addr)}">${escapeHtml(sheet)}!${escapeHtml(addr)}</a>`,
+    (_m, sheet, addr) => `<a href="#" class="cite" data-sheet="${sheet}" data-addr="${addr}">${sheet}!${addr}</a>`,
   );
 }
 
@@ -817,6 +825,11 @@ async function handleToolRequest(payload) {
     state.undoStack.push(result.snapshot);
     updateUndoButton();
     noteUndoScope();
+  } else if (tool === 'excel_run_script' && needsConfirm) {
+    // An approved script that came back without a before-image: the workbook was
+    // over the snapshot ceiling. Nothing to push, so say why the undo count did
+    // not move.
+    noteNoSnapshot();
   }
 
   // The outcome lands back in the card the user just answered, instead of a
@@ -862,8 +875,19 @@ async function undoLast() {
   if (!snap) return false;
   updateUndoButton();
   try {
-    await restoreSnapshot(snap);
-    addNote(t('已復原 {0}', `${snap.sheet}!${snap.address}`), 'ok');
+    const done = await restoreSnapshot(snap);
+    addNote(t('已復原 {0}', done.kind === 'range'
+      ? `${done.sheet}!${done.address}`
+      : t('{0} 張工作表的內容', done.sheets)), 'ok');
+    // Separate lines, because neither of these is a content restore: one removes
+    // a sheet and the other brings one back somewhere else, stripped of its
+    // formatting. Nobody should have to work that out by looking.
+    if (done.deleted && done.deleted.length) {
+      addNote(t('已移除 AI 新增的工作表：{0}', done.deleted.join('、')), 'note');
+    }
+    if (done.recreated && done.recreated.length) {
+      addNote(t('AI 刪掉的工作表已重建：{0}。內容回來了，格式沒有，位置在最後面。', done.recreated.join('、')), 'note');
+    }
     return true;
   } catch (e) {
     addNote(t('復原失敗：{0}', e.message), 'err');
@@ -900,6 +924,18 @@ function noteUndoScope() {
   if (state.saidUndoScope) return;
   state.saidUndoScope = true;
   addNote(t('提醒：AI 做的修改不會進到 Excel 的復原紀錄，Ctrl+Z 退不回來。要退回請用這裡的復原鍵。'), 'note');
+}
+
+/**
+ * The workbook was too big to photograph before a script ran, so this one change
+ * has no way back. Said once per session for the same reason as above — but it
+ * has to be said at all, because the undo button is sitting right there looking
+ * as though it covers everything.
+ */
+function noteNoSnapshot() {
+  if (state.saidNoSnapshot) return;
+  state.saidNoSnapshot = true;
+  addNote(t('這份活頁簿太大，程式執行前沒辦法先備份，所以這次的修改復原鍵拿不回來。'), 'note');
 }
 
 function updateUndoButton() {

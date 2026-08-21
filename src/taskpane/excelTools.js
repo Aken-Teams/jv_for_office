@@ -1001,16 +1001,174 @@ async function tracePrecedents(args) {
   });
 }
 
-/** Put a snapshot back. Restoring formulas covers both constants and formulas. */
+/* ── snapshot:start ─ test/undo-snapshot.test.mjs slices the source from here ─ */
+
+/**
+ * Ceiling on a whole-workbook snapshot, in cells.
+ *
+ * Unlike MAX_READ_CELLS this is not about context — nothing here reaches the
+ * model. It is about the seconds the person spends watching 執行中… after they
+ * clicked 允許, and about holding two string arrays of that size in the pane.
+ * Past this the snapshot is skipped and the pane says so, because a snapshot
+ * that takes ten seconds to build would get blamed on the script.
+ */
+const MAX_SNAPSHOT_CELLS = 200000;
+
+/**
+ * Before-image of the whole workbook, for undoing a script.
+ *
+ * excel_write_range knows its target range and can snapshot exactly it. A script
+ * does not: it can touch any sheet, and it decides which as it runs — by which
+ * time the before-state is gone. The options are to have the model declare its
+ * targets (it would be wrong sometimes, and wrong here means data with no way
+ * back) or to photograph everything first. This does the second, bounded.
+ *
+ * What comes back is content, not appearance: formulas and number formats of
+ * each sheet's used range. Fills, fonts and borders the script applies are NOT
+ * undone — the same limit excel_write_range's snapshot has always had.
+ *
+ * Returns null when the workbook is too big to photograph. The caller must treat
+ * that as "this change cannot be undone" and say so, not fail.
+ */
+async function captureWorkbook() {
+  return Excel.run(async (ctx) => {
+    const sheets = ctx.workbook.worksheets;
+    sheets.load('items/name');
+    await ctx.sync();
+
+    const items = sheets.items;
+    // valuesOnly: a sheet whose formatting reaches row 10000 but whose content
+    // stops at row 40 should cost 40 rows, not 10000.
+    const used = items.map((s) => {
+      const r = s.getUsedRangeOrNullObject(true);
+      r.load('address,rowCount,columnCount,isNullObject');
+      return r;
+    });
+    await ctx.sync();
+
+    let cells = 0;
+    for (const r of used) if (!r.isNullObject) cells += r.rowCount * r.columnCount;
+    if (cells > MAX_SNAPSHOT_CELLS) return null;
+
+    for (const r of used) if (!r.isNullObject) r.load('formulas,numberFormat');
+    await ctx.sync();
+
+    return {
+      kind: 'workbook',
+      /** Sheet names before the script ran. */
+      before: items.map((s) => s.name),
+      /** Filled in by finishWorkbookSnapshot once the script is done. */
+      after: null,
+      sheets: items.map((s, i) => (used[i].isNullObject
+        ? { name: s.name, address: null, formulas: null, numberFormat: null }
+        : {
+          name: s.name,
+          address: bareAddress(used[i].address),
+          formulas: used[i].formulas.map((r) => r.slice()),
+          numberFormat: used[i].numberFormat.map((r) => r.slice()),
+        })),
+    };
+  });
+}
+
+/**
+ * Record the sheet list AFTER the script, so undo can delete what the script
+ * added without touching what the person added afterwards.
+ *
+ * Comparing only against `before` cannot tell those apart: a sheet someone
+ * created themselves five minutes later is equally absent from it, and undo
+ * would delete their work. A sheet is the script's only if it is missing from
+ * `before` AND present in `after`.
+ *
+ * Failing to read the list leaves `after` null, which makes undo delete nothing.
+ * An incomplete undo is recoverable; deleting the wrong sheet is not.
+ */
+async function finishWorkbookSnapshot(snapshot) {
+  if (!snapshot || snapshot.kind !== 'workbook') return snapshot;
+  try {
+    await Excel.run(async (ctx) => {
+      const sheets = ctx.workbook.worksheets;
+      sheets.load('items/name');
+      await ctx.sync();
+      snapshot.after = sheets.items.map((s) => s.name);
+    });
+  } catch {
+    snapshot.after = null;
+  }
+  return snapshot;
+}
+
+/**
+ * Put a snapshot back. Restoring formulas covers both constants and formulas.
+ *
+ * Returns a description of what was actually restored, for the pane to report —
+ * the two snapshot shapes undo very different amounts of ground and the note in
+ * the transcript should not flatten that into one sentence.
+ */
 export async function restoreSnapshot(snapshot) {
+  if (snapshot && snapshot.kind === 'workbook') return restoreWorkbook(snapshot);
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(snapshot.sheet);
     const target = sheet.getRange(snapshot.address);
     target.numberFormat = snapshot.numberFormat;
     target.formulas = snapshot.formulas;
     await ctx.sync();
+    return { kind: 'range', sheet: snapshot.sheet, address: snapshot.address };
   });
 }
+
+/**
+ * Undo a script: put every sheet's contents back, remove what it added, rebuild
+ * what it deleted.
+ *
+ * Clearing the current used range before writing the before-image back is what
+ * makes this an undo rather than a partial one — a script that wrote past the
+ * old used range (A1:F10 before, A1:F400 after) would otherwise leave rows
+ * 11-400 sitting there. clearContents and not clear(): formatting that was
+ * already on those cells is not this snapshot's to throw away.
+ */
+async function restoreWorkbook(snapshot) {
+  return Excel.run(async (ctx) => {
+    const coll = ctx.workbook.worksheets;
+    coll.load('items/name');
+    await ctx.sync();
+    const present = coll.items.map((s) => s.name);
+
+    const deleted = (snapshot.after || [])
+      .filter((n) => !snapshot.before.includes(n) && present.includes(n));
+    for (const name of deleted) coll.getItem(name).delete();
+
+    // One pass to find out which used ranges exist, so the clears below do not
+    // need a sync each.
+    const current = snapshot.sheets.map((s) => {
+      if (!present.includes(s.name)) return null;
+      const r = coll.getItem(s.name).getUsedRangeOrNullObject(true);
+      r.load('isNullObject');
+      return r;
+    });
+    await ctx.sync();
+
+    const recreated = [];
+    snapshot.sheets.forEach((s, i) => {
+      const exists = present.includes(s.name);
+      // A sheet the script deleted comes back with its contents but at the end
+      // of the tab strip and without its formatting. Reported, not hidden.
+      const sheet = exists ? coll.getItem(s.name) : coll.add(s.name);
+      if (!exists) recreated.push(s.name);
+      if (exists && current[i] && !current[i].isNullObject) current[i].clearContents();
+      if (s.address) {
+        const target = sheet.getRange(s.address);
+        target.numberFormat = s.numberFormat;
+        target.formulas = s.formulas;
+      }
+    });
+    await ctx.sync();
+
+    return { kind: 'workbook', sheets: snapshot.sheets.length, deleted, recreated };
+  });
+}
+
+/* ── snapshot:end ──────────────────────────────────────── */
 
 /** Scroll to and select a cell — powers the [[Sheet!A1]] citation links. */
 export async function selectCell(sheetName, address) {
@@ -1271,8 +1429,10 @@ function stringifyResult(v, cap, tailNote) {
  *     property you are meant to assign to — reading is `.load()` — so the rule
  *     needs no list to keep in step with the API, and `obj["val"+"ues"] = x`
  *     trips it exactly like `obj.values = x`.
- *   - calling a method that mutates. This does need a list, but it matches the
- *     method actually invoked rather than the text of the call.
+ *   - calling any method that is not a KNOWN READ. Stated in that direction on
+ *     purpose — see READ_METHODS — so this rule needs no list of mutations to
+ *     keep in step with the API either. It matches the method actually invoked
+ *     rather than the text of the call.
  *
  * When writes were not approved, the attempt throws where it happens rather than
  * at sync: the model gets an error naming the operation, which is something it
@@ -1282,20 +1442,58 @@ function stringifyResult(v, cap, tailNote) {
  * instead of its bindings is outside what a Proxy can see. Closing that needs
  * the script off this thread entirely, which is a bigger change than this one.
  */
-const MUTATING_METHODS = new Set([
-  'add', 'addFromBase64', 'delete', 'remove', 'insert', 'clear', 'clearContents', 'clearFormats',
-  'merge', 'unmerge', 'copyFrom', 'moveTo', 'autofitColumns', 'autofitRows', 'convertToRange',
-  'applyFilter', 'clearFilter', 'reapplyFilters', 'apply', 'freezeRows', 'freezeColumns',
-  'freezePanes', 'setPosition', 'setDynamicArray', 'setData', 'replaceAll', 'group', 'ungroup',
-  'refresh', 'refreshAll', 'activate', 'select', 'setName', 'setFormat', 'setValues',
-  'addConditionalFormat', 'removeDuplicates', 'sort',
+/* ── guard:start ─ test/script-guard.test.mjs slices the source from here ──── */
+
+/**
+ * Methods that READ. Anything not in here counts as changing the workbook.
+ *
+ * Stated in this direction after the other one failed. The first version carried
+ * a list of MUTATING methods, and a denylist is only worth what its completeness
+ * is worth: `worksheet.copy()`, `range.autoFill()`, `range.setCellProperties()`,
+ * `workbook.close()`, `table.clearFilters()` and the whole `applyValuesFilter`
+ * family were all absent from it. Every one of those wrote to the workbook with
+ * no confirmation card and no snapshot — and the server's own pattern matcher
+ * missed them too, so nothing was watching. Office.js gains methods with every
+ * release, so the list would have gone stale again on its own schedule.
+ *
+ * Reading has a shape that writing does not: `get…` for navigation and
+ * retrieval, plus the handful of names below. So this rule can be stated once
+ * and stay true, which is the same property the assignment rule above has, and
+ * the reason the two now read alike — reading is a closed set, writing is
+ * whatever is left over.
+ *
+ * The price is false positives: a read this set does not know about is treated
+ * as a write and the model is told to re-request with mode="write", which puts
+ * a confirmation card in front of something harmless. That is the exact habit
+ * this add-in works to avoid, so a read found missing belongs in here — not
+ * tolerated as an acceptable cost.
+ */
+const READ_METHODS = new Set([
+  'load', 'sync', 'toJSON', 'run', 'track', 'untrack',
+  // Search hands back ranges without touching them. Not named get*, but reads.
+  'find', 'findOrNullObject', 'findAll', 'findAllOrNullObject',
 ]);
+
+/**
+ * Sub-objects whose whole method surface reads.
+ *
+ * `workbook.functions` is Excel's function library — `functions.sum(range)`,
+ * `functions.vlookup(…)`. Every one of them computes and returns, none are named
+ * get*, and enumerating them would be its own stale list. `trackedObjects.add()`
+ * manages Office.js proxy lifetimes, not workbook content, and its name would
+ * otherwise trip the rule on the way past.
+ */
+const READ_ONLY_SUBTREES = new Set(['functions', 'trackedObjects']);
+
+const isReadMethod = (name) => name.startsWith('get') || READ_METHODS.has(name);
 
 /** Reach the object underneath a wrapper, so Office.js never sees a Proxy. */
 const RAW = Symbol('raw');
 
 function makeScriptGuard(allowWrites) {
   const cache = new WeakMap();
+  /** Separate, because the same object can be reached in both modes. */
+  const readOnlyCache = new WeakMap();
   let touched = null;
 
   const deny = (what) => {
@@ -1303,7 +1501,8 @@ function makeScriptGuard(allowWrites) {
     if (allowWrites) return;
     throw new Error(
       `這段程式想修改活頁簿（${what}），但這次呼叫沒有申請寫入權限。`
-      + '請重新呼叫 excel_run_script 並帶上 mode="write"，使用者會看到確認視窗。',
+      + '請重新呼叫 excel_run_script 並帶上 mode="write"，使用者會看到確認視窗。'
+      + '（若這其實只是讀取：唯讀的做法是 get… 開頭的方法、load、sync。）',
     );
   };
 
@@ -1324,10 +1523,30 @@ function makeScriptGuard(allowWrites) {
   // `force` exists for the Excel namespace itself. It is a plain object, so the
   // heuristic below rejects it — and leaving it unwrapped hands any script an
   // unguarded context through Excel.run(cb).
-  function wrap(target, force) {
+  //
+  // `readOnly` marks everything reached through a READ_ONLY_SUBTREES branch, so
+  // `functions.sum()` is not mistaken for a mutation on the way past.
+  function wrap(target, force, readOnly) {
+    // A collection's `.items` is a plain Array holding real Office objects, and
+    // the isOfficeObject heuristic rejects arrays — right for `.values` and
+    // `.formulas`, which hold primitives, but it handed `worksheets.items` back
+    // UNWRAPPED and every object inside it was an open door:
+    //
+    //     sheets.load('items/name'); await ctx.sync();
+    //     sheets.items[0].getRange('A1').values = [[1]];   // nothing watching
+    //
+    // which is not an exotic way to write it — it is what the Office.js samples
+    // do. Arrays of Office objects get wrapped element by element; data arrays
+    // are handed back exactly as they came.
+    if (Array.isArray(target)) {
+      return (target.length && isOfficeObject(target[0]))
+        ? target.map(v => wrap(v, false, readOnly))
+        : target;
+    }
     if (!force && !isOfficeObject(target)) return target;
     if (target === null || (typeof target !== 'object' && typeof target !== 'function')) return target;
-    const hit = cache.get(target);
+    const store = readOnly ? readOnlyCache : cache;
+    const hit = store.get(target);
     if (hit) return hit;
 
     const proxy = new Proxy(target, {
@@ -1336,17 +1555,18 @@ function makeScriptGuard(allowWrites) {
         // Reflect against the target, not the receiver: Office objects keep state
         // in internal slots and reject a Proxy as `this`.
         const v = Reflect.get(t, prop, t);
-        if (typeof v !== 'function') return wrap(v);
         const name = String(prop);
+        const childReadOnly = readOnly || READ_ONLY_SUBTREES.has(name);
+        if (typeof v !== 'function') return wrap(v, false, childReadOnly);
         return function (...a) {
-          if (MUTATING_METHODS.has(name)) deny(name + '()');
+          if (!readOnly && !isReadMethod(name)) deny(name + '()');
           // A callback passed to Office (Excel.run, forEach) is handed raw
           // objects when Office calls it back — re-wrap them on the way in, or
           // the script gets an unguarded context through the front door.
           const args = a.map(x => (typeof x === 'function'
-            ? (...back) => x(...back.map(wrap))
+            ? (...back) => x(...back.map(b => wrap(b, false, readOnly)))
             : unwrap(x)));
-          return wrap(Reflect.apply(v, t, args));
+          return wrap(Reflect.apply(v, t, args), false, readOnly);
         };
       },
       set(t, prop, value) {
@@ -1359,16 +1579,18 @@ function makeScriptGuard(allowWrites) {
       },
     });
 
-    cache.set(target, proxy);
+    store.set(target, proxy);
     return proxy;
   }
 
   return {
-    wrap: (v) => wrap(v, false),
-    wrapNamespace: (v) => wrap(v, true),
+    wrap: (v) => wrap(v, false, false),
+    wrapNamespace: (v) => wrap(v, true, false),
     didMutate: () => touched,
   };
 }
+
+/* ── guard:end ────────────────────────────────────────────────────────────── */
 
 async function runScript(args, allowWrites) {
   const code = String(args.code || '').trim();
@@ -1455,6 +1677,13 @@ async function runScript(args, allowWrites) {
  *   or was flagged destructive by name, and the confirmation already happened.
  */
 export async function executeTool(tool, args, opts = {}) {
+  /**
+   * Held out here so the catch below can hand it back too. A script that wrote
+   * three sheets and then threw has changed the workbook exactly as much as one
+   * that succeeded — dropping the snapshot on the error path would leave the
+   * user with the mess and no way back, which is the one case they need it most.
+   */
+  let scriptSnapshot;
   try {
     switch (tool) {
       case 'excel_get_overview':  return { ok: true, content: await getOverview(args || {}) };
@@ -1473,7 +1702,15 @@ export async function executeTool(tool, args, opts = {}) {
       case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };
-      case 'excel_run_script':     return { ok: true, content: await runScript(args || {}, !!opts.writeApproved) };
+      case 'excel_run_script': {
+        // Only for approved writes: a read-mode script cannot change anything
+        // (the guard sees to that), so photographing the workbook first would be
+        // seconds of delay bought for nothing.
+        if (opts.writeApproved) scriptSnapshot = await captureWorkbook();
+        const text = await runScript(args || {}, !!opts.writeApproved);
+        await finishWorkbookSnapshot(scriptSnapshot);
+        return { ok: true, content: text, snapshot: scriptSnapshot || undefined };
+      }
       default:
         return { ok: false, error: `未知的工具：${tool}` };
     }
@@ -1489,6 +1726,8 @@ export async function executeTool(tool, args, opts = {}) {
       msg += '。這段程式可以用的名稱只有：context（= ctx）、workbook、Excel、log、store。'
         + '沒有 Office Scripts 的 ExcelScript，也沒有 require / import / fetch / document。';
     }
-    return { ok: false, error: msg };
+    // A failed script may still have written something before it threw.
+    await finishWorkbookSnapshot(scriptSnapshot);
+    return { ok: false, error: msg, snapshot: scriptSnapshot || undefined };
   }
 }
