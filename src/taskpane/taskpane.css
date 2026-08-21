@@ -160,6 +160,24 @@ input, textarea, select {
   width: 100%;
   transition: border-color var(--speed), box-shadow var(--speed);
 }
+/* The rule above is written for things you TYPE into. A checkbox is not one:
+   width:100% and 7px of padding stretch it into a long box, and :focus then
+   paints that box accent-green — which is what it looked like. Fixed here rather
+   than at the one call site, because otherwise every checkbox this pane ever
+   grows inherits the same surprise. Attribute selectors, not :where(), so these
+   actually outrank the bare element rule instead of tying with it. */
+input[type="checkbox"], input[type="radio"] {
+  flex: none; width: auto; padding: 0;
+  border: 0; background: none;
+  accent-color: var(--accent);
+}
+input[type="checkbox"]:hover, input[type="radio"]:hover { border-color: transparent; }
+input[type="checkbox"]:focus, input[type="radio"]:focus { box-shadow: none; border-color: transparent; }
+/* Keyboard users still need to see it; mouse users should not get a ring. */
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+
 input:hover, textarea:hover, select:hover { border-color: var(--fg-subtle); }
 input:focus, textarea:focus, select:focus {
   outline: none;
@@ -531,8 +549,15 @@ header .actions { display: flex; gap: 2px; flex: none; }
   padding: 3px 4px 7px; font-size: 11.5px; color: var(--fg-subtle);
 }
 .outline-count { flex: 1; }
-.outline-filter { display: flex; align-items: center; gap: 4px; cursor: pointer; }
-.outline-filter input { margin: 0; }
+/* `label` is column-flex pane-wide — right for a field above its caption, wrong
+   for a checkbox beside its word. Stated explicitly rather than inherited. */
+.outline-filter {
+  display: flex; flex-direction: row; align-items: center;
+  flex: none; gap: 5px; cursor: pointer;
+  font-size: 11.5px; color: var(--fg-subtle); white-space: nowrap;
+}
+.outline-filter:hover { color: var(--fg-muted); }
+.outline-filter input { margin: 0; width: 13px; height: 13px; }
 .outline-close {
   flex: none; width: 20px; height: 20px; border-radius: 5px;
   color: var(--fg-subtle); font-size: 15px; line-height: 1;
