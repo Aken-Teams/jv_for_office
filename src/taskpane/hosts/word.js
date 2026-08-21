@@ -1247,18 +1247,46 @@ async function insertEquation(args) {
   return Word.run(async (ctx) => {
     const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      let mathPara;
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
-        items[from - 1].insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
+        mathPara = items[from - 1];
+        mathPara.insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
       } else {
         ctx.document.body.insertOoxml(ooxml, 'End');
       }
       await ctx.sync();
+
+      // ── The bleed ──
+      // A display equation is a MATH ZONE, and Word continues that zone into
+      // whatever comes next — exactly as pressing Enter at the end of an equation
+      // does in the UI. So the following paragraph was not merely inheriting the
+      // centring: the prose was landing INSIDE the equation, set in Cambria Math,
+      // centred, and — because a math zone does not wrap — running off the right
+      // edge of the page. Three symptoms, one cause.
+      //
+      // So the tool closes the zone itself: a clean paragraph, stated rather than
+      // inherited, sits after every equation and is where the next sentence goes.
+      const paras = ctx.document.body.paragraphs;
+      paras.load('items');
+      await ctx.sync();
+      const all = paras.items;
+      const at = args.paragraph && items.length ? resolveRange(items, args).from : all.length - 1;
+      const equation = all[Math.min(at, all.length - 1)];
+      const after = equation.insertParagraph('', 'After');
+      after.styleBuiltIn = 'Normal';
+      after.alignment = 'Left';
+      after.leftIndent = 0;
+      after.firstLineIndent = 0;
+      await ctx.sync();
       return null;
     });
     return `已插入公式：${latex}\n`
-      + '它是真正的 Word 公式物件，使用者可以點進去繼續編輯，也搜尋得到。'
-      + (args.display === false ? '' : '（獨立成行並置中。）')
+      + '它是真正的 Word 公式物件，使用者可以點進去繼續編輯，也搜尋得到。\n'
+      + '公式後面已經自動接上一個乾淨的空段落——**接下來的內容請寫進那一段**'
+      + '（用 word_write_range 指到它），不要用 word_insert_text 接在公式段落後面：'
+      + 'Word 會把公式的數學區域延續下去，你的文字會變成公式的一部分，'
+      + '字型變成 Cambria Math、置中、而且不會自動換行，整段衝出頁面右邊。'
       + trackingNote(result);
   });
 }
@@ -1585,6 +1613,37 @@ async function normalizeLayout(args) {
       ? { from: 1, to: items.length }
       : resolveRange(items, args);
 
+    // ── Repair pass: prose that got swallowed by an equation ──
+    //
+    // Word continues a display equation's math zone into the next paragraph, so
+    // text written after one lands INSIDE the equation — Cambria Math, centred,
+    // and not wrapping, which is why those paragraphs run off the page. The
+    // insert tool now closes the zone, but documents written before it did are
+    // already damaged and cannot be fixed by setting alignment: the paragraph is
+    // maths, and maths does not have alignment in that sense.
+    //
+    // Opt-in, because finding them means pulling every paragraph's OOXML across
+    // the bridge, and that is a real cost to pay on a routine tidy-up.
+    const repaired = [];
+    if (args.repair_math) {
+      const xml = [];
+      for (let i = from; i <= to; i++) xml.push(items[i - 1].getOoxml());
+      await ctx.sync();
+      for (let i = from; i <= to; i++) {
+        const p = items[i - 1];
+        const text = String(p.text || '');
+        // A real equation is symbols. Prose that ended up in a math zone has
+        // Chinese in it, or a run of ordinary words — that is the tell.
+        const prose = /[一-鿿]/.test(text) || /[A-Za-z]{6,}/.test(text);
+        if (!prose || !String(xml[i - from].value || '').includes('<m:oMath')) continue;
+        // Replacing the content with plain text is what drops the math runs.
+        // The formatting is then stated below like any other body paragraph.
+        p.insertText(text, 'Replace');
+        repaired.push(i);
+      }
+      if (repaired.length) await ctx.sync();
+    }
+
     for (let i = from; i <= to; i++) {
       const p = items[i - 1];
       const style = String(p.styleBuiltIn || p.style || '').replace(/\s+/g, '');
@@ -1602,8 +1661,13 @@ async function normalizeLayout(args) {
     }
     await ctx.sync();
 
-    if (!changed.length) return '內文段落的排版本來就是一致的，沒有改動。';
-    return `已把 ${changed.length} 個內文段落統一成${align === 'Left' ? '靠左' : align}對齊`
+    const fixed = repaired.length
+      ? `修好了 ${repaired.length} 個被公式吃進去的段落（段落 ${repaired.slice(0, 8).join('、')}${repaired.length > 8 ? '…' : ''}）——`
+        + '那些文字原本在數學區域裡，所以是 Cambria Math、置中、而且不會自動換行。\n'
+      : '';
+    if (!changed.length && !repaired.length) return '內文段落的排版本來就是一致的，沒有改動。';
+    if (!changed.length) return fixed;
+    return fixed + `已把 ${changed.length} 個內文段落統一成${align === 'Left' ? '靠左' : align}對齊`
       + `${args.first_line_indent ? `、首行縮排 ${args.first_line_indent} 點` : ''}。`
       + '標題、圖說、目錄、清單和公式段落沒有動——那些的對齊是刻意的。';
   });

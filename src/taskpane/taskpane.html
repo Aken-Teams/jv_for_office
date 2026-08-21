@@ -359,12 +359,20 @@
           <span class="src-name" data-t="KM 文件">KM 文件</span>
           <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
+        <button type="button" class="src-item" data-src="file" id="src-file" role="menuitem">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg>
+          <span class="src-name" data-t="上傳檔案">上傳檔案</span>
+        </button>
         <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
       </div>
 
-      <!-- Thumbnails of images pasted into the composer. Hidden until there is
-           one; the whole strip is cleared when the message goes. -->
+      <!-- Thumbnails of images pasted into the composer, and chips for uploaded
+           files. Hidden until there is one; cleared when the message goes. -->
       <div id="attach-strip" class="attach-strip" hidden></div>
+      <!-- Driven by the 上傳檔案 item in the ＋ menu. Kept out of the tab order
+           because the menu item is the control people actually reach for. -->
+      <input id="file-input" type="file" multiple hidden tabindex="-1"
+             accept=".pdf,.docx,.xlsx,.xls,.csv,.tsv,.txt,.md,.json,.xml,.html,.htm,.png,.jpg,.jpeg,.gif,.webp" />
 
       <div class="input-shell">
         <button type="button" id="plus" class="plus-btn" aria-haspopup="true" aria-expanded="false"

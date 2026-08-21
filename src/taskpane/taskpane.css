@@ -863,6 +863,17 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    pastes two screenshots in a row and the only way they can tell which is which
    is by looking at them. Sized so three fit across the narrowest task pane. */
 .attach-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 8px; }
+/* A document in the same strip as the thumbnails: it is the same idea —
+   things attached to THIS message — so it should not live somewhere else. */
+.attach-file {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 220px; padding: 6px 8px; border-radius: 6px;
+  background: rgba(127, 127, 127, .12); font-size: 12px;
+}
+.attach-file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-file .meta { opacity: .6; flex: none; }
+.attach-file.busy { opacity: .55; }
+
 .attach-item {
   position: relative; width: 56px; height: 56px; border-radius: 8px;
   overflow: hidden; border: 1px solid var(--line); background: var(--bg-soft);
@@ -876,6 +887,26 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   background: rgba(0, 0, 0, .6); color: #fff;
 }
 .attach-drop:hover { background: rgba(0, 0, 0, .8); }
+
+/* A file has no thumbnail worth showing, so it gets a chip with its name. Wider
+   than the image tiles and the same height, so a mixed strip still lines up. */
+.attach-file {
+  position: relative; display: flex; align-items: center; gap: 6px;
+  height: 56px; max-width: 100%; padding: 0 26px 0 9px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
+  font-size: 12px;
+}
+.attach-file .att-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+  color: var(--fg); font-weight: 600;
+}
+.attach-file .att-sub { color: var(--fg-muted); font-size: 11px; }
+.attach-file .attach-drop { background: var(--surface-hover); color: var(--fg-muted); }
+.attach-file .attach-drop:hover { background: var(--line-strong); color: var(--fg); }
+/* Reading a 40-page PDF takes a moment; the chip says so rather than sitting there. */
+.attach-file.pending { opacity: .6; }
+.attach-file.failed { border-color: var(--warn-line); background: var(--warn-bg); }
+.attach-file.failed .att-sub { color: var(--warn-fg); }
 
 #composer { flex: none; padding: 10px 12px 12px; border-top: 1px solid var(--line); background: var(--bg); }
 

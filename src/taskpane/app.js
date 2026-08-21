@@ -120,6 +120,16 @@ const state = {
   attachments: [],
   /** Held for the length of one run so a tool call can still reach them. */
   sentAttachments: [],
+  /**
+   * Files uploaded for the next message — `[{ id, name, status, note, serverId }]`.
+   *
+   * Only the id from the server rides along with the message; the CONTENT stays
+   * on the server, where it was parsed. Unlike a pasted image, a PDF cannot be
+   * read in a task pane, so this one genuinely has to leave the machine.
+   */
+  files: [],
+  /** The ids that went with the message in flight. */
+  sentFiles: [],
   /** Live selection, or null. Rides along with the next message unless dropped. */
   selection: null,
   /** Set by the × on the chip: skip the selection for THIS message only. */
@@ -755,6 +765,8 @@ const ATTACH_MAX_EDGE = 1400;
 const ATTACH_MAX_B64 = 1_500_000;
 /** Two screenshots is a comparison; six is someone emptying a folder into a chat. */
 const MAX_ATTACHMENTS = 4;
+/** Matches the server's multer limit — five per upload. */
+const MAX_FILES = 5;
 
 /**
  * Take a pasted or dropped image, shrink it if it is large, and park it.
@@ -806,22 +818,111 @@ async function addAttachment(file) {
   renderAttachments();
 }
 
+/**
+ * One entry point for anything the user hands over, picked or dropped.
+ *
+ * The split is by what the thing IS, not by how it arrived. An image can be
+ * shown to the model as-is, so it stays in the pane and is handed over on
+ * request. Anything else has to be parsed — a PDF, a .docx, a spreadsheet — and
+ * that needs libraries which belong on a server, so it is uploaded.
+ */
+function attach(file) {
+  return file.type.startsWith('image/') ? addAttachment(file) : addFile(file);
+}
+
+/**
+ * Send a file to the server, where it gets parsed and scanned.
+ *
+ * Files go up NOW rather than with the message, so someone finds out their
+ * scanned PDF has no text layer while they are still looking at the file they
+ * just picked — not thirty seconds into an answer that turns out to be about
+ * nothing. The chip carries that state, which is why it exists before the
+ * upload finishes.
+ *
+ * Unlike a pasted image, a file has to leave this machine: extracting a PDF or a
+ * .docx needs libraries that belong on a server, not in a task pane.
+ */
+async function addFile(file) {
+  if (state.files.length >= MAX_FILES) {
+    addNote(t('一次最多上傳 {0} 個檔案。', MAX_FILES));
+    return;
+  }
+  const entry = { id: crypto.randomUUID(), name: file.name, status: 'pending', note: '', serverId: null };
+  state.files.push(entry);
+  renderAttachments();
+
+  try {
+    const form = new FormData();
+    form.append('files', file, file.name);
+    const res = await fetch(`${state.apiBase}/api/${host.meta.api}/attachments`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.token}` },
+      body: form,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+
+    const bad = (body.rejected || [])[0];
+    if (bad) { entry.status = 'failed'; entry.note = bad.reason; renderAttachments(); return; }
+
+    const ok = (body.accepted || [])[0];
+    if (!ok) throw new Error('伺服器沒有回傳結果');
+    entry.serverId = ok.id;
+    entry.status = 'ready';
+    // 「已擋下」 rather than a silent success: the person should know the scanner
+    // fired on their file before they wonder why the answer ignored it.
+    entry.note = ok.blocked ? t('內容被安全掃描擋下') : t('已讀取 {0} 字', ok.chars);
+  } catch (e) {
+    entry.status = 'failed';
+    entry.note = e.message;
+  }
+  renderAttachments();
+}
+
 function renderAttachments() {
   const strip = $('attach-strip');
   if (!strip) return;
-  strip.hidden = !state.attachments.length;
-  strip.innerHTML = state.attachments.map((a, i) => `
+  strip.hidden = !state.attachments.length && !state.files.length;
+
+  const images = state.attachments.map((a, i) => `
     <div class="attach-item">
       <img src="data:${a.mimeType};base64,${a.data}" alt="${escapeHtml(t('附加的圖片 {0}', i + 1))}" />
       <button type="button" class="attach-drop" data-id="${a.id}"
               aria-label="${escapeHtml(t('移除這張圖'))}">×</button>
-    </div>`).join('');
+    </div>`);
+
+  const files = state.files.map((f) => {
+    const sub = f.status === 'pending' ? t('讀取中…') : f.note;
+    return `
+    <div class="attach-file ${f.status === 'pending' ? 'pending' : ''} ${f.status === 'failed' ? 'failed' : ''}">
+      <div>
+        <div class="att-name">${escapeHtml(f.name)}</div>
+        <div class="att-sub">${escapeHtml(sub)}</div>
+      </div>
+      <button type="button" class="attach-drop" data-id="${f.id}"
+              aria-label="${escapeHtml(t('移除這個檔案'))}">×</button>
+    </div>`;
+  });
+
+  strip.innerHTML = [...images, ...files].join('');
   strip.querySelectorAll('.attach-drop').forEach((b) => {
     b.addEventListener('click', () => {
       state.attachments = state.attachments.filter(a => a.id !== b.dataset.id);
+      state.files = state.files.filter(f => f.id !== b.dataset.id);
       renderAttachments();
+      syncSendButton();
     });
   });
+  syncSendButton();
+}
+
+/** Enabled when there is anything to send — text, an image, or a ready file. */
+function syncSendButton() {
+  const input = $('input');
+  if (!input) return;
+  const has = !!input.value.trim() || state.attachments.length > 0
+    || state.files.some(f => f.status === 'ready');
+  $('send').disabled = !has || state.streaming;
 }
 
 /**
@@ -1108,7 +1209,10 @@ function setSendMode(mode) {
     ic.innerHTML = '<use href="#i-stop"/>';
   } else {
     btn.classList.remove('stopping');
-    btn.disabled = !$('input').value.trim();
+    // Via syncSendButton, not the textarea alone: an image or a file with no
+    // typed message is a complete request, and checking only the text would
+    // leave the button dead after a run that ended with something attached.
+    syncSendButton();
     btn.title = t('送出（Enter）');
     btn.setAttribute('aria-label', t('送出'));
     ic.innerHTML = '<use href="#i-send"/>';
@@ -1246,6 +1350,9 @@ async function send(message) {
   // arrives seconds later, by which time the composer has been cleared.
   state.sentAttachments = state.attachments;
   state.attachments = [];
+  // Only the ones that finished parsing; a failed chip is not silently sent.
+  state.sentFiles = state.files.filter(f => f.status === 'ready').map(f => f.serverId);
+  state.files = [];
   renderAttachments();
 
   backToLive();
@@ -1309,6 +1416,8 @@ async function send(message) {
         // model that pictures are attached and which tool fetches them; the bytes
         // stay here until it actually asks.
         attachments: state.sentAttachments.length || undefined,
+        // Ids only. The text was extracted server-side at upload time.
+        fileIds: state.sentFiles.length ? state.sentFiles : undefined,
       }),
     });
 
@@ -1767,7 +1876,10 @@ function fillDomainOptions() {
 
 const SOURCE_NAMES = () => ({ web: t('搜尋網路'), email: t('郵件'), km: 'KM' });
 /** Sources that need no account link, so the menu never greys them out. */
-const ALWAYS_AVAILABLE = new Set(['web']);
+// 'file' is in here because it is not a data source that needs linking — it is
+// a file picker. It would otherwise render disabled, since state.available has
+// no entry for it.
+const ALWAYS_AVAILABLE = new Set(['web', 'file']);
 const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES()[k] || k).join('、');
 
 /**
@@ -2042,7 +2154,7 @@ Office.onReady(async (info) => {
     // An image on its own is a whole message — 「這個」 with a screenshot attached
     // is a perfectly clear request, and refusing it would make people type a word
     // they do not mean just to get the send button back.
-    if (!msg && !state.attachments.length) return;
+    if (!msg && !state.attachments.length && !state.files.some(f => f.status === 'ready')) return;
     input.value = '';
     input.style.height = 'auto';
     $('send').disabled = true;
@@ -2071,10 +2183,10 @@ Office.onReady(async (info) => {
     if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
   });
   composer.addEventListener('drop', (e) => {
-    const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'));
+    const files = [...(e.dataTransfer?.files || [])];
     if (!files.length) return;
     e.preventDefault();
-    for (const f of files) void addAttachment(f);
+    for (const f of files) void attach(f);
   });
 
   // Esc stops a run from anywhere in the pane. Someone watching a spinner for two
@@ -2106,7 +2218,7 @@ Office.onReady(async (info) => {
 
   $('input').addEventListener('input', (e) => {
     autoGrow(e.target);
-    $('send').disabled = (!e.target.value.trim() && !state.attachments.length) || state.streaming;
+    syncSendButton();
   });
 
   // Suggestion chips are real prompts: one click asks the question. Delegated so
@@ -2169,10 +2281,18 @@ Office.onReady(async (info) => {
 
   $('plus').addEventListener('click', () => { toggleModelMenu(false); toggleSourceMenu(); });
 
+  $('file-input').addEventListener('change', (e) => {
+    for (const file of e.target.files || []) void attach(file);
+    // Reset, or picking the same file twice in a row fires no change event.
+    e.target.value = '';
+  });
+
   $('src-menu').addEventListener('click', (e) => {
     const item = e.target.closest('.src-item');
     if (!item || item.disabled) return;
     const key = item.dataset.src;
+    // Not a toggle like the others — it opens the picker and closes the menu.
+    if (key === 'file') { toggleSourceMenu(false); $('file-input').click(); return; }
     state.sources = state.sources.includes(key)
       ? state.sources.filter(k => k !== key)
       : [...state.sources, key];
