@@ -70,6 +70,7 @@ const BASE_TOOLS = [
   'word_insert_link',
   'word_page_design',
   'word_normalize_layout',
+  'word_apply_theme',
   'word_replace_all',
   // Compute and edit inside Word instead of hauling the document through the
   // model's context. Same rationale as excel_run_script.
@@ -125,6 +126,38 @@ async function loadParagraphs(ctx) {
   paras.load('items/text,items/style,items/styleBuiltIn,items/isListItem');
   await ctx.sync();
   return paras.items;
+}
+
+/**
+ * Just the handles. No text, no styles, nothing to serialise.
+ *
+ * Most calls do not READ the document, they AIM at it: 「在第 12 段後面插一段」
+ * needs to know that paragraph 12 exists and which object it is, and nothing
+ * else. loadParagraphs answers that question by dragging every character and
+ * style name in the document across the bridge first — which is invisible on a
+ * three-page memo and is most of the wall-clock on a fifty-page one.
+ *
+ * It matters more than it looks, because the document GROWS as the assistant
+ * writes it: by the fortieth paragraph, every insertion was re-reading the
+ * thirty-nine before it. The whole reason this add-in exists rather than a
+ * "generate a file for you" button is that it is meant to feel immediate.
+ */
+async function paragraphHandles(ctx) {
+  const paras = ctx.document.body.paragraphs;
+  paras.load('items');
+  await ctx.sync();
+  return paras.items;
+}
+
+/**
+ * Handles, but only when the call names a paragraph at all.
+ *
+ * Appending to the end of the document — by far the commonest thing an
+ * assistant writing a report does — needs no round trip whatsoever.
+ */
+async function addressedParagraphs(ctx, args) {
+  const names = args.paragraph !== undefined || args.from !== undefined || args.to !== undefined;
+  return names ? paragraphHandles(ctx) : [];
 }
 
 /** Heading levels come back as 'Heading 1' / styleBuiltIn 'Heading1'. */
@@ -467,7 +500,7 @@ function asParagraphs(args) {
 async function writeRange(args) {
   const lines = asParagraphs(args);
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await paragraphHandles(ctx);
     if (!items.length) throw new Error('這份文件是空的，沒有可以取代的段落。');
     const { from, to } = resolveRange(items, args);
 
@@ -493,7 +526,7 @@ async function insertText(args) {
   const lines = asParagraphs(args);
   const at = String(args.at || 'end');
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
       let anchor;
       if (at === 'start' || (at === 'before' && !args.paragraph)) {
@@ -543,7 +576,7 @@ async function insertText(args) {
 
 async function deleteRange(args) {
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await paragraphHandles(ctx);
     if (!items.length) throw new Error('這份文件是空的。');
     const { from, to } = resolveRange(items, args);
     const result = await withTracking(ctx, args, async () => {
@@ -567,7 +600,7 @@ async function deleteRange(args) {
  */
 async function formatRange(args) {
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await paragraphHandles(ctx);
     if (!items.length) throw new Error('這份文件是空的。');
     const { from, to } = resolveRange(items, args);
     const applied = [];
@@ -602,7 +635,7 @@ async function formatRange(args) {
 async function manageList(args) {
   const kind = String(args.type || 'bullet').toLowerCase();
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await paragraphHandles(ctx);
     const { from, to } = resolveRange(items, args);
     if (kind === 'none') {
       for (let i = from; i <= to; i++) items[i - 1].detachFromList();
@@ -628,7 +661,7 @@ async function insertTable(args) {
   const rows = values.map(r => [...r, ...Array(cols - r.length).fill('')]);
 
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
       let table;
       if (args.paragraph && items.length) {
@@ -823,7 +856,7 @@ async function comment(args) {
 
     const text = String(args.text || '').trim();
     if (!text) throw new Error('text 是必要的');
-    const items = await loadParagraphs(ctx);
+    const items = await paragraphHandles(ctx);
     if (!items.length) throw new Error('這份文件是空的。');
     const { from } = resolveRange(items, args);
     // A comment is the right shape for 「這一條有風險」: it says something about
@@ -902,7 +935,7 @@ const BREAKS = { page: 'Page', line: 'Line', section: 'SectionNext', section_con
 async function insertBreak(args) {
   const kind = BREAKS[String(args.type || 'page').toLowerCase()] || 'Page';
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
@@ -1151,7 +1184,7 @@ async function insertChart(args) {
   const base64 = canvas.toDataURL('image/png').split(',')[1];
 
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
       let anchor;
       if (args.paragraph && items.length) {
@@ -1197,7 +1230,14 @@ async function insertEquation(args) {
   const latex = String(args.latex || '').trim();
   if (!latex) throw new Error('latex 是必要的');
 
-  const ooxml = equationOoxml(latex, args.display !== false);
+  // Centring is opt-in, not the default.
+  //
+  // Display maths is centred by convention, and following that convention put a
+  // centred paragraph after every question in a test paper whose questions were
+  // all left-aligned — so the page came out centred in patches. Convention loses
+  // to consistency here: the equation lines up with the text it belongs to
+  // unless someone asks otherwise.
+  const ooxml = equationOoxml(latex, args.align === 'center' || args.align === 'centered');
   // Check before Word sees it. A nesting bug here would come back from Word as a
   // bare rejection of the whole insertion, with nothing to say which tag was
   // wrong; failing here names the problem and leaves the document untouched.
@@ -1205,7 +1245,7 @@ async function insertEquation(args) {
   if (broken) throw new Error(`這段 LaTeX 轉出來的 XML 結構不對（${broken}）。換一種寫法，或把公式拆成兩個。`);
 
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, { track: args.track === true }, async () => {
       if (args.paragraph && items.length) {
         const { from } = resolveRange(items, args);
@@ -1271,7 +1311,7 @@ async function checkbox(args) {
     const items = Array.isArray(args.items) ? args.items.map(String).filter(Boolean) : [];
     if (!items.length) throw new Error('items 是必要的，例如 ["確認圖面版次", "確認材料規格"]。');
 
-    const paras = await loadParagraphs(ctx);
+    const paras = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
       let anchor = null;
       for (const label of items) {
@@ -1307,7 +1347,7 @@ async function link(args) {
   const op = String(args.op || 'add');
   return Word.run(async (ctx) => {
     if (op === 'list') {
-      const paras = await loadParagraphs(ctx);
+      const paras = await addressedParagraphs(ctx, args);
       const found = [];
       for (let i = 0; i < paras.length; i++) {
         const r = paras[i].getRange();
@@ -1342,7 +1382,7 @@ async function link(args) {
         await ctx.sync();
         return hits.items.length;
       }
-      const paras = await loadParagraphs(ctx);
+      const paras = await addressedParagraphs(ctx, args);
       const text = String(args.text || url);
       let anchor;
       if (args.paragraph && paras.length) {
@@ -1478,7 +1518,7 @@ async function insertTextBox(args) {
   }
   const text = String(args.text || '');
   return Word.run(async (ctx) => {
-    const items = await loadParagraphs(ctx);
+    const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, { track: args.track === true }, async () => {
       const anchor = args.paragraph && items.length
         ? items[resolveRange(items, args).from - 1].getRange('Start')
@@ -1566,6 +1606,150 @@ async function normalizeLayout(args) {
     return `已把 ${changed.length} 個內文段落統一成${align === 'Left' ? '靠左' : align}對齊`
       + `${args.first_line_indent ? `、首行縮排 ${args.first_line_indent} 點` : ''}。`
       + '標題、圖說、目錄、清單和公式段落沒有動——那些的對齊是刻意的。';
+  });
+}
+
+
+// ── Themes ────────────────────────────────────────────────────────────────────
+
+/**
+ * One document, one set of type sizes.
+ *
+ * These four presets are not invented here — they are the same ones the web
+ * platform's DOCX generator has been shipping (server/src/generators/
+ * generate-docx.ts), converted from that library's units into Office.js's:
+ * sizes there are half-points and spacing is twips, here both are points.
+ *
+ * Reusing them rather than inventing a fifth taste is the point. A document made
+ * by the add-in and a document made by the web app should not look like they came
+ * from different companies, and the numbers below have already been through the
+ * argument about what looks right.
+ *
+ * ── Why a whole-document pass and not per-paragraph formatting ──
+ * Because 「忽大忽小」 is what per-paragraph formatting produces. An agent writing
+ * a report one section at a time has no view of the whole, so it picks a size for
+ * this heading and a different one for the next, and every one of those choices
+ * is locally defensible. The fix is not to choose more carefully; it is to stop
+ * choosing, and to state the rule once for every paragraph at the end.
+ *
+ * The Latin font from the generator is kept, but each preset also carries a CJK
+ * face — the originals are Times New Roman and Calibri, which have no Chinese
+ * glyphs, and a Chinese document set in them falls back to whatever Word picks.
+ * That fallback is exactly the "letters are one font, characters are another"
+ * look this is meant to remove.
+ */
+const THEMES = {
+  formal: {
+    label: '公文體',
+    font: '標楷體', titleSize: 26, headingSize: 14, bodySize: 12,
+    titleColor: '#000000', headingColor: '#1B3A5C', bodyColor: '#333333',
+    lineSpacing: 18, spaceAfter: 12, sectionBefore: 20,
+    titleAlign: 'Centered', bodyAlign: 'Justified', firstLineIndent: 24,
+  },
+  modern: {
+    label: '商務簡潔',
+    font: '微軟正黑體', titleSize: 24, headingSize: 14, bodySize: 11,
+    titleColor: '#2D2D2D', headingColor: '#2B6CB0', bodyColor: '#444444',
+    lineSpacing: 15, spaceAfter: 10, sectionBefore: 18,
+    titleAlign: 'Left', bodyAlign: 'Left', firstLineIndent: 0,
+  },
+  academic: {
+    label: '學術論文',
+    font: '新細明體', titleSize: 24, headingSize: 13, bodySize: 12,
+    titleColor: '#000000', headingColor: '#000000', bodyColor: '#000000',
+    lineSpacing: 24, spaceAfter: 12, sectionBefore: 24,
+    titleAlign: 'Centered', bodyAlign: 'Justified', firstLineIndent: 24,
+  },
+  compact: {
+    label: '緊湊',
+    font: '微軟正黑體', titleSize: 20, headingSize: 12, bodySize: 10,
+    titleColor: '#1A1A1A', headingColor: '#333333', bodyColor: '#444444',
+    lineSpacing: 12, spaceAfter: 5, sectionBefore: 10,
+    titleAlign: 'Left', bodyAlign: 'Left', firstLineIndent: 0,
+  },
+};
+
+/** What a paragraph IS, from the style it carries. */
+function roleOf(p) {
+  const style = String(p.styleBuiltIn || p.style || '').replace(/\s+/g, '');
+  if (/^(Title|Subtitle)$/i.test(style)) return 'title';
+  const h = /^Heading([1-9])$/i.exec(style);
+  if (h) return 'h' + h[1];
+  if (/^(TOC|Caption)/i.test(style)) return 'aside';
+  return 'body';
+}
+
+async function applyTheme(args) {
+  const key = String(args.theme || 'modern').toLowerCase();
+  const theme = THEMES[key];
+  if (!theme) {
+    throw new Error(`不認得的樣式「${key}」。可以用的是：${Object.keys(THEMES).join('、')}。`);
+  }
+  const font = String(args.font || theme.font);
+
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    if (!items.length) return '這份文件是空的，沒有東西可以套樣式。';
+
+    const counts = { title: 0, heading: 0, body: 0, aside: 0 };
+    for (const p of items) {
+      const role = roleOf(p);
+      // A paragraph with no text is an equation, a picture or a spacer. Setting a
+      // body font on it would restyle the mathematics into the body face, which
+      // is exactly the thing that makes an equation stop looking like one.
+      if (!String(p.text || '').trim()) continue;
+
+      const f = p.font;
+      f.name = font;
+      if (role === 'title') {
+        f.size = theme.titleSize;
+        f.color = theme.titleColor;
+        f.bold = true;
+        p.alignment = theme.titleAlign;
+        p.spaceAfter = theme.sectionBefore;
+        p.firstLineIndent = 0;
+        p.leftIndent = 0;
+        counts.title++;
+      } else if (role[0] === 'h') {
+        const level = Number(role[1]) || 1;
+        // One step down per level, floored so a Heading 4 does not end up
+        // smaller than the body text it introduces.
+        f.size = Math.max(theme.bodySize + 1, theme.headingSize - (level - 1) * 1.5);
+        f.color = theme.headingColor;
+        f.bold = true;
+        p.alignment = 'Left';
+        p.spaceBefore = level === 1 ? theme.sectionBefore : Math.round(theme.sectionBefore * 0.6);
+        p.spaceAfter = Math.round(theme.spaceAfter * 0.6);
+        p.firstLineIndent = 0;
+        p.leftIndent = 0;
+        counts.heading++;
+      } else if (role === 'aside') {
+        f.size = Math.max(8, theme.bodySize - 1);
+        f.color = theme.bodyColor;
+        counts.aside++;
+      } else {
+        f.size = theme.bodySize;
+        f.color = theme.bodyColor;
+        p.alignment = args.body_align
+          ? (ALIGNMENTS[String(args.body_align).toLowerCase()] || theme.bodyAlign)
+          : theme.bodyAlign;
+        p.lineSpacing = theme.lineSpacing;
+        p.spaceAfter = theme.spaceAfter;
+        p.firstLineIndent = args.first_line_indent !== undefined
+          ? Number(args.first_line_indent)
+          : (p.isListItem ? 0 : theme.firstLineIndent);
+        if (!p.isListItem) p.leftIndent = 0;
+        counts.body++;
+      }
+    }
+    await ctx.sync();
+
+    return `已套用「${theme.label}」樣式：字型 ${font}，`
+      + `標題 ${theme.titleSize}pt／章節 ${theme.headingSize}pt／內文 ${theme.bodySize}pt，`
+      + `行距 ${theme.lineSpacing}pt、段後距 ${theme.spaceAfter}pt。\n`
+      + `處理了 ${counts.title} 個標題、${counts.heading} 個章節標題、${counts.body} 個內文段落`
+      + `${counts.aside ? `、${counts.aside} 個圖說或目錄項` : ''}。\n`
+      + '公式、圖片段落沒有動——把它們改成內文字型會讓公式不像公式。';
   });
 }
 
@@ -1964,6 +2148,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_link':
       case 'word_page_design':
       case 'word_normalize_layout':
+      case 'word_apply_theme':
       case 'word_insert_textbox':
       case 'word_replace_all': {
         // Every one of these changes the document, so every one is photographed
@@ -1987,6 +2172,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_link: link,
           word_page_design: pageDesign,
           word_normalize_layout: normalizeLayout,
+          word_apply_theme: applyTheme,
           word_insert_textbox: insertTextBox,
           word_replace_all: replaceAll,
         }[tool];
@@ -2066,6 +2252,7 @@ export const meta = {
     word_insert_link: t('正在設定超連結…'),
     word_page_design: t('正在設計版面…'),
     word_normalize_layout: t('正在統一排版…'),
+    word_apply_theme: t('正在套用文件樣式…'),
     word_insert_textbox: t('正在插入文字方塊…'),
     word_replace_all: t('等待你確認取代…'),
     word_tracked_changes: t('正在處理追蹤修訂…'),
