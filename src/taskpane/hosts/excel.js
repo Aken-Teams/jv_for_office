@@ -44,6 +44,9 @@ const BASE_TOOLS = [
   'excel_create_chart',
   'excel_structure_op',
   'excel_table_ops',
+  // 資料清理：去重、統一寫法、補空白、拆併欄位。PRD 3.2 列了這四項，
+  // 在這支工具存在之前它們全都只能靠 run_script 現寫程式。
+  'excel_clean_data',
   // Native precedent tracing needs ExcelApi 1.12, but there is a formula-parsing
   // fallback that works on any build, so this one is always offered.
   'excel_trace_precedents',
@@ -106,7 +109,7 @@ export const meta = {
   /** Answered by the pane's own UI (askChoice), never by Office.js. */
   askUserTool: 'excel_ask_user',
   /** The one write whose cost can be counted BEFORE it happens. */
-  inspectTool: 'excel_write_range',
+  inspectTools: ['excel_write_range', 'excel_clean_data'],
   /** Model-written code: needs a snapshot, and its own progress caption. */
   scriptTool: 'excel_run_script',
 
@@ -131,6 +134,7 @@ export const meta = {
     excel_create_chart: t('正在建立圖表…'),
     excel_structure_op: t('等待你確認結構變更…'),
     excel_table_ops: t('正在整理表格…'),
+    excel_clean_data: t('等待你確認資料清理…'),
     excel_create_pivot: t('等待你確認建立樞紐…'),
     excel_trace_precedents: t('正在追蹤公式來源…'),
     excel_sheet_style: t('正在調整版面…'),
@@ -148,6 +152,7 @@ export const meta = {
     excel_create_chart: t('正在設定圖表…'),
     excel_create_pivot: t('正在設定樞紐分析表…'),
     excel_format_range: t('正在決定格式…'),
+    excel_clean_data: t('正在檢查資料…'),
     excel_manage_sheet: t('正在準備工作表變更…'),
   }),
 
@@ -467,7 +472,18 @@ async function search(args) {
  * what turns "允許這次寫入？" into "這會蓋掉 14 格既有資料", which is the
  * difference between a dialog people read and one they click through.
  */
-export async function inspectWrite(args) {
+/**
+ * The confirmation card's look-before-you-ask step. One entry point taking the
+ * tool name, because the shell only knows names — WHICH calls can be costed, and
+ * how, is the host's business and nobody else's.
+ */
+export async function inspectWrite(tool, args) {
+  if (tool === 'excel_clean_data') return inspectClean(args);
+  return inspectWriteRange(args);
+}
+
+/** What excel_write_range is about to overwrite. */
+async function inspectWriteRange(args) {
   const grid = args.formulas || args.values || [];
   const rows = grid.length;
   const cols = rows ? grid[0].length : 0;
@@ -1060,6 +1076,388 @@ async function tableOps(args) {
     }
 
     return `錯誤：未知的 op「${op}」。`;
+  });
+}
+
+/* ── clean:start ─ test/clean-data.test.mjs slices the source from here ─ */
+
+/**
+ * Reading a whole block into JS is cheap; the cap is about not hanging Excel on
+ * an accidental A:XFD. Far above the 20 000-cell READ limit on purpose — those
+ * cells go into the model's context, these never leave the pane.
+ */
+const MAX_CLEAN_CELLS = 200000;
+
+/** Full-width ！ through ～ sit exactly 0xFEE0 above their ASCII twins. */
+const toHalfWidth = (s) => s
+  .replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/　/g, ' ');
+
+/**
+ * Text that means a number → a number. Handles what exported reports actually
+ * contain: thousands separators, a currency mark, a trailing %, and accounting's
+ * (1,234) for negatives.
+ *
+ * Returns null when the text is not a number — and null is also the answer for
+ * '0012', because an ID with leading zeros is text and "cleaning" it to 12
+ * destroys it. Same for anything past 15 digits, which is where IEEE doubles
+ * start silently rounding account numbers.
+ */
+function textToNumber(raw) {
+  const s = toHalfWidth(String(raw)).trim();
+  if (!s) return null;
+  const neg = /^\((.*)\)$/.exec(s);
+  const body = neg ? neg[1] : s;
+  const pct = /%$/.test(body);
+  const bare = body.replace(/%$/, '').replace(/[,\s]/g, '').replace(/^(NT|[$¥€£])+/i, '');
+  if (!/^-?\d+(\.\d+)?$/.test(bare)) return null;
+  if (/^-?0\d/.test(bare)) return null;              // 0012 is an ID, not 12
+  if (bare.replace(/[-.]/g, '').length > 15) return null;
+  const n = Number(bare);
+  if (!Number.isFinite(n)) return null;
+  return (neg ? -1 : 1) * (pct ? n / 100 : n);
+}
+
+/** Excel's day 0 is 1899-12-30, which is how its 1900-leap-year bug shakes out. */
+const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
+
+/**
+ * Text that means a date → an Excel serial number.
+ *
+ * 民國年 is in here because it is the reason this exists: a government or ERP
+ * export writes 113/1/5, Excel stores it as text, every date formula downstream
+ * returns #VALUE!, and no amount of 儲存格格式 fixes it because the cell was never
+ * a date. A year of three digits or fewer is read as 民國 and 1911 added.
+ *
+ * Deliberately narrow: y/m/d and y-m-d only. Nothing here guesses whether 3/4/24
+ * is March or April — that is a question about the person's locale, not about
+ * the data, and getting it wrong silently is worse than not converting at all.
+ */
+function textToDateSerial(raw) {
+  const s = toHalfWidth(String(raw)).trim().replace(/[年月]/g, '/').replace(/日$/, '');
+  const m = /^(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(s);
+  if (!m) return null;
+  let y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (m[1].length <= 3) y += 1911;                   // 民國
+  if (y < 1900 || y > 9999 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const t = Date.UTC(y, mo - 1, d);
+  const back = new Date(t);
+  // Rejects 2024/2/31, which Date.UTC would have rolled forward into March.
+  if (back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return null;
+  return Math.round((t - EXCEL_EPOCH_UTC) / 86400000);
+}
+
+const isBlank = (v) => v === '' || v === null || v === undefined;
+const isFormula = (f) => typeof f === 'string' && f.startsWith('=');
+
+/**
+ * Work out what a clean-up would change — from the values alone, with no Office
+ * object anywhere in it.
+ *
+ * Pure on purpose, and that is the whole design of this tool. The confirmation
+ * card has to say 「會刪掉 37 列重複資料」 BEFORE anything happens, and PRD 3.1
+ * requires that number to be honest. Computing it twice — once to show, once to
+ * do — is exactly how the two drift apart. So the card and the edit call this
+ * same function: the card renders the counts and throws the grid away, the edit
+ * writes the grid. It also means every rule in here is testable without an Excel.
+ *
+ * @param values    what the block currently shows
+ * @param formulas  the same block's formulas, so cells that compute are left alone
+ * @returns {{grid, numberFormat, cells, rows, blocked, note}}
+ *          grid          the block as it should end up (null = nothing to do)
+ *          numberFormat  same shape, sparse; only where the op has an opinion
+ *          cells / rows  how many cells changed / how many rows went away
+ *          blocked       a sentence for the model when the op must not run at all
+ */
+function planClean(op, args, values, formulas) {
+  const rows = values.length;
+  const cols = rows ? values[0].length : 0;
+  const out = values.map(r => r.slice());
+  const nf = values.map(r => r.map(() => null));
+  const hasHeaders = args.has_headers !== false;
+  const first = hasHeaders ? 1 : 0;
+  const nothing = { grid: null, numberFormat: null, cells: 0, rows: 0, blocked: null, note: '' };
+
+  /** Which columns of the block this op may touch. Omitted = all of them. */
+  const inScope = (c) => !Array.isArray(args.columns) || args.columns.length === 0
+    || args.columns.map(Number).includes(c);
+
+  if (op === 'dedupe') {
+    // Moving a row up rewrites nothing inside its formulas, so every relative
+    // reference in it would quietly start pointing at a different row. There is
+    // no safe way to dedupe across that, and doing it anyway produces a sheet
+    // that looks right and computes wrong — the worst outcome a cleaning tool
+    // has available. Refuse, and say what to do instead.
+    for (let r = first; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (isFormula(formulas[r][c])) {
+          return {
+            ...nothing,
+            blocked: '這個範圍裡有公式。去重會把資料列往上搬，公式的相對參照就會指到別的列，'
+              + '結果是看起來對但算錯。請先把公式貼成值，或改成只框選純資料的欄位再重試。',
+          };
+        }
+      }
+    }
+    const keys = Array.isArray(args.key_columns) && args.key_columns.length
+      ? args.key_columns.map(Number).filter(c => c >= 0 && c < cols)
+      : Array.from({ length: cols }, (_, i) => i);
+    const seen = new Set();
+    const kept = values.slice(0, first);
+    let removed = 0;
+    for (let r = first; r < rows; r++) {
+      // Compared as trimmed text: an export where one row says 'A001 ' and the
+      // next says 'A001' has two rows that any person would call the same.
+      // Joined on NUL because it is the one character a cell cannot hold — any
+      // printable separator lets ['a b','c'] and ['a','b c'] collide into the
+      // same key and silently drop a row that was never a duplicate.
+      const k = keys.map(c => String(values[r][c] ?? '').trim()).join('\u0000');
+      if (seen.has(k)) { removed++; continue; }
+      seen.add(k);
+      kept.push(values[r]);
+    }
+    if (!removed) return { ...nothing, note: '沒有重複的資料列。' };
+    const grid = kept.map(r => r.slice());
+    while (grid.length < rows) grid.push(new Array(cols).fill(''));
+    return { grid, numberFormat: null, cells: 0, rows: removed, blocked: null, note: `剩下 ${kept.length - first} 列` };
+  }
+
+  if (op === 'normalize') {
+    const trim = args.trim !== false;
+    const collapse = args.collapse_spaces !== false;
+    const half = !!args.half_width;
+    const toNum = !!args.to_number;
+    const toDate = !!args.to_date;
+    const letterCase = String(args.letter_case || 'none');
+    let changed = 0;
+    for (let r = first; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (!inScope(c) || isFormula(formulas[r][c])) continue;
+        const v = values[r][c];
+        if (typeof v !== 'string' || v === '') continue;
+        let s = v;
+        if (half) s = toHalfWidth(s);
+        if (trim) s = s.trim();
+        if (collapse) s = s.replace(/\s+/g, ' ');
+        if (letterCase === 'upper') s = s.toUpperCase();
+        else if (letterCase === 'lower') s = s.toLowerCase();
+        let value = s;
+        if (toDate) {
+          const serial = textToDateSerial(s);
+          if (serial !== null) { value = serial; nf[r][c] = 'yyyy/m/d'; }
+        }
+        if (typeof value === 'string' && toNum) {
+          const n = textToNumber(s);
+          if (n !== null) value = n;
+        }
+        if (value !== v) { out[r][c] = value; changed++; }
+      }
+    }
+    return changed
+      ? { grid: out, numberFormat: nf, cells: changed, rows: 0, blocked: null, note: '' }
+      : { ...nothing, note: '這個範圍裡沒有需要統一的寫法。' };
+  }
+
+  if (op === 'fill') {
+    const method = String(args.method || 'down');
+    let changed = 0;
+    if (method === 'down') {
+      // The merged-cell export: a category written once with the rows under it
+      // left blank. Reads fine to a person, groups and pivots terribly.
+      for (let c = 0; c < cols; c++) {
+        if (!inScope(c)) continue;
+        let carry = null;
+        for (let r = first; r < rows; r++) {
+          if (isFormula(formulas[r][c])) { carry = null; continue; }
+          if (!isBlank(values[r][c])) { carry = values[r][c]; continue; }
+          if (carry === null) continue;
+          out[r][c] = carry;
+          changed++;
+        }
+      }
+    } else {
+      const filler = args.fill_value === undefined ? 0 : args.fill_value;
+      for (let r = first; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (!inScope(c) || isFormula(formulas[r][c]) || !isBlank(values[r][c])) continue;
+          out[r][c] = filler;
+          changed++;
+        }
+      }
+    }
+    return changed
+      ? { grid: out, numberFormat: null, cells: changed, rows: 0, blocked: null, note: '' }
+      : { ...nothing, note: '這個範圍裡沒有空白格要補。' };
+  }
+
+  if (op === 'split') {
+    if (cols < 2) {
+      return {
+        ...nothing,
+        blocked: '拆欄的 range 要同時含來源欄和放結果的欄，例如 B2:D50 是把 B 拆進 B、C、D。'
+          + '先確認右邊那幾欄是空的，或接受它們會被蓋掉。',
+      };
+    }
+    const sep = String(args.delimiter ?? ',');
+    const keep = !!args.keep_source;
+    // keep_source: the source column stays as it was and the parts start one to
+    // its right. Otherwise the source is replaced by its own first part, which is
+    // what Excel's 資料剖析 does and what people expect.
+    const firstOut = keep ? 1 : 0;
+    const slots = cols - firstOut;
+    let changed = 0;
+    let overflow = 0;
+    for (let r = first; r < rows; r++) {
+      const v = values[r][0];
+      if (isFormula(formulas[r][0]) || isBlank(v)) continue;
+      const parts = String(v).split(sep).map(p => p.trim());
+      if (parts.length > slots) overflow++;
+      for (let i = 0; i < slots; i++) {
+        // The tail is cleared as well as filled, or a shorter row leaves the
+        // previous row's third part sitting next to it.
+        const want = i < parts.length ? parts[i] : '';
+        if (out[r][firstOut + i] !== want) { out[r][firstOut + i] = want; changed++; }
+      }
+    }
+    if (!changed) return { ...nothing, note: `沒有任何一格含有分隔符號「${sep}」。` };
+    return {
+      grid: out,
+      numberFormat: null,
+      cells: changed,
+      rows: 0,
+      blocked: null,
+      note: overflow ? `有 ${overflow} 列拆出來超過 ${slots} 欄，多的被丟掉了` : '',
+    };
+  }
+
+  if (op === 'merge_columns') {
+    if (cols < 2) return { ...nothing, blocked: '併欄的 range 至少要兩欄。' };
+    const sep = String(args.separator ?? '');
+    const keep = !!args.keep_source;
+    let changed = 0;
+    for (let r = first; r < rows; r++) {
+      const parts = [];
+      let skip = false;
+      for (let c = 0; c < cols; c++) {
+        if (isFormula(formulas[r][c])) { skip = true; break; }
+        const v = values[r][c];
+        // Blank cells are skipped rather than joined, or a missing middle column
+        // turns every row into 「台北市－－信義路」.
+        if (!isBlank(v)) parts.push(String(v).trim());
+      }
+      if (skip || !parts.length) continue;
+      const joined = parts.join(sep);
+      if (out[r][0] !== joined) { out[r][0] = joined; changed++; }
+      if (!keep) {
+        for (let c = 1; c < cols; c++) {
+          if (isBlank(out[r][c])) continue;
+          out[r][c] = '';
+          changed++;
+        }
+      }
+    }
+    return changed
+      ? { grid: out, numberFormat: null, cells: changed, rows: 0, blocked: null, note: '' }
+      : { ...nothing, note: '沒有需要合併的內容。' };
+  }
+
+  return { ...nothing, blocked: `未知的 op「${op}」。可用的是 dedupe、normalize、fill、split、merge_columns。` };
+}
+
+/* ── clean:end ──────────────────────────────────────── */
+
+/** What the confirmation card says a clean-up is about to cost. */
+const CLEAN_RISK = {
+  dedupe: (p) => t('會刪掉 {0} 列重複資料（{1}）。', p.rows, p.note),
+  normalize: (p) => t('會統一 {0} 格的寫法。', p.cells),
+  fill: (p) => t('會補上 {0} 格空白。', p.cells),
+  split: (p) => t('會改寫 {0} 格，原本在那裡的內容會被蓋掉。', p.cells),
+  merge_columns: (p) => t('會改寫 {0} 格，原本在那裡的內容會被蓋掉。', p.cells),
+};
+
+/**
+ * Load the block a clean op works on, and plan the change without touching it.
+ * Shared by inspectClean (show it) and cleanData (do it).
+ */
+async function readCleanBlock(ctx, args) {
+  const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
+  sheet.load('isNullObject');
+  await ctx.sync();
+  if (sheet.isNullObject) return { error: `找不到工作表「${args.sheet}」` };
+
+  // OrNullObject, not getUsedRange: on an empty sheet the plain one throws, and
+  // 「這張表是空的」 is an answer the model can act on, not an error to report.
+  const target = args.range ? sheet.getRange(String(args.range)) : sheet.getUsedRangeOrNullObject(true);
+  target.load('isNullObject,address,rowCount,columnCount,values,formulas,numberFormat');
+  await ctx.sync();
+  if (target.isNullObject) return { error: `工作表「${args.sheet}」是空的，沒有東西可以清理。` };
+
+  const cells = target.rowCount * target.columnCount;
+  if (cells > MAX_CLEAN_CELLS) {
+    return { error: `範圍太大（${cells} 格，上限 ${MAX_CLEAN_CELLS} 格）。請分批處理。` };
+  }
+  return { sheet, target, plan: planClean(String(args.op || ''), args, target.values, target.formulas) };
+}
+
+/** Look at a clean-up WITHOUT doing it — powers the confirmation card. */
+async function inspectClean(args) {
+  return Excel.run(async (ctx) => {
+    const b = await readCleanBlock(ctx, args);
+    if (b.error) return { ok: false, error: b.error };
+    if (b.plan.blocked) return { ok: false, error: b.plan.blocked };
+
+    const risk = CLEAN_RISK[String(args.op || '')];
+    return {
+      ok: true,
+      address: bareAddress(b.target.address),
+      // No grid means the op found nothing to change. Saying that on the card is
+      // better than an empty confirmation the person has to puzzle over.
+      risk: b.plan.grid && risk ? risk(b.plan) : (b.plan.note || t('這個範圍沒有需要清理的地方。')),
+    };
+  });
+}
+
+/**
+ * 資料清理 —— 去重、統一格式、補齊缺漏、拆欄、併欄。
+ *
+ * Every op rewrites ONE rectangle and never inserts or deletes anything, which
+ * is what makes the existing range snapshot enough to undo all five: put the old
+ * formulas and number formats back over the same address and the sheet is exactly
+ * as it was. Dedupe compacts its rows upward inside the block and blanks the tail
+ * rather than deleting rows, for that same reason — a real row delete drags
+ * everything below the block up with it, and no range snapshot can put that back.
+ */
+async function cleanData(args) {
+  return Excel.run(async (ctx) => {
+    const b = await readCleanBlock(ctx, args);
+    if (b.error) return { text: `錯誤：${b.error}` };
+    if (b.plan.blocked) return { text: `錯誤：${b.plan.blocked}` };
+    if (!b.plan.grid) return { text: b.plan.note || '這個範圍沒有需要清理的地方，什麼都沒改。' };
+
+    const address = bareAddress(b.target.address);
+    const snapshot = {
+      sheet: String(args.sheet || ''),
+      address,
+      formulas: b.target.formulas.map(r => r.slice()),
+      numberFormat: b.target.numberFormat.map(r => r.slice()),
+    };
+
+    // numberFormat merged rather than replaced: writing the plan's grid over the
+    // whole block would reset every currency and percentage in it to General.
+    if (b.plan.numberFormat) {
+      b.target.numberFormat = b.target.numberFormat
+        .map((row, r) => row.map((cur, c) => b.plan.numberFormat[r][c] || cur));
+    }
+    b.target.values = b.plan.grid;
+    await ctx.sync();
+
+    const done = b.plan.rows ? `已刪掉 ${b.plan.rows} 列重複資料` : `已清理 ${b.plan.cells} 格`;
+    return {
+      text: `${done}${b.plan.note ? `（${b.plan.note}）` : ''}，範圍 ${args.sheet}!${address}。`,
+      snapshot,
+    };
   });
 }
 
@@ -1861,6 +2259,10 @@ export async function executeTool(tool, args, opts = {}) {
       case 'excel_create_chart':   return { ok: true, content: await createChart(args || {}) };
       case 'excel_structure_op':   return { ok: true, content: await structureOp(args || {}) };
       case 'excel_table_ops':      return { ok: true, content: await tableOps(args || {}) };
+      case 'excel_clean_data': {
+        const r = await cleanData(args || {});
+        return { ok: true, content: r.text, snapshot: r.snapshot };
+      }
       case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };

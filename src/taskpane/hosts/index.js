@@ -21,7 +21,7 @@
  *   meta              descriptor — see hosts/excel.js for what is in it
  *   supportedTools()  what THIS build can execute on THIS host
  *   executeTool(tool, args, opts)  → { ok, content?, error?, snapshot? }
- *   inspectWrite(args)             → what a write would cost, for the dialog
+ *   inspectWrite(tool, args)       → what a write would cost, for the dialog
  *   restoreSnapshot(snap)          → { kind, … } describing what came back
  *   goTo(a, b)                     → follow a citation; false if not found
  *   getDocumentName()              → title bar text

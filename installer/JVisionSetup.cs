@@ -28,6 +28,7 @@
 // 注意：csc.exe 是 C# 5，不能用字串內插（$"..."）、?. 或運算式主體成員。
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -43,8 +44,13 @@ namespace JVisionSetup
 {
     internal static class Program
     {
-        public const string AppName = "JVision for Excel";
-        public const string ShortName = "JVisionForExcel";
+        public const string AppName = "JVision for Office";
+        public const string ShortName = "JVisionForOffice";
+        /// <summary>舊版只裝 Excel，登記在別的名字底下。裝新版時要順手清掉，
+        /// 否則「應用程式和功能」裡會看到兩筆，而舊的那筆指向一個已經不存在的解除安裝程式。</summary>
+        public const string LegacyAppName = "JVision for Excel";
+        public const string LegacyUninstallKey =
+            @"Software\Microsoft\Windows\CurrentVersion\Uninstall\JVisionForExcel";
         /// <summary>開發用網址。manifest 裡所有這個字串都會被換成 /url 指定的位址。</summary>
         public const string DevUrl = "https://localhost:3443";
 
@@ -52,6 +58,40 @@ namespace JVisionSetup
         public const string OfficeKey = @"SOFTWARE\Microsoft\Office\16.0";
         public const string UninstallKey =
             @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + ShortName;
+
+        /// <summary>
+        /// 一個主應用程式一列。加 PowerPoint 就在這裡多一列，其餘都不用動——
+        /// File 同時是嵌入資源的名字和裝到磁碟上的檔名，兩邊一致就不會對不上。
+        /// </summary>
+        public sealed class HostSpec
+        {
+            public readonly string Key;
+            public readonly string File;
+            public readonly string App;
+            public readonly string Process;
+            public HostSpec(string key, string file, string app, string process)
+            {
+                Key = key; File = file; App = app; Process = process;
+            }
+        }
+
+        public static readonly HostSpec[] Hosts = new HostSpec[]
+        {
+            new HostSpec("excel", "excel.xml", "Excel", "EXCEL"),
+            new HostSpec("word",  "word.xml",  "Word",  "WINWORD"),
+        };
+
+        /// <summary>沒指定就是全部。不認得的名字直接忽略，不要因為一個錯字就什麼都不裝。</summary>
+        public static HostSpec[] Resolve(string[] keys)
+        {
+            if (keys == null || keys.Length == 0) return Hosts;
+            List<HostSpec> picked = new List<HostSpec>();
+            foreach (HostSpec h in Hosts)
+                foreach (string k in keys)
+                    if (string.Equals(h.Key, k, StringComparison.OrdinalIgnoreCase) && !picked.Contains(h))
+                        picked.Add(h);
+            return picked.Count > 0 ? picked.ToArray() : Hosts;
+        }
 
         public static string InstallDir
         {
@@ -97,6 +137,7 @@ namespace JVisionSetup
                 "命令列（給 IT 派送用）：\n" +
                 "  /silent              不顯示畫面，直接安裝\n" +
                 "  /url:<網址>          指定任務窗格伺服器\n" +
+                "  /hosts:excel,word    只裝指定的主應用程式（不給就全裝）\n" +
                 "  /log:<檔案路徑>      寫入記錄檔\n" +
                 "  /uninstall           移除\n\n" +
                 "離開代碼：0 成功、1 失敗、2 這台電腦沒有 Office 16.0、3 使用者取消\n\n" +
@@ -111,7 +152,7 @@ namespace JVisionSetup
             {
                 DialogResult ok = MessageBox.Show(
                     "要移除 " + AppName + " 嗎？\n\n" +
-                    "這只會把增益集從 Excel 移除，不會動到任何活頁簿。",
+                    "這只會把增益集從 Office 移除，不會動到任何檔案。",
                     AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (ok != DialogResult.Yes) return ExitCode.Cancelled;
             }
@@ -120,7 +161,7 @@ namespace JVisionSetup
                 Installer.Uninstall();
                 Log.Write("uninstalled");
                 if (!o.Silent)
-                    MessageBox.Show("已移除。請重新啟動 Excel。",
+                    MessageBox.Show("已移除。請重新啟動 Office。",
                         AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return ExitCode.Ok;
             }
@@ -146,7 +187,8 @@ namespace JVisionSetup
             }
             try
             {
-                Installer.Install(o.Url);
+                Program.HostSpec[] hosts = Resolve(o.Hosts);
+                Installer.Install(o.Url, hosts);
                 Log.Write("installed to " + InstallDir + (o.Url == null ? "" : "  url=" + o.Url));
                 return ExitCode.Ok;
             }
@@ -178,6 +220,8 @@ namespace JVisionSetup
         public bool Help;
         public string Url;
         public string LogPath;
+        /// <summary>null / 空 = 全部。例：/hosts:word 或 /hosts:excel,word</summary>
+        public string[] Hosts;
 
         public static Options Parse(string[] args)
         {
@@ -190,6 +234,8 @@ namespace JVisionSetup
                 else if (Is(s, "help") || Is(s, "?") || Is(s, "h")) o.Help = true;
                 else if (Starts(s, "url")) o.Url = Value(s);
                 else if (Starts(s, "log")) o.LogPath = Value(s);
+                else if (Starts(s, "hosts") || Starts(s, "host"))
+                    o.Hosts = Value(s).Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
             }
             return o;
         }
@@ -267,14 +313,14 @@ namespace JVisionSetup
             catch { return null; }
         }
 
-        /// <summary>嵌在 exe 裡的 manifest 原文。</summary>
-        public static string ReadEmbeddedManifest()
+        /// <summary>嵌在 exe 裡的某一份 manifest 原文（excel.xml / word.xml）。</summary>
+        public static string ReadEmbeddedManifest(string file)
         {
             Assembly asm = Assembly.GetExecutingAssembly();
             string name = asm.GetManifestResourceNames()
-                .FirstOrDefault(n => n.EndsWith("manifest.xml", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(n => n.EndsWith(file, StringComparison.OrdinalIgnoreCase));
             if (name == null)
-                throw new InvalidOperationException("這個安裝程式沒有內嵌 manifest.xml，請重新建置。");
+                throw new InvalidOperationException("這個安裝程式沒有內嵌 " + file + "，請重新建置。");
             using (Stream s = asm.GetManifestResourceStream(name))
             using (StreamReader r = new StreamReader(s, new UTF8Encoding(false)))
             {
@@ -315,45 +361,79 @@ namespace JVisionSetup
             using (RegistryKey k = Registry.CurrentUser.OpenSubKey(Program.UninstallKey)) { return k != null; }
         }
 
-        public static bool ExcelIsRunning()
+        /// <summary>選定的主應用程式裡，哪幾個正開著。Office 只在啟動時讀登錄檔。</summary>
+        public static string[] RunningApps(Program.HostSpec[] hosts)
         {
-            try { return Process.GetProcessesByName("EXCEL").Length > 0; }
-            catch { return false; }
+            List<string> open = new List<string>();
+            foreach (Program.HostSpec h in hosts)
+            {
+                try { if (Process.GetProcessesByName(h.Process).Length > 0) open.Add(h.App); }
+                catch { }
+            }
+            return open.ToArray();
         }
 
-        /// <summary>安裝。baseUrl 為空就沿用 manifest 原本的網址。</summary>
-        public static void Install(string baseUrl)
+        /// <summary>
+        /// 安裝。baseUrl 為空就沿用 manifest 原本的網址；hosts 沒給就全裝。
+        ///
+        /// 每個主應用程式一份 manifest、一個登錄值，但只登記一筆解除安裝資訊——
+        /// 使用者心裡那個「程式」是 JVision，不是三個東西。
+        /// </summary>
+        public static void Install(string baseUrl, Program.HostSpec[] hosts)
         {
-            string raw = ReadEmbeddedManifest();
-            XDocument doc = XDocument.Parse(raw);
-
-            string id = Field(doc, "Id");
-            string version = Field(doc, "Version");
-            string publisher = Field(doc, "ProviderName");
-            if (string.IsNullOrEmpty(id))
-                throw new InvalidOperationException("manifest.xml 裡沒有 <Id>。");
+            if (hosts == null || hosts.Length == 0) hosts = Program.Hosts;
 
             if (!HasOffice16())
                 throw new InvalidOperationException(
                     "這台電腦沒有偵測到 Office 16.0（Microsoft 365 / Office 2016 以後）。\n" +
-                    Program.AppName + " 需要 Microsoft 365 版的 Excel。");
+                    Program.AppName + " 需要 Microsoft 365 版的 Office。");
 
             Directory.CreateDirectory(Program.InstallDir);
 
-            // 換網址。開發用的 localhost 和先前裝過的內網位址都會被換掉，
-            // 所以重跑安裝程式換環境是安全的。
-            if (!string.IsNullOrEmpty(baseUrl))
+            string version = null;
+            string publisher = null;
+            List<string> installedApps = new List<string>();
+
+            foreach (Program.HostSpec host in hosts)
             {
-                string trimmed = baseUrl.TrimEnd('/');
-                // $ in the replacement is a backreference to Regex.Replace, and an
-                // URL can legitimately contain one.
-                raw = Regex.Replace(raw, Regex.Escape(Program.DevUrl), trimmed.Replace("$", "$$"));
+                string raw = ReadEmbeddedManifest(host.File);
+                XDocument doc = XDocument.Parse(raw);
+
+                string id = Field(doc, "Id");
+                if (string.IsNullOrEmpty(id))
+                    throw new InvalidOperationException(host.File + " 裡沒有 <Id>。");
+                if (version == null) version = Field(doc, "Version");
+                if (publisher == null) publisher = Field(doc, "ProviderName");
+
+                // 換網址。開發用的 localhost 和先前裝過的內網位址都會被換掉，
+                // 所以重跑安裝程式換環境是安全的。
+                if (!string.IsNullOrEmpty(baseUrl))
+                {
+                    string trimmed = baseUrl.TrimEnd('/');
+                    // $ in the replacement is a backreference to Regex.Replace, and
+                    // an URL can legitimately contain one.
+                    raw = Regex.Replace(raw, Regex.Escape(Program.DevUrl), trimmed.Replace("$", "$$"));
+                }
+
+                // manifest 一定要放在穩定的位置：留在下載資料夾的檔案會被清掉，
+                // 之後 Office 就載入失敗，而且失敗得很安靜。
+                string manifestPath = Path.Combine(Program.InstallDir, host.File);
+                File.WriteAllText(manifestPath, raw, new UTF8Encoding(false));
+
+                // Office 認的就是這一個值：名稱是增益集 Id，資料是 manifest 的絕對路徑。
+                using (RegistryKey wef = Registry.CurrentUser.CreateSubKey(Program.WefKey))
+                {
+                    // 舊版工具用 manifest 路徑當值名稱。兩種都清掉再寫，
+                    // 免得同一個增益集在 Office 的清單裡出現兩次。
+                    try { wef.DeleteValue(manifestPath, false); }
+                    catch { }
+                    wef.SetValue(id, manifestPath, RegistryValueKind.String);
+                }
+                installedApps.Add(host.App);
+                Log.Write("registered " + host.App + " id=" + id);
             }
 
-            // manifest 一定要放在穩定的位置：留在下載資料夾的檔案會被清掉，
-            // 之後 Excel 就載入失敗，而且失敗得很安靜。
-            string manifestPath = Path.Combine(Program.InstallDir, "manifest.xml");
-            File.WriteAllText(manifestPath, raw, new UTF8Encoding(false));
+            CleanLegacyInstall();
 
             // 把自己複製進去，「應用程式和功能」那顆解除安裝按鈕才不會在使用者
             // 清掉下載資料夾之後失效。
@@ -362,19 +442,10 @@ namespace JVisionSetup
             if (!string.Equals(selfSource, selfTarget, StringComparison.OrdinalIgnoreCase))
                 File.Copy(selfSource, selfTarget, true);
 
-            // Excel 認的就是這一個值：名稱是增益集 Id，資料是 manifest 的絕對路徑。
-            using (RegistryKey wef = Registry.CurrentUser.CreateSubKey(Program.WefKey))
-            {
-                // 舊版工具用 manifest 路徑當值名稱。兩種都清掉再寫，
-                // 免得同一個增益集在 Excel 的清單裡出現兩次。
-                try { wef.DeleteValue(manifestPath, false); }
-                catch { }
-                wef.SetValue(id, manifestPath, RegistryValueKind.String);
-            }
-
             using (RegistryKey u = Registry.CurrentUser.CreateSubKey(Program.UninstallKey))
             {
-                u.SetValue("DisplayName", Program.AppName);
+                u.SetValue("DisplayName",
+                    Program.AppName + "（" + string.Join("、", installedApps.ToArray()) + "）");
                 if (!string.IsNullOrEmpty(version)) u.SetValue("DisplayVersion", version);
                 if (!string.IsNullOrEmpty(publisher)) u.SetValue("Publisher", publisher);
                 u.SetValue("InstallLocation", Program.InstallDir);
@@ -386,14 +457,61 @@ namespace JVisionSetup
             }
         }
 
-        public static void Uninstall()
+        /// <summary>
+        /// 把只裝 Excel 的舊版痕跡清掉。
+        ///
+        /// 舊版裝在別的資料夾、登記在別的名字底下，不清的話使用者會在
+        /// 「應用程式和功能」看到兩筆 JVision，而舊的那筆按下去會找不到檔案。
+        /// 登錄檔那邊不用特別處理：Uninstall() 本來就會掃掉所有指向舊資料夾的值。
+        /// </summary>
+        public static void CleanLegacyInstall()
         {
-            string manifestPath = Path.Combine(Program.InstallDir, "manifest.xml");
-
-            string id = null;
             try
             {
-                if (File.Exists(manifestPath)) id = Field(XDocument.Load(manifestPath), "Id");
+                string legacyDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Program.LegacyAppName);
+                using (RegistryKey wef = Registry.CurrentUser.OpenSubKey(Program.WefKey, true))
+                {
+                    if (wef != null)
+                    {
+                        foreach (string name in wef.GetValueNames())
+                        {
+                            object val = wef.GetValue(name);
+                            string s = val == null ? "" : val.ToString();
+                            if (s.StartsWith(legacyDir, StringComparison.OrdinalIgnoreCase))
+                            {
+                                try { wef.DeleteValue(name, false); } catch { }
+                            }
+                        }
+                    }
+                }
+                try { Registry.CurrentUser.DeleteSubKeyTree(Program.LegacyUninstallKey, false); }
+                catch { }
+                if (Directory.Exists(legacyDir)) Directory.Delete(legacyDir, true);
+                Log.Write("cleaned legacy Excel-only install");
+            }
+            catch (Exception ex) { Log.Write("legacy cleanup skipped: " + ex.Message); }
+        }
+
+        public static void Uninstall()
+        {
+            // 每個主應用程式一份 manifest，所以這裡收集的是一串 Id。
+            List<string> ids = new List<string>();
+            try
+            {
+                if (Directory.Exists(Program.InstallDir))
+                {
+                    foreach (string f in Directory.GetFiles(Program.InstallDir, "*.xml"))
+                    {
+                        try
+                        {
+                            string one = Field(XDocument.Load(f), "Id");
+                            if (!string.IsNullOrEmpty(one)) ids.Add(one);
+                        }
+                        catch { }
+                    }
+                }
             }
             catch { }
 
@@ -401,7 +519,7 @@ namespace JVisionSetup
             {
                 if (wef != null)
                 {
-                    if (!string.IsNullOrEmpty(id)) { try { wef.DeleteValue(id, false); } catch { } }
+                    foreach (string one in ids) { try { wef.DeleteValue(one, false); } catch { } }
                     // Belt and braces: if the manifest was already gone we cannot look
                     // the Id up, and a value left pointing at a deleted file makes
                     // Excel fail to load an add-in that no longer exists.
@@ -442,6 +560,7 @@ namespace JVisionSetup
     {
         private readonly Options _opts;
         private TextBox _url;
+        private CheckBox[] _hostBoxes;
         private Button _install;
         private Button _remove;
         private Label _status;
@@ -459,7 +578,7 @@ namespace JVisionSetup
             MaximizeBox = false;
             MinimizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(430, 250);
+            ClientSize = new Size(430, 302);
             Font = new Font("Microsoft JhengHei UI", 9F);
             BackColor = Color.White;
 
@@ -467,7 +586,8 @@ namespace JVisionSetup
             string origin = "";
             try
             {
-                XDocument doc = XDocument.Parse(Installer.ReadEmbeddedManifest());
+                // 隨便一份都行——建置腳本把同一個版本號寫進每一份，網址也是同一個。
+                XDocument doc = XDocument.Parse(Installer.ReadEmbeddedManifest(Program.Hosts[0].File));
                 version = Installer.Field(doc, "Version");
                 origin = Installer.TaskpaneOrigin(doc);
             }
@@ -497,32 +617,54 @@ namespace JVisionSetup
 
             Label sub = new Label();
             sub.Text = string.IsNullOrEmpty(version)
-                ? "Excel 增益集"
-                : "Excel 增益集　版本 " + version;
+                ? "Office 增益集"
+                : "Office 增益集　版本 " + version;
             sub.ForeColor = Color.FromArgb(96, 96, 96);
             sub.SetBounds(textLeft + 2, 54, 330, 20);
             Controls.Add(sub);
 
+            Label pick = new Label();
+            pick.Text = "要安裝到哪幾個";
+            pick.SetBounds(26, 88, 200, 20);
+            Controls.Add(pick);
+
+            // 全選為預設，因為大多數人兩個都要。只想裝一個的人取消勾選就好，
+            // 而 IT 派送用 /hosts: ——兩邊走同一個 Resolve()。
+            Program.HostSpec[] preset = Program.Resolve(_opts.Hosts);
+            _hostBoxes = new CheckBox[Program.Hosts.Length];
+            for (int i = 0; i < Program.Hosts.Length; i++)
+            {
+                Program.HostSpec h = Program.Hosts[i];
+                CheckBox cb = new CheckBox();
+                cb.Text = h.App;
+                cb.Tag = h;
+                cb.Checked = Array.IndexOf(preset, h) >= 0;
+                cb.SetBounds(28 + i * 96, 110, 92, 24);
+                cb.CheckedChanged += OnHostToggled;
+                Controls.Add(cb);
+                _hostBoxes[i] = cb;
+            }
+
             Label urlLabel = new Label();
             urlLabel.Text = "伺服器網址";
-            urlLabel.SetBounds(26, 92, 100, 20);
+            urlLabel.SetBounds(26, 144, 100, 20);
             Controls.Add(urlLabel);
 
             _url = new TextBox();
             // Pre-filled from the manifest so the common case is "just press install",
             // editable so one exe serves every environment.
             _url.Text = _opts.Url != null ? _opts.Url : (origin != null ? origin : "");
-            _url.SetBounds(26, 112, 378, 26);
+            _url.SetBounds(26, 164, 378, 26);
             Controls.Add(_url);
 
             _status = new Label();
-            _status.SetBounds(26, 148, 378, 40);
+            _status.SetBounds(26, 200, 378, 40);
             _status.ForeColor = Color.FromArgb(96, 96, 96);
             Controls.Add(_status);
 
             _install = new Button();
             _install.Text = Installer.IsInstalled() ? "重新安裝" : "安裝";
-            _install.SetBounds(284, 198, 120, 34);
+            _install.SetBounds(284, 250, 120, 34);
             _install.BackColor = Color.FromArgb(16, 124, 65);
             _install.ForeColor = Color.White;
             _install.FlatStyle = FlatStyle.Flat;
@@ -533,7 +675,7 @@ namespace JVisionSetup
 
             _remove = new Button();
             _remove.Text = "移除";
-            _remove.SetBounds(156, 198, 116, 34);
+            _remove.SetBounds(156, 250, 116, 34);
             _remove.FlatStyle = FlatStyle.Flat;
             _remove.Visible = Installer.IsInstalled();
             _remove.Click += OnRemove;
@@ -542,8 +684,26 @@ namespace JVisionSetup
             if (!Installer.HasOffice16())
             {
                 _install.Enabled = false;
-                Say("這台電腦沒有偵測到 Microsoft 365 版的 Excel。", true);
+                Say("這台電腦沒有偵測到 Microsoft 365 版的 Office。", true);
             }
+        }
+
+        /// <summary>勾選的主應用程式。</summary>
+        private Program.HostSpec[] Chosen()
+        {
+            List<Program.HostSpec> picked = new List<Program.HostSpec>();
+            foreach (CheckBox cb in _hostBoxes)
+                if (cb.Checked) picked.Add((Program.HostSpec)cb.Tag);
+            return picked.ToArray();
+        }
+
+        /// <summary>一個都沒勾就沒有东西可裝，按鈕要跟著關掉——按了才說不行是很差的回饋。</summary>
+        private void OnHostToggled(object sender, EventArgs e)
+        {
+            if (!Installer.HasOffice16()) return;
+            bool any = Chosen().Length > 0;
+            _install.Enabled = any;
+            Say(any ? "" : "至少要選一個主應用程式。", !any);
         }
 
         private void Say(string text, bool warn)
@@ -559,14 +719,19 @@ namespace JVisionSetup
             Say("安裝中…", false);
             try
             {
-                Installer.Install(_url.Text.Trim());
+                Program.HostSpec[] chosen = Chosen();
+                Installer.Install(_url.Text.Trim(), chosen);
                 Log.Write("installed via UI");
-                // Excel only reads the registry at startup, so an open Excel will not
-                // show the button. Deliberately not killing it — there could be
+                string[] names = new string[chosen.Length];
+                for (int i = 0; i < chosen.Length; i++) names[i] = chosen[i].App;
+                string all = string.Join(" / ", names);
+                // Office only reads the registry at startup, so an open window will
+                // not show the button. Deliberately not killing it — there could be
                 // unsaved work in there.
-                string msg = Installer.ExcelIsRunning()
-                    ? "安裝完成。\n\nExcel 目前是開著的，請存檔後完全關閉 Excel 再重新開啟，「常用」分頁最右邊就會出現 JVision。"
-                    : "安裝完成。\n\n開啟 Excel 後，在「常用」分頁最右邊會看到 JVision。";
+                string[] open = Installer.RunningApps(chosen);
+                string msg = open.Length > 0
+                    ? "安裝完成。\n\n" + string.Join("、", open) + " 目前是開著的，請存檔後完全關閉再重新開啟，「常用」分頁最右邊就會出現 JVision。"
+                    : "安裝完成。\n\n開啟 " + all + " 後，在「常用」分頁最右邊會看到 JVision。";
                 MessageBox.Show(msg, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Close();
             }
@@ -582,13 +747,13 @@ namespace JVisionSetup
         {
             DialogResult ok = MessageBox.Show(
                 "要移除 " + Program.AppName + " 嗎？\n\n" +
-                "這只會把增益集從 Excel 移除，不會動到任何活頁簿。",
+                "這只會把增益集從 Office 移除，不會動到任何檔案。",
                 Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (ok != DialogResult.Yes) return;
             try
             {
                 Installer.Uninstall();
-                MessageBox.Show("已移除。請重新啟動 Excel。",
+                MessageBox.Show("已移除。請重新啟動 Office。",
                     Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Close();
             }

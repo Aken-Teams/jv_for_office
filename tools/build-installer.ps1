@@ -32,12 +32,14 @@ $ErrorActionPreference = 'Stop'
 $root      = Split-Path -Parent $PSScriptRoot
 $installer = Join-Path $root 'installer'
 $source    = Join-Path $installer 'JVisionSetup.cs'
-$manifest  = Join-Path $root 'manifest.xml'
+$manifestDir = Join-Path $root 'manifests'
 $outExe    = Join-Path $installer 'JVisionSetup.exe'
 $logo      = Join-Path $root 'assets\logo.png'
 
 if (-not (Test-Path $source))   { throw "找不到 $source" }
-if (-not (Test-Path $manifest)) { throw "找不到 $manifest" }
+if (-not (Test-Path $manifestDir)) { throw "找不到 $manifestDir" }
+$manifests = @(Get-ChildItem -Path $manifestDir -Filter '*.xml' | Sort-Object Name)
+if (-not $manifests.Count) { throw "$manifestDir 裡沒有 manifest。" }
 if (-not (Test-Path $logo))     { throw "找不到 $logo" }
 
 # csc.exe：64 位元優先，找不到就退回 32 位元（很舊的機器）。
@@ -50,19 +52,24 @@ if (-not $csc) {
 }
 
 # 版本號從 manifest 來，這樣 exe 的檔案內容和它安裝的東西不會對不上。
-[xml]$m = Get-Content -Path $manifest -Encoding UTF8 -Raw
-$version = $m.OfficeApp.Version
-if (-not $version) { throw "manifest.xml 裡沒有 <Version>。" }
+# 三份 manifest 的版本號由 npm run bump 寫成一致，這裡取第一份就行——
+# 但還是檢查一下，因為不一致的話使用者會看到一個版本、裝到另一個。
+$versions = $manifests | ForEach-Object { ([xml](Get-Content -Path $_.FullName -Encoding UTF8 -Raw)).OfficeApp.Version }
+$version = $versions | Select-Object -First 1
+if (-not $version) { throw "$($manifests[0].Name) 裡沒有 <Version>。" }
+if (($versions | Sort-Object -Unique).Count -gt 1) {
+  throw "manifests 裡的版本號不一致（$($versions -join '、')）。先跑 npm run bump。"
+}
 
 # AssemblyInfo 一起編進去，exe 的「內容」頁籤才有正常的說明和版本，
 # 而不是一片空白 —— 空白的屬性頁正是使用者不敢點的那種檔案。
 $asmInfo = Join-Path $installer 'AssemblyInfo.cs'
 @"
 using System.Reflection;
-[assembly: AssemblyTitle("JVision for Excel 安裝程式")]
-[assembly: AssemblyProduct("JVision for Excel")]
+[assembly: AssemblyTitle("JVision for Office 安裝程式")]
+[assembly: AssemblyProduct("JVision for Office")]
 [assembly: AssemblyCompany("PANJIT")]
-[assembly: AssemblyDescription("安裝 JVision for Excel 增益集")]
+[assembly: AssemblyDescription("安裝 JVision for Office 增益集（Excel / Word）")]
 [assembly: AssemblyVersion("$version")]
 [assembly: AssemblyFileVersion("$version")]
 "@ | Set-Content -Path $asmInfo -Encoding UTF8
@@ -73,7 +80,6 @@ $args = @(
   '/platform:anycpu'
   '/optimize+'
   "/out:$outExe"
-  "/resource:$manifest,manifest.xml"
   "/resource:$logo,logo.png"
   '/reference:System.dll'
   '/reference:System.Core.dll'
@@ -82,6 +88,10 @@ $args = @(
   '/reference:System.Xml.dll'
   '/reference:System.Xml.Linq.dll'
 )
+
+# 每份 manifest 各嵌一個資源，名字就是檔名——JVisionSetup.cs 的 HostSpec.File
+# 拿同一個字串去讀它，所以這裡多一份檔、那邊多一列，就多一個主應用程式。
+foreach ($mf in $manifests) { $args += "/resource:$($mf.FullName),$($mf.Name)" }
 
 # 圖示：exe 在檔案總管裡不能長得像個沒人認識的東西。
 $ico = Join-Path $installer 'JVision.ico'
@@ -117,7 +127,8 @@ if (-not $Sign) {
 }
 Write-Host ""
 Write-Host "IT 派送用法："
-Write-Host "  JVisionSetup.exe /silent /url:https://jvision.panjit.com.tw"
+Write-Host "  JVisionSetup.exe /silent /url:https://jvision.panjit.com.tw
+  JVisionSetup.exe /silent /hosts:word            # 只裝 Word"
 Write-Host "  JVisionSetup.exe /silent /uninstall"
 Write-Host "  離開代碼：0 成功、1 失敗、2 沒有 Office 16.0、3 使用者取消"
 Write-Host "  必須在使用者身分下執行（設定寫在 HKCU，不是 HKLM）。"

@@ -5,3 +5,4 @@ devserver.log
 config.json
 test/.snapshot-under-test.mjs
 test/.fit-under-test.mjs
+test/.clean-under-test.mjs

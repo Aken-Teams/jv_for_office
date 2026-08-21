@@ -206,8 +206,37 @@ Microsoft 365 系統管理中心 → 設定 → 整合式應用程式 → 增益
 
 所以你只要維護一份 manifest，不必為每個環境各存一份。
 
-發佈時把 `installer\` 和 `manifests\` 一起壓成 zip 給使用者就行。想更像「一個程式」的話，
-可以用 Inno Setup 把這兩個腳本包成單一個 `.exe` 並簽章——那一層還沒做，需要的話再加。
+### 單一執行檔（發給一般使用者用這個）
+
+[installer/JVisionSetup.exe](installer/JVisionSetup.exe) 把兩份 manifest **嵌進 exe 裡**，
+所以發出去的就是一個檔案，沒有「記得連 manifests 資料夾一起包」這種事。
+雙擊會開一個對話框，可以勾要裝哪幾個主應用程式、改伺服器網址。
+
+IT 派送：
+
+```powershell
+JVisionSetup.exe /silent                          # 兩個都裝
+JVisionSetup.exe /silent /hosts:word              # 只裝 Word
+JVisionSetup.exe /silent /url:https://jvision.panjit.com.tw
+JVisionSetup.exe /silent /uninstall
+```
+
+離開代碼：0 成功、1 失敗、2 這台電腦沒有 Office 16.0、3 使用者取消。
+「2」不是錯誤，是「這台機器本來就不是目標」，派送系統可以把它對到 not-applicable。
+
+**改過 manifest 之後要重新建置**，否則 exe 裡還是舊的版本號和網址：
+
+```bash
+npm run installer:build          # 用 .NET Framework 內建的 csc.exe，不需要裝 SDK
+```
+
+建置時會檢查兩份 manifest 的版本號一致——不一致的話使用者會看到一個版本、裝到另一個。
+
+**還沒簽章。** 沒簽章的 exe 會被 SmartScreen 攜，企業環境的防毒也常常直接隔離；
+要大量派送的話，`npm run installer:build -- -Sign -CertThumbprint <指紋>` 可以帶公司憑證簽。
+
+不想用 exe 的話，把 `installer\` 和 `manifests\` 壓成 zip 也一樣可以，
+使用者雙擊 `安裝.cmd`。
 
 ## 除錯
 

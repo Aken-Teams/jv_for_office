@@ -669,9 +669,16 @@ function askConfirm(summary, detail, meta, highRisk) {
     // `danger` is reserved for the ones the undo button cannot take back.
     card.className = highRisk ? 'confirm danger' : 'confirm';
     card.setAttribute('role', 'alertdialog');
-    const risk = detail && detail.occupied
-      ? `<div class="risk">${escapeHtml(t('目標範圍已有 {0} 格有內容{1}，會被覆蓋。', detail.occupied, detail.hadFormula ? t('（其中 {0} 格是公式）', detail.hadFormula) : ''))}</div>`
-      : '';
+    // `detail.risk` is a sentence the host wrote itself, for calls whose cost is
+    // not "N cells get overwritten" — 「會刪掉 37 列重複資料」 is the honest line
+    // for a dedupe, and PRD 3.1 asks this card to state the real impact, not a
+    // near-enough one. Falls back to the cell count for ordinary writes.
+    const riskText = detail && detail.risk
+      ? detail.risk
+      : (detail && detail.occupied
+        ? t('目標範圍已有 {0} 格有內容{1}，會被覆蓋。', detail.occupied, detail.hadFormula ? t('（其中 {0} 格是公式）', detail.hadFormula) : '')
+        : '');
+    const risk = riskText ? `<div class="risk">${escapeHtml(riskText)}</div>` : '';
     card.innerHTML = `
       <div class="confirm-head">
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
@@ -778,11 +785,12 @@ async function handleToolRequest(payload) {
 
   if (needsConfirm) {
     // Look before asking: the dialog is only useful if it says what will be lost.
-    // Only cell writes can be inspected this way — for a sheet delete or a sort
-    // there is no "target range" to count, so those fall back to the summary line.
+    // Only calls with a countable target are in meta.inspectTools — for a sheet
+    // delete or a sort there is nothing to count, so those fall back to the
+    // summary line the server wrote.
     let detail = null;
-    if (tool === host.meta.inspectTool) {
-      try { detail = await host.inspectWrite(args); } catch { /* fall back to the plain summary */ }
+    if ((host.meta.inspectTools || []).includes(tool)) {
+      try { detail = await host.inspectWrite(tool, args); } catch { /* fall back to the plain summary */ }
       if (detail && detail.ok === false) {
         await postToolResult(state.runId, callId, { ok: false, error: detail.error });
         setStatus('');

@@ -376,7 +376,7 @@ async function search(args) {
  * and how much text disappears. 「改寫第 12-14 段」 tells you nothing about
  * whether you are losing a sentence or three pages.
  */
-export async function inspectWrite(args) {
+export async function inspectWrite(_tool, args) {
   return Word.run(async (ctx) => {
     const items = await loadParagraphs(ctx);
     if (!items.length) return { ok: false, error: '這份文件是空的，沒有可以取代的段落。' };
@@ -1062,7 +1062,7 @@ export const meta = {
   mcpPrefix: 'mcp__word__',
   overview: { tool: 'word_get_overview', args: { preview_chars: OVERVIEW_PREVIEW_CHARS } },
   askUserTool: 'word_ask_user',
-  inspectTool: 'word_write_range',
+  inspectTools: ['word_write_range'],
   scriptTool: 'word_run_script',
 
   /**
