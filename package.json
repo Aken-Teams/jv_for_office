@@ -14,7 +14,7 @@
     "validate": "office-addin-manifest validate manifests/excel.xml && office-addin-manifest validate manifests/word.xml",
     "installer:icon": "node tools/make-installer-icon.mjs",
     "installer:build": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-installer.ps1",
-    "test": "node test/script-guard.test.mjs && node test/undo-snapshot.test.mjs && node test/fit-layout.test.mjs && node test/clean-data.test.mjs && node test/overview-shapes.test.mjs && node test/word-chart.test.mjs && node test/word-equation.test.mjs && node test/word-paragraph.test.mjs && node test/no-duplicates.test.mjs"
+    "test": "node test/script-guard.test.mjs && node test/undo-snapshot.test.mjs && node test/fit-layout.test.mjs && node test/clean-data.test.mjs && node test/overview-shapes.test.mjs && node test/word-chart.test.mjs && node test/word-equation.test.mjs && node test/word-paragraph.test.mjs && node test/word-table.test.mjs && node test/no-duplicates.test.mjs"
   },
   "devDependencies": {
     "office-addin-dev-certs": "^1.13.3",

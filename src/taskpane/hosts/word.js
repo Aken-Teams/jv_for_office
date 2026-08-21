@@ -29,6 +29,9 @@
 import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
 import { equationOoxml, xmlImbalance } from './omml.js';
+// Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the
+// first time somebody asks for a diagram.
+import { renderMermaid } from './mermaid.js';
 
 /** Cheap and synchronous; Office.js answers from a local table. */
 export function hasApi(version) {
@@ -66,7 +69,10 @@ const BASE_TOOLS = [
   'word_header_footer',
   'word_insert_break',
   'word_insert_cover',
+  'word_insert_block',
+  'word_insert_layout',
   'word_insert_chart',
+  'word_insert_diagram',
   'word_insert_equation',
   'word_insert_link',
   'word_page_design',
@@ -724,11 +730,35 @@ async function manageList(args) {
   });
 }
 
+/**
+ * A table with the parts that make it look like a document rather than a grid.
+ *
+ * ── What was missing ──
+ * The first version could put values in cells and pick a built-in style, and
+ * that is genuinely most of the way there for a comparison table. It is nowhere
+ * near enough for a quotation, and the difference is visible at a glance:
+ * amounts left-aligned instead of right, and a 總計 row that looks exactly like
+ * the rows above it. A price column that does not line up on the decimal reads
+ * as amateur no matter how good the wording is.
+ *
+ * So three things the built-in styles cannot express are set per cell, all of
+ * them WordApi 1.3:
+ *
+ *   align    per column. Numbers right, labels left. This is the big one.
+ *   widths   per column, in points. Item descriptions need room; 數量 does not.
+ *   totals   the last N rows, filled dark with white bold text, so the number
+ *            the reader is looking for is the one that stands out.
+ */
 async function insertTable(args) {
   const values = Array.isArray(args.values) ? args.values.map(r => (Array.isArray(r) ? r.map(String) : [String(r)])) : [];
   if (!values.length) throw new Error('values 是必要的，格式是二維陣列（第一列通常是表頭）。');
   const cols = Math.max(...values.map(r => r.length));
   const rows = values.map(r => [...r, ...Array(cols - r.length).fill('')]);
+
+  const align = Array.isArray(args.align) ? args.align : [];
+  const widths = Array.isArray(args.widths) ? args.widths : [];
+  const hasHeader = args.header !== false;
+  const totals = Math.max(0, Math.min(Number(args.total_rows) || 0, rows.length - (hasHeader ? 1 : 0)));
 
   return Word.run(async (ctx) => {
     const items = await addressedParagraphs(ctx, args);
@@ -741,11 +771,41 @@ async function insertTable(args) {
         table = ctx.document.body.insertTable(rows.length, cols, 'End', rows);
       }
       table.styleBuiltIn = String(args.style || 'GridTable4_Accent1').replace(/\s+/g, '');
-      table.headerRowCount = args.header === false ? 0 : 1;
+      table.headerRowCount = hasHeader ? 1 : 0;
+      if (args.banded !== undefined) table.styleBandedRows = !!args.banded;
+      if (args.first_column !== undefined) table.styleFirstColumn = !!args.first_column;
+      await ctx.sync();
+
+      // Per-cell work. Queued in one batch — getCell is cheap and the sync below
+      // is the only round trip.
+      for (let r = 0; r < rows.length; r++) {
+        const isTotal = totals > 0 && r >= rows.length - totals;
+        for (let c = 0; c < cols; c++) {
+          const cell = table.getCell(r, c);
+          const a = ALIGNMENTS[String(align[c] || '').toLowerCase()];
+          // The header follows the column, not the data: a right-aligned amount
+          // column with a left-aligned title looks like a mistake.
+          if (a) cell.horizontalAlignment = a;
+          if (widths[c]) cell.columnWidth = Number(widths[c]);
+          if (isTotal) {
+            cell.shadingColor = String(args.total_fill || '#1F3864');
+            const f = cell.body.font;
+            f.color = String(args.total_color || '#FFFFFF');
+            f.bold = true;
+          }
+        }
+      }
       await ctx.sync();
       return null;
     });
-    return `已插入 ${rows.length} 列 × ${cols} 欄的表格。` + trackingNote(result);
+
+    const notes = [];
+    if (align.length) notes.push('欄位對齊已套用');
+    if (widths.length) notes.push('欄寬已指定');
+    if (totals) notes.push(`最後 ${totals} 列設成合計列（深底白字）`);
+    return `已插入 ${rows.length} 列 × ${cols} 欄的表格`
+      + (notes.length ? `，${notes.join('、')}` : '')
+      + '。' + trackingNote(result);
   });
 }
 
@@ -2249,6 +2309,307 @@ async function insertCover(args) {
   });
 }
 
+
+// ── Diagrams ──────────────────────────────────────────────────────────────────
+
+/**
+ * A mermaid diagram, rendered here and inserted as a picture.
+ *
+ * Same trade as the charts: Word has no diagram object, so what lands in the
+ * document is a PNG — sharp (rendered at 2x) and correct, but not editable in
+ * Word. The tool description says so; the model must not imply otherwise.
+ *
+ * The width default matters more than it looks. A flowchart rendered at its
+ * natural size is usually wider than a page, and Word will happily place a
+ * picture that runs off the paper. 450pt is the usable width of A4 with normal
+ * margins, so the diagram is fitted to the column unless someone asks otherwise.
+ */
+const TEXT_COLUMN_PT = 450;
+
+async function insertDiagram(args) {
+  const code = String(args.code || '').trim();
+  if (!code) throw new Error('code 是必要的，內容是 mermaid 語法。');
+
+  // Rendering happens outside Word.run: it involves loading a script, an image
+  // decode and a canvas, none of which belong inside an Office batch.
+  const png = await renderMermaid(code, { theme: args.theme, font: args.font });
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      let anchor;
+      if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        anchor = items[from - 1].insertParagraph('', String(args.at) === 'before' ? 'Before' : 'After');
+      } else {
+        anchor = ctx.document.body.insertParagraph('', 'End');
+      }
+      anchor.alignment = 'Centered';
+      const pic = anchor.insertInlinePictureFromBase64(png.data, 'Replace');
+
+      // Fit to the column, keeping the aspect ratio the diagram was drawn at.
+      const want = Number(args.width) || Math.min(TEXT_COLUMN_PT, png.width);
+      pic.width = want;
+      pic.height = Math.round(want * (png.height / png.width));
+
+      if (args.caption) {
+        const cap = anchor.insertParagraph(String(args.caption), 'After');
+        cap.alignment = 'Centered';
+        cap.styleBuiltIn = 'Caption';
+      }
+      await ctx.sync();
+      return null;
+    });
+    return `已插入圖表（原始尺寸 ${Math.round(png.width)}×${Math.round(png.height)}，`
+      + `放進文件時縮到 ${Number(args.width) || Math.min(TEXT_COLUMN_PT, png.width)} 點寬）。\n`
+      + '它是以圖片插入的——Word 沒有原生的圖表物件，所以使用者不能在 Word 裡拖動節點；'
+      + '要改內容就改 mermaid 原始碼重新產生一張。'
+      + trackingNote(result);
+  });
+}
+
+
+// ── Structured blocks ─────────────────────────────────────────────────────────
+
+/**
+ * The thing that was missing.
+ *
+ * Everything else here writes PARAGRAPHS: a string, a style, a size. That model
+ * has three levels in it — title, heading, body — and three levels is why the
+ * output kept coming out as 「大文字配小文字」 and nothing else.
+ *
+ * A real business page does not work that way. One page of a quotation carries
+ * seven distinct treatments: the company name at 17pt navy, its English name at
+ * 8pt grey, the address right-aligned at 9pt, the document name centred at 17pt,
+ * field labels at 10pt navy, their values at 10pt grey, and the project line at
+ * 10.5pt. None of those is a heading and none of them is body text. They are
+ * parts of BLOCKS — a letterhead, a field list, a note — and the block is what
+ * decides the sizes, not the author choosing one per line.
+ *
+ * So this tool takes a block and its contents, and owns the typography:
+ *
+ *   fields   a label/value list — 客戶名稱：… 報價日期：… — labels in the
+ *            accent, values quieter, aligned by a tab rather than by spaces
+ *   note     a callout: small, indented, with a rule down the left
+ *   kv       the same pairs but as a two-column table, for when there are many
+ *   lead     one line of standfirst under a heading, larger than body, quieter
+ *            than a heading
+ *
+ * The point is not that these four are exhaustive. It is that the model picks a
+ * KIND OF BLOCK, and the sizes come from that, so a document made of blocks is
+ * internally consistent without anyone having to remember what they chose last
+ * time.
+ */
+const BLOCK_INK = { label: '#16314F', value: '#6B7C90', rule: '#4F81BD' };
+
+/** One label/value line: label in the accent, value quieter, separated by a tab. */
+function fieldLine(label, value, opts) {
+  const rpr = (size, color, bold) =>
+    `<w:rPr><w:sz w:val="${Math.round(size * 2)}"/><w:szCs w:val="${Math.round(size * 2)}"/>`
+    + `<w:color w:val="${String(color).replace('#', '')}"/>${bold ? '<w:b/>' : ''}`
+    + `<w:rFonts w:ascii="${xmlEscape(opts.font)}" w:hAnsi="${xmlEscape(opts.font)}" w:eastAsia="${xmlEscape(opts.font)}"/></w:rPr>`;
+  return '<w:p><w:pPr>'
+    // A tab stop, not spaces: values line up whatever the labels are, and they
+    // stay lined up when someone edits one.
+    + `<w:tabs><w:tab w:val="left" w:pos="${tw(opts.tab || 96)}"/></w:tabs>`
+    + `<w:spacing w:after="${tw(2)}"/></w:pPr>`
+    + `<w:r>${rpr(opts.size, BLOCK_INK.label, true)}<w:t xml:space="preserve">${xmlEscape(label)}</w:t></w:r>`
+    + `<w:r><w:tab/></w:r>`
+    + `<w:r>${rpr(opts.size, BLOCK_INK.value, false)}<w:t xml:space="preserve">${xmlEscape(value)}</w:t></w:r>`
+    + '</w:p>';
+}
+
+async function insertBlock(args) {
+  const kind = String(args.kind || 'fields').toLowerCase();
+  const font = String(args.font || '微軟正黑體');
+  const size = Number(args.size) || 10;
+  const rows = Array.isArray(args.rows)
+    ? args.rows.filter(Array.isArray).map((r) => [String(r[0] ?? ''), String(r[1] ?? '')])
+    : Object.entries(args.fields && typeof args.fields === 'object' ? args.fields : {})
+      .map(([k, v]) => [String(k), String(v)]);
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    let summary = '';
+
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      const put = (ooxml) => {
+        if (args.paragraph && items.length) {
+          const { from } = resolveRange(items, args);
+          items[from - 1].insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
+        } else {
+          ctx.document.body.insertOoxml(ooxml, 'End');
+        }
+      };
+
+      if (kind === 'kv') {
+        // Many pairs read better as a table; few read better as lines.
+        const paras = ctx.document.body.paragraphs;
+        paras.load('items');
+        await ctx.sync();
+        const anchor = args.paragraph && items.length
+          ? items[resolveRange(items, args).from - 1]
+          : paras.items[paras.items.length - 1];
+        if (args.title) {
+          const head = coverLine(args.title, { size: size + 2, color: BLOCK_INK.label, bold: true, font });
+          anchor.insertOoxml(OOXML_HEAD + head + OOXML_TAIL, 'After');
+          await ctx.sync();
+        }
+        const table = anchor.insertTable(rows.length, 2, 'After', rows);
+        table.styleBuiltIn = String(args.table_style || 'GridTable4_Accent1').replace(/\s+/g, '');
+        table.headerRowCount = 0;
+        table.styleFirstColumn = true;
+        summary = `${rows.length} 列的資訊表`;
+      } else if (kind === 'note') {
+        // A callout: smaller, indented, with a coloured rule down the left so it
+        // reads as an aside without needing a box.
+        const body = (args.text ? String(args.text).split(/\r?\n/) : []).map((line) =>
+          '<w:p><w:pPr>'
+          + `<w:pBdr><w:left w:val="single" w:sz="18" w:space="8" w:color="${BLOCK_INK.rule.replace('#', '')}"/></w:pBdr>`
+          + `<w:ind w:left="${tw(10)}"/><w:spacing w:after="${tw(3)}"/></w:pPr>`
+          + `<w:r><w:rPr><w:sz w:val="${Math.round((size - 0.5) * 2)}"/>`
+          + `<w:color w:val="${BLOCK_INK.value.replace('#', '')}"/>`
+          + `<w:rFonts w:ascii="${xmlEscape(font)}" w:hAnsi="${xmlEscape(font)}" w:eastAsia="${xmlEscape(font)}"/></w:rPr>`
+          + `<w:t xml:space="preserve">${xmlEscape(line)}</w:t></w:r></w:p>`).join('');
+        put(OOXML_HEAD + body + OOXML_TAIL);
+        summary = '附註區塊';
+      } else if (kind === 'rule') {
+        // The line under a letterhead. A paragraph with a bottom border, because
+        // Word has no rule object and a row of dashes is not a rule.
+        put(OOXML_HEAD
+          + '<w:p><w:pPr>'
+          + `<w:pBdr><w:bottom w:val="single" w:sz="${Math.max(2, Math.min(48, Math.round((Number(args.thickness) || 1.5) * 8)))}" `
+          + `w:space="1" w:color="${String(args.color || '#C00000').replace('#', '')}"/></w:pBdr>`
+          + `<w:spacing w:after="${tw(6)}"/></w:pPr></w:p>`
+          + OOXML_TAIL);
+        summary = '一條分隔線';
+      } else if (kind === 'lead') {
+        // A standfirst: bigger than body, quieter than a heading. The size that
+        // has no name in a three-level model, which is why it never got used.
+        put(OOXML_HEAD + coverLine(String(args.text || ''), {
+          size: size + 2, color: BLOCK_INK.value, font, spaceAfter: 8,
+        }) + OOXML_TAIL);
+        summary = '前言句';
+      } else {
+        const head = args.title
+          ? coverLine(args.title, { size: size + 1, color: BLOCK_INK.label, bold: true, font })
+          : '';
+        const body = rows.map(([k, v]) => fieldLine(k, v, { font, size, tab: args.tab })).join('');
+        if (!body) throw new Error('fields 或 rows 是必要的，例如 {"客戶名稱":"強合科技","報價日期":"2026-07-24"}。');
+        put(OOXML_HEAD + head + body + OOXML_TAIL);
+        summary = `${rows.length} 行標籤／內容`;
+      }
+      await ctx.sync();
+      return null;
+    });
+
+    return `已插入${summary}。字級和顏色由區塊種類決定——`
+      + '標籤深、內容淺、附註更小，這是讓一頁上有層次而不是只有大小兩級的做法。'
+      + '不要再對它套 word_format_range 改字級。'
+      + trackingNote(result);
+  });
+}
+
+
+// ── Side by side ──────────────────────────────────────────────────────────────
+
+/**
+ * Put two or three things next to each other.
+ *
+ * ── Why this is the piece that was missing ──
+ * Every tool here wrote DOWN the page. So a quotation that should read
+ *
+ *     ┌ 客戶資料 ────────┐  ┌ 報價資訊 ────────┐
+ *     │ 客戶名稱  強合    │  │ 報價單號  ZH…    │
+ *     │ 聯 絡 人  陳詠樺  │  │ 報價日期  2026…  │
+ *     └──────────────────┘  └──────────────────┘
+ *
+ * came out as one four-column table, or as eight stacked lines. The wording was
+ * right and the page was wrong, and no amount of font work fixes that — the
+ * information is not stacked, it is two panels.
+ *
+ * Word has no columns API. What real templates use, and what this uses, is a
+ * borderless table as a layout grid: one row, one cell per panel, borders off.
+ * The same primitive builds a letterhead (name left, address right), a two-up
+ * comparison, and a signature block — which is why it is one tool rather than
+ * three.
+ *
+ * `panel: true` puts the light fill and hairline back, for the boxed look the
+ * reference documents use on their 客戶資料/報價資訊 pair.
+ */
+const PANEL_FILL = '#F2F6FA';
+
+async function insertLayout(args) {
+  const cols = Array.isArray(args.columns) ? args.columns.filter(Boolean) : [];
+  if (cols.length < 2) throw new Error('columns 至少要兩欄，否則直接用 word_insert_block 就好。');
+  if (cols.length > 4) throw new Error('columns 最多四欄——再多在 A4 上就窄到讀不了了。');
+
+  const font = String(args.font || '微軟正黑體');
+  const size = Number(args.size) || 10;
+  const widths = Array.isArray(args.widths) ? args.widths : [];
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      const blank = cols.map(() => '');
+      let table;
+      if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        table = items[from - 1].insertTable(1, cols.length, String(args.at) === 'before' ? 'Before' : 'After', [blank]);
+      } else {
+        table = ctx.document.body.insertTable(1, cols.length, 'End', [blank]);
+      }
+      table.headerRowCount = 0;
+      table.styleBandedRows = false;
+      table.styleFirstColumn = false;
+      // A layout grid is not a table anybody should see.
+      const border = table.getBorder('All');
+      border.type = args.panel ? 'Single' : 'None';
+      if (args.panel) { border.color = '#D6E0EA'; border.width = 1; }
+      await ctx.sync();
+
+      cols.forEach((col, i) => {
+        const cell = table.getCell(0, i);
+        if (widths[i]) cell.columnWidth = Number(widths[i]);
+        cell.verticalAlignment = 'Top';
+        if (args.panel) cell.shadingColor = String(args.panel_fill || PANEL_FILL);
+        cell.setCellPadding('Left', 8);
+        cell.setCellPadding('Right', 8);
+        cell.setCellPadding('Top', 5);
+        cell.setCellPadding('Bottom', 5);
+
+        // Built out of the same block pieces as everything else, so a panel and a
+        // standalone field list are the same typography rather than two guesses.
+        const rows = Array.isArray(col.rows)
+          ? col.rows.filter(Array.isArray).map((r) => [String(r[0] ?? ''), String(r[1] ?? '')])
+          : Object.entries(col.fields && typeof col.fields === 'object' ? col.fields : {})
+            .map(([k, v]) => [String(k), String(v)]);
+
+        const parts = [];
+        if (col.title) parts.push(coverLine(col.title, { size: size + 1, color: BLOCK_INK.label, bold: true, font }));
+        if (rows.length) {
+          parts.push(...rows.map(([k, v]) => fieldLine(k, v, { font, size, tab: args.tab || 72 })));
+        } else if (col.text) {
+          parts.push(...String(col.text).split(/\r?\n/).map((line) => coverLine(line, {
+            size, color: BLOCK_INK.value, font,
+            align: col.align ? (ALIGNMENTS[String(col.align).toLowerCase()] || 'Left') : 'Left',
+          })));
+        }
+        // insertOoxml on the cell body replaces its single empty paragraph, which
+        // is what stops a blank line appearing above every panel.
+        if (parts.length) cell.body.insertOoxml(OOXML_HEAD + parts.join('') + OOXML_TAIL, 'Replace');
+      });
+      await ctx.sync();
+      return null;
+    });
+
+    return `已把 ${cols.length} 個區塊並排`
+      + (args.panel ? '（有底色和細框線）' : '（無框線，純版面用）')
+      + '。這是用無框表格當版面格線做的，跟正式範本的做法一樣——'
+      + '使用者拉欄寬就能調整比例。' + trackingNote(result);
+  });
+}
+
 // ── Undo ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -2642,7 +3003,10 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_header_footer':
       case 'word_insert_break':
       case 'word_insert_cover':
+      case 'word_insert_block':
+      case 'word_insert_layout':
       case 'word_insert_chart':
+      case 'word_insert_diagram':
       case 'word_insert_equation':
       case 'word_checkbox':
       case 'word_insert_link':
@@ -2667,7 +3031,10 @@ export async function executeTool(tool, args, opts = {}) {
           word_header_footer: headerFooter,
           word_insert_break: insertBreak,
           word_insert_cover: insertCover,
+          word_insert_block: insertBlock,
+          word_insert_layout: insertLayout,
           word_insert_chart: insertChart,
+          word_insert_diagram: insertDiagram,
           word_insert_equation: insertEquation,
           word_checkbox: checkbox,
           word_insert_link: link,
@@ -2752,7 +3119,10 @@ export const meta = {
     word_header_footer: t('正在設定頁首頁尾…'),
     word_insert_break: t('正在調整分頁…'),
     word_insert_cover: t('正在製作封面…'),
+    word_insert_block: t('正在排版資訊區塊…'),
+    word_insert_layout: t('正在並排區塊…'),
     word_insert_chart: t('正在繪製圖表…'),
+    word_insert_diagram: t('正在畫流程圖…'),
     word_insert_equation: t('正在插入公式…'),
     word_read_attachment: t('正在看你貼的圖…'),
     word_insert_attachment: t('正在把圖片放進文件…'),
@@ -2776,6 +3146,7 @@ export const meta = {
     word_insert_text: t('正在草擬要插入的內容…'),
     word_insert_table: t('正在整理表格…'),
     word_insert_chart: t('正在設計圖表…'),
+    word_insert_diagram: t('正在設計流程圖…'),
     word_insert_equation: t('正在推導公式…'),
     word_format_range: t('正在決定格式…'),
   }),

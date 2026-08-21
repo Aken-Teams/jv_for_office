@@ -128,6 +128,13 @@ npm run dev          # https://localhost:3443
 
 沒有打包步驟。任務窗格是原生 ES modules，WebView2 直接吃，改完存檔重新整理窗格就生效。
 
+唯一的例外是 `src/taskpane/vendor/mermaid.min.js`（2.9 MB，MIT，從
+`ai-agents-office/client/node_modules/mermaid/dist/` 複製過來）。Word 沒有圖表 API，
+伺服器也沒有 mermaid → 圖片的管線，而窗格本身就是瀏覽器，所以在這裡渲染
+（mermaid → SVG → canvas → PNG）零伺服器來回。用 UMD 單檔而不是 ESM 版，
+因為 ESM 那份只有 26 KB，它會再去載 chunks。**只在第一次要畫圖時才載入**，
+不影響窗格開啟速度。要升級就重新複製一次。
+
 **③ 起後端**
 
 ```bash
