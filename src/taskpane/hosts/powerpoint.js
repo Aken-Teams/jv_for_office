@@ -403,6 +403,9 @@ async function addSlide(args) {
     }
     await ctx.sync();
 
+    // A blank slide the person will fill in themselves keeps its placeholders —
+    // that is what they are for. Only the ones this module then draws over get
+    // cleared, which happens in ppt_build_slide.
     return `已新增 ${count} 張投影片，現在是第 ${start + 1}`
       + (count > 1 ? `–${start + count}` : '') + ' 張。\n'
       + '注意：PowerPoint 的 API 只能把新投影片加在**最後面**，沒有「插在第 N 張後面」，'
@@ -427,6 +430,62 @@ async function deleteSlide(args) {
 }
 
 // ── Putting things on a slide ────────────────────────────────────────────────
+
+/**
+ * Delete the empty placeholders a new slide is born with.
+ *
+ * ── The bug this fixes, which looked like a design problem ──
+ * `slides.add()` applies the default layout, and that layout carries a title and
+ * a subtitle placeholder. Everything this module draws goes ON TOP of them — so
+ * every generated slide had 「按一下以新增標題」 sitting across its middle in 40pt
+ * grey, with a dashed box round it.
+ *
+ * They do not print and they do not show in presentation mode, which is why this
+ * is easy to miss when reasoning about the code. But the person judging the
+ * output is looking at the EDITOR, and in the editor the deck looks broken. No
+ * amount of better layout compensates for a placeholder prompt over the top of it.
+ *
+ * Only EMPTY ones go. A placeholder somebody has typed into is their content,
+ * and this add-in does not delete content it did not create.
+ */
+async function clearPlaceholders(ctx, slide) {
+  const shapes = slide.shapes;
+  shapes.load('items/id,items/type');
+  await ctx.sync();
+
+  const candidates = (shapes.items || []).filter((s) => String(s.type) === 'Placeholder');
+  if (!candidates.length) return 0;
+
+  // textFrame throws for shapes that cannot hold text, so each is queued and
+  // tolerated individually rather than in one bulk load.
+  const frames = candidates.map((s) => {
+    try {
+      const f = s.textFrame;
+      f.load('hasText');
+      return f;
+    } catch {
+      return null;
+    }
+  });
+  try {
+    await ctx.sync();
+  } catch {
+    return 0;
+  }
+
+  let gone = 0;
+  candidates.forEach((s, i) => {
+    let empty = true;
+    try {
+      empty = !frames[i] || !frames[i].hasText;
+    } catch {
+      empty = true;
+    }
+    if (empty) { s.delete(); gone++; }
+  });
+  if (gone) await ctx.sync();
+  return gone;
+}
 
 /** Resolve the slide a tool should act on: explicit number, else the last one. */
 async function targetSlide(ctx, args) {
@@ -802,6 +861,9 @@ async function buildSlide(args) {
       await ctx.sync();
     }
     const { slide, index } = await targetSlide(ctx, args);
+    // Before anything is drawn: the layout's empty prompts would otherwise sit
+    // on top of everything below.
+    await clearPlaceholders(ctx, slide);
     const put = { text: [], shape: [] };
 
     const text = (content, geo, style) => {
@@ -930,9 +992,70 @@ async function buildSlide(args) {
           { size: TYPE.body, color: th.ink });
       }
     } else {
-      // bullets — the ordinary content slide, and the one that has to be right.
-      text(bullet(body), { left: CL, top: CT, width: CW, height: 330 },
-        { size: TYPE.body, color: th.ink });
+      // ── bullets ──
+      // The ordinary content slide, and the one that decides whether the deck
+      // looks made or generated.
+      //
+      // The first version put the whole list in one text box. Three lines of
+      // text in the top third of the slide and nothing below — technically the
+      // content, visually a draft. Counting the reference deck: 17 to 47 shapes
+      // per slide against the six that produced.
+      //
+      // The fix is not to give the model a richer tool and hope it reaches for
+      // one. It did not: told to use ppt_build_slide, it used ppt_build_slide,
+      // and got back a text box. Density has to be what happens by DEFAULT.
+      //
+      // So a short list renders as cards — a tinted panel and a coloured spine
+      // per point, sized to fill the content area rather than to fit the words.
+      // It costs nothing: the extra shapes go into the same batch and the same
+      // single sync.
+      const items = body.filter((l) => String(l).trim());
+      const asCards = args.style !== 'plain' && items.length >= 2 && items.length <= 6;
+
+      if (asCards) {
+        const AREA_TOP = CT;
+        const AREA_H = 348;
+        const gap = items.length > 4 ? 12 : 16;
+        const ch = (AREA_H - gap * (items.length - 1)) / items.length;
+        const cycle = [th.strong, th.second, th.accent];
+
+        items.forEach((raw, i) => {
+          const y = AREA_TOP + (ch + gap) * i;
+          const tone = cycle[i % cycle.length];
+          band({ left: CL, top: y, width: CW, height: ch }, th.tint);
+          band({ left: CL, top: y, width: 5, height: ch }, tone);
+
+          // 「寫程式：把麻煩的事變成自動的事」 is how people and models both write
+          // a point — a label, then the substance. Splitting on the colon turns
+          // that into a heading and a body rather than one flat line, which is
+          // most of what makes the card look composed instead of padded.
+          const s = String(raw).trim();
+          const cut = /^([^：:]{1,14})[：:]\s*(.+)$/.exec(s);
+          const head = cut ? cut[1] : s;
+          const rest = cut ? cut[2] : '';
+
+          // The index, in the spine's colour. Small — it orders the points, it
+          // is not the point.
+          text(String(i + 1).padStart(2, '0'),
+            { left: CL + 22, top: y + (rest ? 14 : ch / 2 - 16), width: 46, height: 32 },
+            { size: 20, bold: true, color: tone, valign: 'middle' });
+
+          text(head,
+            { left: CL + 74, top: y + (rest ? 12 : ch / 2 - 17), width: CW - 100, height: rest ? 30 : 34 },
+            { size: rest ? 17 : 18, bold: true, color: th.ink, valign: 'middle' });
+
+          if (rest) {
+            text(rest, { left: CL + 74, top: y + 44, width: CW - 100, height: ch - 54 },
+              { size: 13.5, color: th.muted, valign: 'top' });
+          }
+        });
+      } else {
+        // Seven or more points is a slide that should have been two, but the
+        // model has already decided. Cards at that count are 40pt tall and read
+        // worse than a plain list, so the plain list is the honest fallback.
+        text(bullet(items), { left: CL, top: CT, width: CW, height: 348 },
+          { size: TYPE.body, color: th.ink });
+      }
     }
 
     if (args.footer && kind !== 'title') {
