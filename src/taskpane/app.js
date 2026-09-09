@@ -926,6 +926,43 @@ function syncSendButton() {
 }
 
 /**
+ * Fetch an uploaded file's parsed text, for the host to compare against.
+ *
+ * ── Why the pane fetches this instead of the model passing it down ──
+ * The alternative is for the model to read the file with excel_read_file and
+ * hand the rows back in the comparison call. That routes several hundred rows of
+ * somebody's spreadsheet through a language model purely to move them from one
+ * side of the bridge to the other, and every one of those numbers is a chance to
+ * be retyped wrong — silently, into a report that looks authoritative. AC-40
+ * grades this on the difference values being correct, so both sides have to be
+ * real data. See hosts/compare.js.
+ *
+ * The index is 1-based and addresses the files sent with THIS message, which is
+ * what the model was told about them in its prompt.
+ */
+async function fetchSourceFile(index) {
+  const ids = state.sentFiles || [];
+  if (!ids.length) {
+    return { error: '這則訊息沒有附任何檔案。請使用者把要比對的檔案拖進對話框。' };
+  }
+  const n = Math.max(1, Math.min(ids.length, index));
+  try {
+    const res = await fetch(
+      `${state.apiBase}/api/${host.meta.api}/attachments/${encodeURIComponent(ids[n - 1])}/text`,
+      { headers: { Authorization: `Bearer ${state.token}` } },
+    );
+    const body = await res.json().catch(() => ({}));
+    // The server's sentence is the useful one here — it distinguishes expired
+    // from blocked-by-the-scanner from has-no-text, and those need three
+    // different things from the person.
+    if (!res.ok) return { error: body.error || `讀不到那個檔案（HTTP ${res.status}）。` };
+    return { file: body };
+  } catch (e) {
+    return { error: `讀取來源檔失敗：${e.message}` };
+  }
+}
+
+/**
  * Answer excel_read_attachment — hand the model one of the images the user
  * attached to this message.
  *
@@ -1080,10 +1117,26 @@ async function handleToolRequest(payload) {
     }
   }
 
+  // Cross-file comparison needs one thing the host cannot reach: the uploaded
+  // file itself, which lives on the server behind this pane's token. Fetched
+  // here and passed down through opts rather than handled in its own branch
+  // above, so the confirmation gate, the snapshot and the undo stack all apply
+  // to it exactly as they do to every other write.
+  let source;
+  if (host.meta.compareSourceTool && tool === host.meta.compareSourceTool) {
+    const got = await fetchSourceFile(Number((args || {}).file_index) || 1);
+    if (got.error) {
+      await postToolResult(state.runId, callId, { ok: false, error: got.error });
+      setStatus(t('思考中…'));
+      return;
+    }
+    source = got.file;
+  }
+
   // needsConfirm true means a person saw this call and said yes (or has auto-approve
   // on). False means the server judged it a read — and if it turns out not to be,
   // the guard inside runScript stops it rather than trusting that judgement.
-  const result = await host.executeTool(tool, args, { writeApproved: !!needsConfirm });
+  const result = await host.executeTool(tool, args, { writeApproved: !!needsConfirm, source });
   // Approving WITH a note means "do this, and here is something you should know".
   // Riding it back on the tool result gets it to the agent within the same turn,
   // instead of the person having to repeat themselves in the next message.

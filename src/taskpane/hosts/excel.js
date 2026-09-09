@@ -21,6 +21,9 @@
  */
 import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
+// Pure arrays-in-arrays-out. The comparison itself lives there so it can be
+// tested without an Excel to stand up; only the reading and writing is here.
+import { parseSourceGrid, pickSheet, diffGrids, buildReport, REPORT_HEAD } from './compare.js';
 
 /**
  * The tools THIS build of the pane can actually execute.
@@ -60,6 +63,11 @@ const BASE_TOOLS = [
   // Answered by the pane's own UI (see askChoice in app.js), not by Office.js —
   // listed here so the server offers it to the model.
   'excel_ask_user',
+  // Cross-file comparison (PRD 3.2). Hybrid, like word_insert_attachment: the
+  // shell fetches the uploaded file's text because only it holds the token and
+  // the file ids, and this module does the reading and the writing. Neither half
+  // can do it alone, which is why it is not simply another tool in the switch.
+  'excel_compare_source',
 ];
 
 /** Cheap and synchronous; Office.js answers from a local table. */
@@ -118,6 +126,13 @@ export const meta = {
   askUserTool: 'excel_ask_user',
   /** Also answered by the pane: hands over an image the user pasted into the chat. */
   attachmentTool: 'excel_read_attachment',
+  /**
+   * Hybrid, like Word's insertAttachmentTool: the shell fetches the uploaded
+   * file's text (it holds the token and the run's file ids) and this module does
+   * the reading and writing. Named here so the shell can spot the call without
+   * knowing anything about comparison.
+   */
+  compareSourceTool: 'excel_compare_source',
   /** The one write whose cost can be counted BEFORE it happens. */
   inspectTools: ['excel_write_range', 'excel_clean_data'],
   /** Model-written code: needs a snapshot, and its own progress caption. */
@@ -151,6 +166,7 @@ export const meta = {
     excel_trace_precedents: t('正在追蹤公式來源…'),
     excel_sheet_style: t('正在調整版面…'),
     excel_run_script: t('正在執行程式…'),
+    excel_compare_source: t('正在比對兩份資料…'),
   }),
 
   /**
@@ -166,6 +182,7 @@ export const meta = {
     excel_format_range: t('正在決定格式…'),
     excel_clean_data: t('正在檢查資料…'),
     excel_manage_sheet: t('正在準備工作表變更…'),
+    excel_compare_source: t('正在準備比對…'),
   }),
 
   /** Sentences that name what this host edits. See the note above. */
@@ -1854,6 +1871,218 @@ async function tracePrecedents(args) {
   });
 }
 
+// ── Cross-file comparison ─────────────────────────────────────────────────────
+
+/** Cap the compared range the same way a read is capped — this reads a range too. */
+const MAX_COMPARE_CELLS = MAX_READ_CELLS;
+
+/**
+ * Diff this workbook against a file the user attached, and write the result in.
+ *
+ * ── The shape of this, and why ──
+ * `source` is handed in by the shell rather than fetched here: the file lives on
+ * the server, and reaching it needs the token and the run's file ids, neither of
+ * which is host business. What IS host business is both ends of the actual
+ * comparison — reading the real cells and writing the real sheet.
+ *
+ * The source file is never touched. It is not even open: what arrives is text
+ * the server extracted at upload time, so AC-40's 「來源檔完全未被修改」 holds by
+ * construction rather than by care.
+ *
+ * The report always goes to a NEW sheet unless the caller names an existing one,
+ * because that is the difference between a tool that adds information and a tool
+ * that can destroy some. Overwriting an existing sheet is gated on the server
+ * side (see excelToolSpec) and snapshotted here.
+ */
+export async function compareSource(args, source) {
+  if (!source || !source.text) {
+    return { text: '錯誤：沒有拿到來源檔的內容。請使用者把要比對的檔案拖進對話框再試一次。' };
+  }
+
+  const parsed = parseSourceGrid(source.text, source.ext);
+  if (!parsed.sheets.length) {
+    return {
+      text: `錯誤：「${source.filename}」${parsed.reason}`
+        + '\n如果只是要理解它的內容而不是逐格比對，改用 excel_read_file 讀它的文字。',
+    };
+  }
+
+  const srcSheet = pickSheet(parsed.sheets, args.source_sheet);
+  if (!srcSheet) {
+    return {
+      text: `錯誤：來源檔裡沒有叫「${args.source_sheet}」的工作表。`
+        + `有的是：${parsed.sheets.map((s) => s.name || '(未命名)').join('、')}`,
+    };
+  }
+
+  const outName = String(args.output_sheet || '').trim();
+  const headers = args.headers !== false;
+
+  return Excel.run(async (ctx) => {
+    const sheetName = String(args.sheet || '');
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+    sheet.load('isNullObject,name');
+    await ctx.sync();
+    if (sheet.isNullObject) {
+      const all = ctx.workbook.worksheets;
+      all.load('items/name');
+      await ctx.sync();
+      return { text: `錯誤：找不到工作表「${sheetName}」。現有的：${all.items.map((s) => s.name).join('、')}` };
+    }
+
+    const range = args.range
+      ? sheet.getRange(String(args.range))
+      : sheet.getUsedRangeOrNullObject(true);
+    range.load('isNullObject,address,rowIndex,columnIndex,rowCount,columnCount');
+    await ctx.sync();
+    if (range.isNullObject) return { text: `工作表「${sheetName}」是空的，沒有東西可以比對。` };
+
+    const maxRows = Math.max(1, Math.floor(MAX_COMPARE_CELLS / Math.max(1, range.columnCount)));
+    const rowCount = Math.min(range.rowCount, maxRows);
+    const target = sheet.getRangeByIndexes(
+      range.rowIndex, range.columnIndex, rowCount, range.columnCount);
+    target.load('values,address');
+    await ctx.sync();
+
+    const diff = diffGrids(target.values, srcSheet.rows, {
+      headers,
+      keyColumn: resolveKeyColumn(args.key_column, headers ? target.values[0] : null),
+      ignoreCase: !!args.ignore_case,
+      tolerance: Number(args.tolerance) || 0,
+    });
+    if (rowCount < range.rowCount) {
+      diff.notes.push(`目前活頁簿這一側有 ${range.rowCount} 列，只比對了前 ${rowCount} 列。`
+        + '要比完請指定明確的 range 分批做。');
+    }
+
+    const keyPair = diff.columns.find((c) => c.cur === resolveKeyColumn(args.key_column, headers ? target.values[0] : null));
+    const grid = buildReport(diff, {
+      sourceName: source.filename,
+      sheetName,
+      keyLabel: keyPair ? keyPair.label : '',
+      rangeText: bareAddress(target.address),
+      // The diff counts from the top-left of the COMPARED RANGE; these shift its
+      // addresses back onto the sheet, so a comparison of C5:F80 cites C5:F80
+      // and not A1:D76.
+      firstRow: range.rowIndex + 1,
+      firstCol: range.columnIndex,
+    });
+
+    const out = await openReportSheet(ctx, outName, sheetName);
+    if (out.error) return { text: out.error };
+
+    const width = grid.reduce((w, r) => Math.max(w, r.length), 0);
+    const padded = grid.map((r) => {
+      const row = r.slice();
+      while (row.length < width) row.push('');
+      return row;
+    });
+
+    const dest = out.sheet.getRangeByIndexes(0, 0, padded.length, width);
+    // Text, not values: a difference like 「0912-345678」 or 「00123」 is a string
+    // on both sides, and letting Excel re-interpret it on the way in would make
+    // the report disagree with the cells it is reporting on.
+    dest.numberFormat = padded.map(() => new Array(width).fill('@'));
+    dest.values = padded;
+    // Found, not counted. The summary block grows by one row for every note the
+    // diff produced, so a hard-coded index bolds a random row of the summary as
+    // soon as anything goes slightly unusual — which is precisely when somebody
+    // is reading this sheet carefully.
+    const headerRow = padded.findIndex((r) => r[0] === REPORT_HEAD[0]);
+    if (headerRow >= 0) {
+      out.sheet.getRangeByIndexes(headerRow, 0, 1, width).format.font.bold = true;
+    }
+    out.sheet.getUsedRange(true).format.autofitColumns();
+    out.sheet.activate();
+    await ctx.sync();
+
+    const c = diff.counts;
+    const verdict = c.cells === 0 && c.onlyCurrent === 0 && c.onlySource === 0
+      ? '兩邊完全一致。'
+      : `${c.cells} 格的值不同、${c.onlyCurrent} 列只在目前活頁簿、${c.onlySource} 列只在來源檔。`;
+
+    return {
+      text: `已用「${source.filename}」比對 ${sheetName}!${bareAddress(target.address)}，`
+        + `結果寫在工作表「${out.name}」。\n${verdict}\n`
+        + `${diff.keyed ? '' : '（沒有指定 key_column，這次是依列的先後順序對應——'
+          + '如果任一邊有插入或刪除列，結果會整片位移。有唯一鍵的話請帶上它重跑。）\n'}`
+        + `報表裡的「位置」欄是 ${sheetName} 的儲存格位址，可以直接引用給使用者看。`
+        + (diff.notes.length ? `\n注意：${diff.notes.join('　')}` : ''),
+      snapshot: out.snapshot,
+    };
+  });
+}
+
+
+/**
+ * The key column, as an index.
+ *
+ * Accepts a header name as well as a number because that is what the model
+ * actually has: it read the sheet and saw 「客戶代號」, not 「column 2」. Making it
+ * convert would be one more place to be off by one.
+ */
+function resolveKeyColumn(raw, header) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (Number.isFinite(Number(raw))) return Number(raw);
+  const want = String(raw).trim().toLowerCase();
+  if (!header) return null;
+  const i = header.findIndex((h) => String(h == null ? '' : h).trim().toLowerCase() === want);
+  return i < 0 ? null : i;
+}
+
+/**
+ * Where the report goes.
+ *
+ * A new sheet by default, and a fresh name when that one is taken — 「比對報告
+ * (2)」 rather than refusing, because somebody comparing two files usually
+ * compares three. Writing over an existing sheet happens only when explicitly
+ * named, and takes a snapshot first.
+ */
+async function openReportSheet(ctx, wanted, againstSheet) {
+  const sheets = ctx.workbook.worksheets;
+  sheets.load('items/name');
+  await ctx.sync();
+  const taken = new Set(sheets.items.map((s) => s.name));
+
+  if (wanted) {
+    if (taken.has(wanted)) {
+      const existing = sheets.getItem(wanted);
+      const used = existing.getUsedRangeOrNullObject(true);
+      used.load('isNullObject,address,formulas,numberFormat');
+      await ctx.sync();
+      // Snapshot before clearing, so 復原上一步 puts back whatever was there.
+      const snapshot = used.isNullObject ? undefined : {
+        kind: 'range',
+        sheet: wanted,
+        address: bareAddress(used.address),
+        formulas: used.formulas,
+        numberFormat: used.numberFormat,
+      };
+      if (!used.isNullObject) existing.getUsedRange(true).clear('Contents');
+      await ctx.sync();
+      return { sheet: existing, name: wanted, snapshot };
+    }
+    const made = sheets.add(wanted);
+    await ctx.sync();
+    return { sheet: made, name: wanted, snapshot: newSheetSnapshot(wanted) };
+  }
+
+  const base = `比對 ${againstSheet}`.slice(0, 25);
+  let name = base;
+  for (let i = 2; taken.has(name); i++) name = `${base} (${i})`;
+  const made = sheets.add(name);
+  await ctx.sync();
+  return { sheet: made, name, snapshot: newSheetSnapshot(name) };
+}
+
+/**
+ * Undo for a sheet that did not exist before.
+ *
+ * Its own kind, because the range snapshot cannot express it: there is no
+ * before-image to write back, the correct undo is to remove the sheet entirely.
+ */
+const newSheetSnapshot = (name) => ({ kind: 'newSheet', sheet: name });
+
 /* ── snapshot:start ─ test/undo-snapshot.test.mjs slices the source from here ─ */
 
 /**
@@ -1936,6 +2165,7 @@ async function captureWorkbook() {
  * Failing to read the list leaves `after` null, which makes undo delete nothing.
  * An incomplete undo is recoverable; deleting the wrong sheet is not.
  */
+
 async function finishWorkbookSnapshot(snapshot) {
   if (!snapshot || snapshot.kind !== 'workbook') return snapshot;
   try {
@@ -1961,6 +2191,24 @@ async function finishWorkbookSnapshot(snapshot) {
  */
 export async function restoreSnapshot(snapshot) {
   if (snapshot && snapshot.kind === 'workbook') return restoreWorkbook(snapshot);
+  // A sheet that did not exist before this call has no before-image to write
+  // back; undoing it means removing it. getItemOrNullObject rather than getItem,
+  // because the person may have deleted it themselves already — and an undo that
+  // throws for succeeding-in-advance is a bad undo.
+  if (snapshot && snapshot.kind === 'newSheet') {
+    return Excel.run(async (ctx) => {
+      const s = ctx.workbook.worksheets.getItemOrNullObject(snapshot.sheet);
+      s.load('isNullObject');
+      await ctx.sync();
+      if (!s.isNullObject) { s.delete(); await ctx.sync(); }
+      return {
+        kind: 'newSheet',
+        sheet: snapshot.sheet,
+        label: snapshot.sheet,
+        notes: s.isNullObject ? ['這張工作表已經不在了。'] : [],
+      };
+    });
+  }
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItem(snapshot.sheet);
     const target = sheet.getRange(snapshot.address);
@@ -2444,6 +2692,11 @@ export async function executeTool(tool, args, opts = {}) {
         return { ok: true, content: r.text, snapshot: r.snapshot };
       }
       case 'excel_create_pivot':   return { ok: true, content: await createPivot(args || {}) };
+      case 'excel_compare_source': {
+        // opts.source is put there by the shell — see fetchSourceFile in app.js.
+        const r = await compareSource(args || {}, opts.source);
+        return { ok: true, content: r.text, snapshot: r.snapshot };
+      }
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };
       case 'excel_run_script': {
