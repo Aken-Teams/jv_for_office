@@ -23,7 +23,7 @@ import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
 // Pure arrays-in-arrays-out. The comparison itself lives there so it can be
 // tested without an Excel to stand up; only the reading and writing is here.
-import { parseSourceGrid, pickSheet, diffGrids, buildReport, REPORT_HEAD } from './compare.js';
+import { parseSourceGrid, pickSheet, diffGrids, buildReport, REPORT_HEAD_CELL } from './compare.js';
 
 /**
  * The tools THIS build of the pane can actually execute.
@@ -1871,23 +1871,73 @@ async function tracePrecedents(args) {
   });
 }
 
-// ── Cross-file comparison ─────────────────────────────────────────────────────
+// ── Comparison ────────────────────────────────────────────────────────────────
 
 /** Cap the compared range the same way a read is capped — this reads a range too. */
 const MAX_COMPARE_CELLS = MAX_READ_CELLS;
 
 /**
- * Diff this workbook against a file the user attached, and write the result in.
+ * Read one side of a comparison out of the workbook.
  *
- * ── The shape of this, and why ──
- * `source` is handed in by the shell rather than fetched here: the file lives on
- * the server, and reaching it needs the token and the run's file ids, neither of
- * which is host business. What IS host business is both ends of the actual
- * comparison — reading the real cells and writing the real sheet.
+ * Shared by both sides because they are the same problem, and because the
+ * truncation rule has to be identical on each: capping one side at 20 000 cells
+ * and not the other would report every row past the cap as 「只在來源」, which is
+ * a wrong answer dressed up as a finding.
+ */
+async function readCompareSide(ctx, sheetName, rangeRef) {
+  const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+  sheet.load('isNullObject,name');
+  await ctx.sync();
+  if (sheet.isNullObject) {
+    const all = ctx.workbook.worksheets;
+    all.load('items/name');
+    await ctx.sync();
+    return { error: `錯誤：找不到工作表「${sheetName}」。現有的：${all.items.map((s) => s.name).join('、')}` };
+  }
+
+  const range = rangeRef
+    ? sheet.getRange(String(rangeRef))
+    : sheet.getUsedRangeOrNullObject(true);
+  range.load('isNullObject,address,rowIndex,columnIndex,rowCount,columnCount');
+  await ctx.sync();
+  if (range.isNullObject) return { error: `工作表「${sheetName}」是空的，沒有東西可以比對。` };
+
+  const maxRows = Math.max(1, Math.floor(MAX_COMPARE_CELLS / Math.max(1, range.columnCount)));
+  const rowCount = Math.min(range.rowCount, maxRows);
+  const target = sheet.getRangeByIndexes(
+    range.rowIndex, range.columnIndex, rowCount, range.columnCount);
+  target.load('values,address');
+  await ctx.sync();
+
+  return {
+    values: target.values,
+    address: bareAddress(target.address),
+    rowIndex: range.rowIndex,
+    columnIndex: range.columnIndex,
+    truncatedFrom: rowCount < range.rowCount ? range.rowCount : 0,
+    rowCount,
+  };
+}
+
+/**
+ * Diff a range in this workbook against another range, or against a file the
+ * user attached, and write the result in.
  *
- * The source file is never touched. It is not even open: what arrives is text
- * the server extracted at upload time, so AC-40's 「來源檔完全未被修改」 holds by
- * construction rather than by care.
+ * ── Two kinds of comparison, one engine ──
+ * `compare_with_sheet` names another sheet in the SAME workbook — 一月 against
+ * 二月, this version against last. That is the everyday case: a workbook with a
+ * tab per month or per site is the normal shape of a real spreadsheet, and it
+ * needs no upload at all. Without it, the other side is a file the person
+ * dragged into the chat, which is the cross-file case PRD 3.2 asks for.
+ *
+ * Both end up as two arrays handed to the same diff, so neither path can be
+ * more correct than the other. What differs is only where the second array
+ * comes from.
+ *
+ * ── The source is never touched ──
+ * An uploaded file is not even open: what arrives is text the server extracted
+ * at upload time, so AC-40's 「來源檔完全未被修改」 holds by construction. The
+ * other sheet is read, never written.
  *
  * The report always goes to a NEW sheet unless the caller names an existing one,
  * because that is the difference between a tool that adds information and a tool
@@ -1895,77 +1945,92 @@ const MAX_COMPARE_CELLS = MAX_READ_CELLS;
  * side (see excelToolSpec) and snapshotted here.
  */
 export async function compareSource(args, source) {
-  if (!source || !source.text) {
-    return { text: '錯誤：沒有拿到來源檔的內容。請使用者把要比對的檔案拖進對話框再試一次。' };
-  }
-
-  const parsed = parseSourceGrid(source.text, source.ext);
-  if (!parsed.sheets.length) {
-    return {
-      text: `錯誤：「${source.filename}」${parsed.reason}`
-        + '\n如果只是要理解它的內容而不是逐格比對，改用 excel_read_file 讀它的文字。',
-    };
-  }
-
-  const srcSheet = pickSheet(parsed.sheets, args.source_sheet);
-  if (!srcSheet) {
-    return {
-      text: `錯誤：來源檔裡沒有叫「${args.source_sheet}」的工作表。`
-        + `有的是：${parsed.sheets.map((s) => s.name || '(未命名)').join('、')}`,
-    };
-  }
-
+  const againstSheet = String(args.compare_with_sheet || '').trim();
   const outName = String(args.output_sheet || '').trim();
   const headers = args.headers !== false;
+  const sheetName = String(args.sheet || '');
+
+  if (againstSheet && againstSheet === sheetName) {
+    return { text: '錯誤：compare_with_sheet 跟 sheet 是同一張工作表，那樣比不出東西。' };
+  }
+
+  // File side: parsed up front so a bad upload fails before anything is read
+  // out of the workbook.
+  let srcRows = null;
+  let rightLabel = '';
+  if (!againstSheet) {
+    if (!source || !source.text) {
+      return {
+        text: '錯誤：沒有拿到來源檔的內容。'
+          + '要比對同一份活頁簿裡的兩張工作表，請改帶 compare_with_sheet；'
+          + '要比對另一份檔案，請使用者把它拖進對話框。',
+      };
+    }
+    const parsed = parseSourceGrid(source.text, source.ext);
+    if (!parsed.sheets.length) {
+      return {
+        text: `錯誤：「${source.filename}」${parsed.reason}`
+          + '\n如果只是要理解它的內容而不是逐格比對，改用 excel_read_file 讀它的文字。',
+      };
+    }
+    const picked = pickSheet(parsed.sheets, args.source_sheet);
+    if (!picked) {
+      return {
+        text: `錯誤：來源檔裡沒有叫「${args.source_sheet}」的工作表。`
+          + `有的是：${parsed.sheets.map((s) => s.name || '(未命名)').join('、')}`,
+      };
+    }
+    srcRows = picked.rows;
+    rightLabel = source.filename + (picked.name ? `［${picked.name}］` : '');
+  }
 
   return Excel.run(async (ctx) => {
-    const sheetName = String(args.sheet || '');
-    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
-    sheet.load('isNullObject,name');
-    await ctx.sync();
-    if (sheet.isNullObject) {
-      const all = ctx.workbook.worksheets;
-      all.load('items/name');
-      await ctx.sync();
-      return { text: `錯誤：找不到工作表「${sheetName}」。現有的：${all.items.map((s) => s.name).join('、')}` };
+    const left = await readCompareSide(ctx, sheetName, args.range);
+    if (left.error) return { text: left.error };
+
+    let rightAddress = '';
+    let rightTruncated = 0;
+    if (againstSheet) {
+      const right = await readCompareSide(ctx, againstSheet, args.compare_with_range);
+      if (right.error) return { text: right.error };
+      srcRows = right.values;
+      rightLabel = againstSheet;
+      rightAddress = `${againstSheet}!${right.address}`;
+      rightTruncated = right.truncatedFrom;
     }
 
-    const range = args.range
-      ? sheet.getRange(String(args.range))
-      : sheet.getUsedRangeOrNullObject(true);
-    range.load('isNullObject,address,rowIndex,columnIndex,rowCount,columnCount');
-    await ctx.sync();
-    if (range.isNullObject) return { text: `工作表「${sheetName}」是空的，沒有東西可以比對。` };
-
-    const maxRows = Math.max(1, Math.floor(MAX_COMPARE_CELLS / Math.max(1, range.columnCount)));
-    const rowCount = Math.min(range.rowCount, maxRows);
-    const target = sheet.getRangeByIndexes(
-      range.rowIndex, range.columnIndex, rowCount, range.columnCount);
-    target.load('values,address');
-    await ctx.sync();
-
-    const diff = diffGrids(target.values, srcSheet.rows, {
+    const keyColumn = resolveKeyColumn(args.key_column, headers ? left.values[0] : null);
+    const diff = diffGrids(left.values, srcRows, {
       headers,
-      keyColumn: resolveKeyColumn(args.key_column, headers ? target.values[0] : null),
+      keyColumn,
       ignoreCase: !!args.ignore_case,
       tolerance: Number(args.tolerance) || 0,
     });
-    if (rowCount < range.rowCount) {
-      diff.notes.push(`目前活頁簿這一側有 ${range.rowCount} 列，只比對了前 ${rowCount} 列。`
+
+    // Which side got cut matters more than that one did: rows past a cap show up
+    // as 「只在另一邊」, and without knowing where the cap fell that reads as a
+    // real finding rather than an artefact of the read.
+    if (left.truncatedFrom) {
+      diff.notes.push(`${sheetName} 這一側有 ${left.truncatedFrom} 列，只比對了前 ${left.rowCount} 列。`
         + '要比完請指定明確的 range 分批做。');
     }
+    if (rightTruncated) {
+      diff.notes.push(`${rightLabel} 那一側有 ${rightTruncated} 列，沒有全部比到。`);
+    }
 
-    const keyPair = diff.columns.find((c) => c.cur === resolveKeyColumn(args.key_column, headers ? target.values[0] : null));
+    const keyPair = diff.columns.find((c) => c.cur === keyColumn);
     const grid = buildReport(diff, {
-      sourceName: source.filename,
+      leftLabel: sheetName,
+      rightLabel,
       sheetName,
       keyLabel: keyPair ? keyPair.label : '',
-      rangeText: bareAddress(target.address),
+      rangeText: left.address,
+      rightRangeText: rightAddress,
       // The diff counts from the top-left of the COMPARED RANGE; these shift its
       // addresses back onto the sheet, so a comparison of C5:F80 cites C5:F80
       // and not A1:D76.
-      firstRow: range.rowIndex + 1,
-      firstCol: range.columnIndex,
+      firstRow: left.rowIndex + 1,
+      firstCol: left.columnIndex,
     });
 
     const out = await openReportSheet(ctx, outName, sheetName);
@@ -1988,7 +2053,7 @@ export async function compareSource(args, source) {
     // diff produced, so a hard-coded index bolds a random row of the summary as
     // soon as anything goes slightly unusual — which is precisely when somebody
     // is reading this sheet carefully.
-    const headerRow = padded.findIndex((r) => r[0] === REPORT_HEAD[0]);
+    const headerRow = padded.findIndex((r) => r[0] === REPORT_HEAD_CELL);
     if (headerRow >= 0) {
       out.sheet.getRangeByIndexes(headerRow, 0, 1, width).format.font.bold = true;
     }
@@ -1999,10 +2064,10 @@ export async function compareSource(args, source) {
     const c = diff.counts;
     const verdict = c.cells === 0 && c.onlyCurrent === 0 && c.onlySource === 0
       ? '兩邊完全一致。'
-      : `${c.cells} 格的值不同、${c.onlyCurrent} 列只在目前活頁簿、${c.onlySource} 列只在來源檔。`;
+      : `${c.cells} 格的值不同、${c.onlyCurrent} 列只在 ${sheetName}、${c.onlySource} 列只在 ${rightLabel}。`;
 
     return {
-      text: `已用「${source.filename}」比對 ${sheetName}!${bareAddress(target.address)}，`
+      text: `已比對 ${sheetName}!${left.address} 與 ${rightAddress || `「${rightLabel}」`}，`
         + `結果寫在工作表「${out.name}」。\n${verdict}\n`
         + `${diff.keyed ? '' : '（沒有指定 key_column，這次是依列的先後順序對應——'
           + '如果任一邊有插入或刪除列，結果會整片位移。有唯一鍵的話請帶上它重跑。）\n'}`

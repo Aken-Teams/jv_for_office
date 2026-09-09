@@ -1122,8 +1122,14 @@ async function handleToolRequest(payload) {
   // here and passed down through opts rather than handled in its own branch
   // above, so the confirmation gate, the snapshot and the undo stack all apply
   // to it exactly as they do to every other write.
+  //
+  // Only when the other side IS a file: comparing two sheets of the open
+  // workbook touches the server not at all, and asking it for an attachment that
+  // was never uploaded would fail the call for a reason that has nothing to do
+  // with what was asked.
   let source;
-  if (host.meta.compareSourceTool && tool === host.meta.compareSourceTool) {
+  if (host.meta.compareSourceTool && tool === host.meta.compareSourceTool
+      && !String((args || {}).compare_with_sheet || '').trim()) {
     const got = await fetchSourceFile(Number((args || {}).file_index) || 1);
     if (got.error) {
       await postToolResult(state.runId, callId, { ok: false, error: got.error });

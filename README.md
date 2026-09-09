@@ -57,6 +57,7 @@ Claude CLI ──stdio──> excelMcp.ts（獨立 subprocess）
 | `excel_create_pivot` | 建立真的樞紐分析表（可自己拖欄位的活物件） | ✔ |
 | `excel_trace_precedents` | 追一格公式是從哪些儲存格算出來的 | |
 | `excel_sheet_style` | 關格線、隱藏欄列標題、分頁顏色、預設欄寬 | |
+| `excel_compare_source` | 逐格比對兩份資料——同活頁簿的兩張工作表，或跟使用者上傳的檔案——結果寫成一張比對報表 | 覆寫既有工作表時 |
 
 儲存格引用 `[[工作表!C42]]` 會渲染成可點的連結，點了跳到那一格。
 寫入前會存快照，「復原上一步」拿得回來。

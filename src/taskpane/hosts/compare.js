@@ -414,21 +414,31 @@ export function diffGrids(current, source, opts = {}) {
   };
 }
 
-const STATUS_LABEL = {
+/**
+ * The two sides, named by what they actually are.
+ *
+ * Fixed labels do not survive the second caller. 「目前活頁簿」 vs 「來源檔」 reads
+ * correctly when the comparison is against an uploaded file and becomes nonsense
+ * the moment it is one sheet against another in the SAME workbook — both sides
+ * are then the current workbook, and a reader has no way to tell which column is
+ * which. Naming the sides after the sheet and the file makes the report legible
+ * without knowing which kind of comparison produced it.
+ */
+const statusLabels = (left, right) => ({
   changed: '值不同',
-  onlyCurrent: '只在目前活頁簿',
-  onlySource: '只在來源檔',
-};
+  onlyCurrent: `只在${left}`,
+  onlySource: `只在${right}`,
+});
 
 /**
- * The diff table's header row.
+ * First cell of the diff table's header row.
  *
- * Exported because excel.js has to find this row again to bold it, and it cannot
+ * Exported because excel.js has to find that row again to bold it, and it cannot
  * count its way there: the summary block above grows by one row for every note
- * the comparison produced. Matching on the text means the two files cannot drift
- * apart the way an index would.
+ * the comparison produced. The other five headers vary with the comparison, but
+ * this one never does — so it is the anchor.
  */
-export const REPORT_HEAD = ['狀態', '鍵值', '欄位', '目前活頁簿', '來源檔', '位置'];
+export const REPORT_HEAD_CELL = '狀態';
 
 /** 0-based column index → 'A', 'Z', 'AA'. Same rule as colName in excel.js. */
 function colLetters(index) {
@@ -466,24 +476,33 @@ function addressOf(d, firstRow, firstCol) {
  * out — a report that points at the wrong cells is worse than one with none.
  */
 export function buildReport(diff, info) {
-  const { sourceName, sheetName, keyLabel, rangeText, firstRow = 1, firstCol = 0 } = info;
+  const {
+    leftLabel, rightLabel, sheetName, keyLabel, rangeText,
+    rightRangeText = '', firstRow = 1, firstCol = 0,
+  } = info;
+  const status = statusLabels(leftLabel, rightLabel);
   const c = diff.counts;
   const grid = [
     ['比對報告'],
-    ['來源檔', sourceName],
-    ['比對範圍', `${sheetName}!${rangeText}`],
+    ['比對對象', `${leftLabel}　←→　${rightLabel}`],
+    ['本表範圍', `${sheetName}!${rangeText}`],
+  ];
+  // Only meaningful when the other side is a range too — an uploaded file has no
+  // address to state, and an empty row would just look like something failed.
+  if (rightRangeText) grid.push(['對照範圍', rightRangeText]);
+  grid.push(
     ['比對方式', diff.keyed ? `以「${keyLabel}」對應列` : '依列的先後順序對應（沒有指定鍵欄位）'],
-    ['目前活頁簿列數', c.curRows],
-    ['來源檔列數', c.srcRows],
+    [`${leftLabel} 列數`, c.curRows],
+    [`${rightLabel} 列數`, c.srcRows],
     ['值不同的儲存格', c.cells],
     ['有差異的列', c.changedRows],
-    ['只在目前活頁簿的列', c.onlyCurrent],
-    ['只在來源檔的列', c.onlySource],
+    [`只在 ${leftLabel} 的列`, c.onlyCurrent],
+    [`只在 ${rightLabel} 的列`, c.onlySource],
     ['完全相同的列', c.sameRows],
-  ];
+  );
   for (const note of diff.notes) grid.push(['注意', note]);
   grid.push(['']);
-  grid.push([...REPORT_HEAD]);
+  grid.push([REPORT_HEAD_CELL, '鍵值', '欄位', leftLabel, rightLabel, '位置']);
 
   if (!diff.diffs.length) {
     grid.push(['沒有差異', '', '', '', '', '']);
@@ -491,7 +510,7 @@ export function buildReport(diff, info) {
   }
   for (const d of diff.diffs) {
     grid.push([
-      STATUS_LABEL[d.status] || d.status,
+      status[d.status] || d.status,
       d.key,
       d.column,
       d.cur,

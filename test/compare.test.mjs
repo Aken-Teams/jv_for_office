@@ -15,7 +15,7 @@
  */
 import {
   parseSourceGrid, pickSheet, sameValue, toNumber, alignColumns,
-  diffGrids, buildReport, MAX_DIFF_ROWS,
+  diffGrids, buildReport, MAX_DIFF_ROWS, REPORT_HEAD_CELL,
 } from '../src/taskpane/hosts/compare.js';
 
 let pass = 0, fail = 0;
@@ -184,34 +184,54 @@ ok('預設上限是模組宣告的那個', MAX_DIFF_ROWS, 5000);
 
 // ── buildReport ─────────────────────────────────────────────────────────────
 
+const oneDiff = () => diffGrids(
+  [['代號', '金額'], ['A', '100']],
+  [['代號', '金額'], ['A', '120']],
+  { keyColumn: 0 },
+);
+
 {
-  const d = diffGrids(
-    [['代號', '金額'], ['A', '100']],
-    [['代號', '金額'], ['A', '120']],
-    { keyColumn: 0 },
-  );
-  const grid = buildReport(d, {
-    sourceName: '去年.xlsx', sheetName: '損益表', keyLabel: '代號',
-    rangeText: 'A1:B2', firstRow: 1, firstCol: 0,
+  const grid = buildReport(oneDiff(), {
+    leftLabel: '損益表', rightLabel: '去年.xlsx', sheetName: '損益表',
+    keyLabel: '代號', rangeText: 'A1:B2', firstRow: 1, firstCol: 0,
   });
   const flat = grid.map(r => r.join('|')).join('\n');
-  ok('報表寫出來源檔名', flat.includes('去年.xlsx'));
+  ok('報表寫出比對的兩邊', flat.includes('損益表') && flat.includes('去年.xlsx'));
   ok('報表寫出比對範圍', flat.includes('損益表!A1:B2'));
   ok('報表寫出用哪個鍵對應', flat.includes('以「代號」對應列'));
-  ok('報表有表頭列', flat.includes('狀態|鍵值|欄位|目前活頁簿|來源檔|位置'));
+  ok('表頭用兩邊真正的名字當欄名', flat.includes('狀態|鍵值|欄位|損益表|去年.xlsx|位置'));
   ok('差異那列指得回儲存格', flat.includes('損益表!B2'));
+  ok('沒有對照範圍時不印出空的那一列', flat.includes('對照範圍'), false);
+}
+
+// 同一份活頁簿裡兩張工作表對比時，「目前活頁簿 vs 來源檔」這種欄名沒有意義
+// ——兩邊都是目前活頁簿，看報表的人分不出哪欄是哪張表。
+{
+  const grid = buildReport(oneDiff(), {
+    leftLabel: '一月', rightLabel: '二月', sheetName: '一月',
+    keyLabel: '代號', rangeText: 'A1:B2', rightRangeText: '二月!A1:B2',
+  });
+  const flat = grid.map(r => r.join('|')).join('\n');
+  ok('跨工作表時表頭是兩張表的名字', flat.includes('狀態|鍵值|欄位|一月|二月|位置'));
+  ok('跨工作表時有印出對照範圍', flat.includes('對照範圍|二月!A1:B2'));
+  ok('計數列也用表名，不是「目前活頁簿」', flat.includes('一月 列數') && flat.includes('二月 列數'));
+}
+
+{
+  const d = diffGrids([['代號'], ['A'], ['B']], [['代號'], ['A'], ['C']], { keyColumn: 0 });
+  const grid = buildReport(d, {
+    leftLabel: '一月', rightLabel: '二月', sheetName: '一月',
+    keyLabel: '代號', rangeText: 'A1:A3',
+  });
+  const flat = grid.map(r => r.join('|')).join('\n');
+  ok('「只在某一邊」的狀態也用真正的表名', flat.includes('只在一月') && flat.includes('只在二月'));
 }
 
 {
   // 比對範圍不是從 A1 開始時，位置必須跟著移，否則報表指向錯的儲存格。
-  const d = diffGrids(
-    [['代號', '金額'], ['A', '100']],
-    [['代號', '金額'], ['A', '120']],
-    { keyColumn: 0 },
-  );
-  const grid = buildReport(d, {
-    sourceName: 's.xlsx', sheetName: '表', keyLabel: '代號',
-    rangeText: 'C5:D6', firstRow: 5, firstCol: 2,
+  const grid = buildReport(oneDiff(), {
+    leftLabel: '表', rightLabel: 's.xlsx', sheetName: '表',
+    keyLabel: '代號', rangeText: 'C5:D6', firstRow: 5, firstCol: 2,
   });
   ok('範圍不從 A1 開始時位置有跟著位移',
     grid.some(r => r[5] === '表!D6'));
@@ -220,10 +240,23 @@ ok('預設上限是模組宣告的那個', MAX_DIFF_ROWS, 5000);
 {
   const same = diffGrids([['a'], ['1']], [['a'], ['1']], { keyColumn: 0 });
   const grid = buildReport(same, {
-    sourceName: 's.csv', sheetName: '表', keyLabel: 'a', rangeText: 'A1:A2',
+    leftLabel: '表', rightLabel: 's.csv', sheetName: '表', keyLabel: 'a', rangeText: 'A1:A2',
   });
   ok('完全相同時明確寫「沒有差異」，不是留一張空表',
     grid.some(r => r[0] === '沒有差異'));
+}
+
+// excel.js 靠找這個字串定位表頭列再套粗體。摘要區每多一條 note 就多一列，
+// 所以它不能用數的——這條測試釘住那個錨點還在。
+{
+  const d = oneDiff();
+  d.notes.push('隨便一條注意事項');
+  const grid = buildReport(d, {
+    leftLabel: '表', rightLabel: 's.csv', sheetName: '表', keyLabel: '代號', rangeText: 'A1:B2',
+  });
+  const at = grid.findIndex(r => r[0] === REPORT_HEAD_CELL);
+  ok('多了一條 note 之後仍然找得到表頭列', at > 0);
+  ok('而且找到的確實是表頭列，不是摘要區的某一列', grid[at][5], '位置');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
