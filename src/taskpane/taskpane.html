@@ -397,13 +397,16 @@
                 aria-label="外部資料來源" data-t-al="外部資料來源">
           <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
         </button>
-        <textarea id="input" rows="1" placeholder="對這份活頁簿提問…" data-h-ph="placeholder" aria-label="訊息" data-t-al="訊息"></textarea>
+        <textarea id="input" rows="1" maxlength="4000" placeholder="對這份活頁簿提問…" data-h-ph="placeholder" aria-label="訊息" data-t-al="訊息"></textarea>
         <button id="send" type="submit" class="send-btn" disabled title="送出（Enter）" data-t-title="送出（Enter）" aria-label="送出" data-t-al="送出">
           <svg id="send-ic" class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-send"/></svg>
         </button>
       </div>
       <div class="composer-foot">
         <span class="hint-row" data-t="Enter 送出 · Shift+Enter 換行">Enter 送出 · Shift+Enter 換行</span>
+        <!-- Hidden until the cap is close. maxlength truncates a long paste in
+             silence, so something has to be visible before that happens. -->
+        <span id="char-count" class="char-count" hidden aria-live="polite"></span>
         <div class="model-wrap">
           <button type="button" id="model-btn" class="model-btn" aria-haspopup="true" aria-expanded="false">
             <span id="model-label">Opus 5</span>

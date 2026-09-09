@@ -303,6 +303,174 @@ async function loadTexts(ctx, shapes) {
 const OVERVIEW_PREVIEW_CHARS = 60;
 
 /**
+ * Slide masters and the layouts under them.
+ *
+ * ── Why the overview has to carry this ──
+ * `ppt_add_slide` has taken `layout_id` + `master_id` since it was written, and
+ * nothing anywhere told the model where those ids come from. So every new slide
+ * was born on the default layout, and a deck built on the company master got
+ * pages that did not match the ones already in it — the exact failure AC-11
+ * names. The ids are only reachable here, so this is where they have to be said.
+ *
+ * Returns [] rather than throwing on an older build: the overview is the first
+ * call of every conversation and it must not be the thing that fails.
+ */
+async function loadLayouts(ctx) {
+  if (!hasApi('1.3')) return [];
+  const masters = ctx.presentation.slideMasters;
+  masters.load('items/id,items/name,items/layouts/items/id,items/layouts/items/name');
+  try {
+    await ctx.sync();
+  } catch {
+    return [];
+  }
+  return (masters.items || []).map((m) => ({
+    id: String(m.id || ''),
+    name: String(m.name || ''),
+    layouts: ((m.layouts && m.layouts.items) || []).map((l) => ({
+      id: String(l.id || ''),
+      name: String(l.name || ''),
+    })),
+  }));
+}
+
+/* ── palette:start ── pure, and covered by test/ppt-overview.test.mjs ── */
+
+/** How far the colour sample reaches. A deck states its palette in its first few pages. */
+const THEME_SAMPLE_SLIDES = 12;
+const THEME_SAMPLE_SHAPES = 240;
+const THEME_REPORT = 5;
+
+/** Pure white and pure black are in every deck ever made, so they say nothing. */
+const NO_SIGNAL = new Set(['#FFFFFF', '#000000']);
+
+/** '1F3864' and '#1f3864' are the same colour; the tally has to agree they are. */
+function normaliseHex(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v.toUpperCase();
+  if (/^[0-9a-f]{6}$/i.test(v)) return ('#' + v).toUpperCase();
+  return '';
+}
+
+/**
+ * Most-used colours first, capped at THEME_REPORT.
+ *
+ * Split out of the sampling so the part with the judgement in it — what counts
+ * as the same colour, what carries no signal, how many are worth reporting —
+ * can be tested without an Office context to stand it up in.
+ *
+ * Ties keep first-seen order: Map iterates by insertion and sort is stable, so
+ * two colours used once each come out in slide order rather than at random.
+ */
+function rankColours(values) {
+  const tally = new Map();
+  for (const raw of values) {
+    const hex = normaliseHex(raw);
+    if (!hex || NO_SIGNAL.has(hex)) continue;
+    tally.set(hex, (tally.get(hex) || 0) + 1);
+  }
+  return [...tally.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, THEME_REPORT)
+    .map(([hex]) => hex);
+}
+
+/** The masters/layouts block of the overview, or '' when there is nothing to say. */
+function describeLayouts(masters) {
+  if (!masters || !masters.length) return '';
+  const lines = [];
+  for (const m of masters) {
+    if (!m.layouts || !m.layouts.length) continue;
+    lines.push(`母片「${m.name || '(未命名)'}」 master_id=${m.id}`);
+    for (const l of m.layouts) {
+      lines.push(`  ・${l.name || '(未命名)'}　layout_id=${l.id}`);
+    }
+  }
+  if (!lines.length) return '';
+  return '\n可用的版面配置（ppt_add_slide 的 layout_id 與 master_id 要成對給，'
+    + '沿用簡報既有的版面就從這裡挑，不要用預設）：\n'
+    + lines.join('\n') + '\n';
+}
+
+/** The palette block of the overview, or '' when the deck gave nothing away. */
+function describeColours({ fills, texts }) {
+  if (!fills.length && !texts.length) return '';
+  const parts = [];
+  if (fills.length) parts.push(`填色：${fills.join('、')}`);
+  if (texts.length) parts.push(`文字色：${texts.join('、')}`);
+  return '\n這份簡報已經在用的顏色（依出現次數排序，白與黑不計）：\n'
+    + parts.join('\n')
+    + '\n新增的內容請沿用這些顏色，不要另外套一組配色；'
+    + '除非使用者明講要改，否則不要呼叫 ppt_apply_theme。\n';
+}
+
+/* ── palette:end ── */
+
+/**
+ * The colours this deck already uses, most-used first.
+ *
+ * ── There is no theme to read ──
+ * PowerPoint's JS API exposes no `presentation.theme`: the six accent colours a
+ * designer set on the master are not reachable from an add-in at all. What IS
+ * reachable is every shape's own resolved fill and font colour — and a shape
+ * filled from the theme palette reports the theme's hex. So the palette is
+ * recovered by counting what is on the slides rather than by asking for it.
+ *
+ * Fills and text are counted separately because they answer different
+ * questions. The model needs an accent to fill a bar with and an ink to set body
+ * text in, and the most common fill is very rarely the right ink.
+ *
+ * Best-effort throughout. `shape.fill` throws for shapes that cannot carry one
+ * and `foregroundColor` throws again when the fill is a gradient or a picture,
+ * so every read is guarded on its own — one exotic shape must not cost the whole
+ * sample, and a failed sample must not cost the overview.
+ */
+async function sampleColours(ctx, slides) {
+  if (!hasApi('1.4')) return { fills: [], texts: [] };
+
+  const fills = [];
+  const fonts = [];
+  let budget = THEME_SAMPLE_SHAPES;
+  for (const slide of slides.slice(0, THEME_SAMPLE_SLIDES)) {
+    for (const shape of (slide.shapes.items || [])) {
+      if (budget <= 0) break;
+      budget--;
+      try {
+        const f = shape.fill;
+        f.load('type,foregroundColor');
+        fills.push(f);
+      } catch { /* this shape cannot carry a fill */ }
+      try {
+        const font = shape.textFrame.textRange.font;
+        font.load('color');
+        fonts.push(font);
+      } catch { /* this shape holds no text */ }
+    }
+  }
+
+  try {
+    await ctx.sync();
+  } catch {
+    return { fills: [], texts: [] };
+  }
+
+  const read = (items, get) => items.map((item) => {
+    try {
+      return get(item);
+    } catch {
+      return '';
+    }
+  });
+
+  return {
+    // A non-solid fill has no single colour to report, so it is skipped rather
+    // than guessed at from wherever the gradient happens to start.
+    fills: rankColours(read(fills, (f) => (f.type === 'Solid' ? f.foregroundColor : ''))),
+    texts: rankColours(read(fonts, (f) => f.color)),
+  };
+}
+
+/**
  * The deck, as a map the model can plan against.
  *
  * Per slide: its number, how many shapes it holds, and the text of the largest
@@ -313,7 +481,8 @@ async function getOverview(args = {}) {
   return PowerPoint.run(async (ctx) => {
     const slides = await loadSlides(ctx);
     if (!slides.length) {
-      return '這份簡報目前沒有投影片。用 ppt_add_slide 新增一張再開始。';
+      return '這份簡報目前沒有投影片。用 ppt_add_slide 新增一張再開始。\n'
+        + describeLayouts(await loadLayouts(ctx));
     }
 
     const limit = clamp(num(args.slides, 40), 1, 200);
@@ -336,8 +505,16 @@ async function getOverview(args = {}) {
     }
     if (slides.length > limit) lines.push(`…另外還有 ${slides.length - limit} 張投影片。`);
 
-    return `這份簡報有 ${slides.length} 張投影片。\n\n${lines.join('\n')}\n\n`
-      + `版面尺寸以 ${GRID.W}×${GRID.H} 點（16:9）計算，內文範圍是左 ${GRID.margin} 到右 ${GRID.W - GRID.margin}。\n`
+    // After the text pass, not before: both of these sync, and a deck with an
+    // exotic shape in it can cost one of them. Ordering them last means the
+    // slide list — the part nothing else works without — is already in hand.
+    const masters = await loadLayouts(ctx);
+    const palette = await sampleColours(ctx, slides);
+
+    return `這份簡報有 ${slides.length} 張投影片。\n\n${lines.join('\n')}\n`
+      + describeLayouts(masters)
+      + describeColours(palette)
+      + `\n版面尺寸以 ${GRID.W}×${GRID.H} 點（16:9）計算，內文範圍是左 ${GRID.margin} 到右 ${GRID.W - GRID.margin}。\n`
       + '要看某一張的完整內容和每個物件的座標，用 ppt_read_slide。';
   });
 }
@@ -1610,6 +1787,27 @@ export async function inspectWrite(tool, args) {
   return '';
 }
 
+/**
+ * ── 為什麼這裡沒有備忘稿（演講稿）工具 ──
+ *
+ * PRD 3.4 的能力表列了「演講稿生成：為每頁生成備忘稿」。做不到，而且不是版本問題
+ * ——PowerPoint 的 JavaScript API **從來沒有**暴露過備忘稿：`Slide` 上沒有 notes、
+ * 沒有 notesPage，也沒有任何 requirement set 加過它。這是 office-js 上的公開需求
+ * （OfficeDev/office-js#3269），至今未實作。查過一次就夠了，不要再查。
+ *
+ * 三條繞道，以及為什麼都沒走：
+ *
+ *   1. `presentation.insertSlidesFromBase64()`（PowerPointApi 1.2）確實可以把一份
+ *      在伺服器上做好、備忘稿都寫好的 pptx 插進來。但那等於整份重做——它插的是新
+ *      投影片，貼不回使用者已經有的那幾張，而「在當下這份檔案原生生成」正是這個
+ *      產品存在的理由。
+ *   2. 把講稿放進投影片外面的文字方塊：東西是在檔案裡了，但它不是備忘稿，簡報者
+ *      模式看不到，列印和某些檢視反而看得到。比沒有更糟。
+ *   3. 假裝有這個工具、實際上什麼都沒寫：不考慮。
+ *
+ * 所以講稿目前只出現在對話裡，由使用者自己貼進備忘稿欄。要改成產品功能的話，正確
+ * 的做法是把這個限制寫回 PRD 3.4（那節本來就有一段技術風險），而不是在這裡硬做。
+ */
 export function supportedTools() {
   const tools = [
     'ppt_get_overview',

@@ -2220,6 +2220,37 @@ function autoGrow(el) {
   el.style.height = `${el.scrollHeight}px`;
 }
 
+/**
+ * The composer's ceiling, as the PRD states it.
+ *
+ * Enforced with the textarea's own `maxlength` rather than in JavaScript: the
+ * browser then refuses the 4,001st character at the moment it is typed, and a
+ * paste that is too long is clipped instead of arriving whole and being rejected
+ * on send. Nobody loses work they had already committed to.
+ */
+const MAX_MESSAGE_CHARS = 4000;
+
+/** Silent above this, because a counter over an empty box is just clutter. */
+const COUNT_FROM = Math.round(MAX_MESSAGE_CHARS * 0.9);
+
+/**
+ * Say how much room is left, but only near the end.
+ *
+ * `maxlength` truncates without a word — someone pastes six pages of a contract,
+ * gets four, and has no way to know. The counter appearing is the only warning
+ * they get, so it has to appear BEFORE the cap and not on reaching it.
+ */
+function renderCharCount(el) {
+  const box = $('char-count');
+  if (!box) return;
+  const n = el.value.length;
+  box.hidden = n < COUNT_FROM;
+  box.classList.toggle('at-limit', n >= MAX_MESSAGE_CHARS);
+  box.textContent = n >= MAX_MESSAGE_CHARS
+    ? t('已達上限 {0} 字，多的不會送出。', MAX_MESSAGE_CHARS)
+    : t('{0} / {1} 字', n, MAX_MESSAGE_CHARS);
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 Office.onReady(async (info) => {
@@ -2290,6 +2321,7 @@ Office.onReady(async (info) => {
     if (!msg && !state.attachments.length && !state.files.some(f => f.status === 'ready')) return;
     input.value = '';
     input.style.height = 'auto';
+    renderCharCount(input);
     $('send').disabled = true;
     void send(msg || t('看一下這張圖。'));
   });
@@ -2352,6 +2384,7 @@ Office.onReady(async (info) => {
 
   $('input').addEventListener('input', (e) => {
     autoGrow(e.target);
+    renderCharCount(e.target);
     syncSendButton();
   });
 

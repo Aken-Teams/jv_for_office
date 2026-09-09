@@ -1039,6 +1039,10 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    rather than a global setting buried in a header. */
 .composer-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .composer-foot .hint-row { flex: 1; margin: 0; }
+/* Quiet by default — it is a warning, not a readout, so it should not
+   compete with the model name sitting next to it. */
+.char-count { font-size: 11px; color: var(--fg-subtle); white-space: nowrap; }
+.char-count.at-limit { color: var(--danger, #c0392b); }
 .model-wrap { position: relative; flex: none; }
 .model-btn {
   display: flex; align-items: center; gap: 3px;

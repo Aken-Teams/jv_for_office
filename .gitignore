@@ -8,3 +8,4 @@ test/.paragraph-under-test.mjs
 test/.fit-under-test.mjs
 test/.clean-under-test.mjs
 test/.shapes-under-test.mjs
+test/.palette-under-test.mjs
