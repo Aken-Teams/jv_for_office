@@ -19,7 +19,14 @@ if (from < 0 || to < 0) {
   process.exit(1);
 }
 const tmp = new URL('./.clean-under-test.mjs', import.meta.url);
-fs.writeFileSync(tmp, src.slice(from, to)
+// The text→value helpers moved to compare.js — the comparison engine asks the
+// same three questions ("is this a number", "is this a date", "are these the
+// same"), and a parser whose entire value is its edge cases must exist once.
+// They are imported into the slice and re-exported, so these tests still cover
+// them wherever they live.
+fs.writeFileSync(tmp,
+  "import { toHalfWidth, textToNumber, textToDateSerial } from '../src/taskpane/hosts/compare.js';\n"
+  + src.slice(from, to)
   + '\nexport { planClean, textToNumber, textToDateSerial, toHalfWidth };\n');
 const { planClean, textToNumber, textToDateSerial } = await import(tmp);
 

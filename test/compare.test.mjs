@@ -15,7 +15,7 @@
  */
 import {
   parseSourceGrid, pickSheet, sameValue, toNumber, alignColumns,
-  diffGrids, buildReport, MAX_DIFF_ROWS, REPORT_HEAD_CELL,
+  diffGrids, buildReport, MAX_DIFF_ROWS, REPORT_HEAD_CELL, textToNumber, textToDateSerial,
 } from '../src/taskpane/hosts/compare.js';
 
 let pass = 0, fail = 0;
@@ -80,6 +80,26 @@ ok('浮點誤差用容差吃掉', sameValue(0.3, 0.30000000000000004, { toleranc
 ok('沒給容差時就是嚴格比', sameValue(0.3, 0.30000000000000004), false);
 ok('空白對空白算相同', sameValue('', null));
 ok('空白對 0 算差異', sameValue('', 0), false);
+
+// ── 日期：這組是跨檔案比對最容易全盤誤判的地方 ─────────────────────────────
+//
+// Excel 交給增益集的日期是序號（45292），上傳檔經過文字抽取後是字串。
+// 沒有這段，任何有日期欄的報表都會「每一列都不同」——而那正是大家會拿來比對的檔案。
+
+ok('Excel 序號對得上 ISO 日期字串', sameValue(45292, '2024-01-01'));
+ok('Excel 序號對得上斜線寫法', sameValue(45292, '2024/1/1'));
+ok('兩種寫法的同一天算相同', sameValue('2024/1/1', '2024-01-01'));
+ok('民國年也對得上', sameValue('113/1/1', '2024-01-01'));
+ok('全形數字的日期也對得上', sameValue('２０２４/１/１', '2024-01-01'));
+ok('ISO 時間戳只看日期那一段', sameValue('2024-01-01T00:00:00Z', '2024/1/1'));
+ok('不同的日子還是不同', sameValue(45292, '2024-01-02'), false);
+ok('不存在的日期不會被當成日期', textToDateSerial('2024/2/31'), null);
+// 序號窗外的數字不會被誤讀成日期，否則一般數量欄會開始跟日期字串相等。
+ok('太小的數字不會被當成序號', sameValue(100, '1900-04-10'), false);
+
+// ── textToNumber vs toNumber：兩者的寬鬆度不同是刻意的 ──────────────────────
+ok('要寫回儲存格時 0012 是文字不是 12', textToNumber('0012'), null);
+ok('但拿來比對時 0012 跟 12 是同一個值', sameValue('0012', 12));
 
 // ── alignColumns ─────────────────────────────────────────────────────────────
 

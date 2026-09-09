@@ -124,27 +124,145 @@ export function pickSheet(sheets, wanted) {
   return [...sheets].sort((a, b) => b.rows.length - a.rows.length)[0];
 }
 
+/* ── text→value ── moved here from excel.js; see the note at its old site ──── */
+
+/** Full-width ！ through ～ sit exactly 0xFEE0 above their ASCII twins. */
+export const toHalfWidth = (s) => s
+  .replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/　/g, ' ');
+
+/**
+ * Text that means a number → a number. Handles what exported reports actually
+ * contain: thousands separators, a currency mark, a trailing %, and accounting's
+ * (1,234) for negatives.
+ *
+ * Returns null when the text is not a number — and null is also the answer for
+ * '0012', because an ID with leading zeros is text and "cleaning" it to 12
+ * destroys it. Same for anything past 15 digits, which is where IEEE doubles
+ * start silently rounding account numbers.
+ */
+export function textToNumber(raw) {
+  const s = toHalfWidth(String(raw)).trim();
+  if (!s) return null;
+  const neg = /^\((.*)\)$/.exec(s);
+  const body = neg ? neg[1] : s;
+  const pct = /%$/.test(body);
+  const bare = body.replace(/%$/, '').replace(/[,\s]/g, '').replace(/^(NT|[$¥€£])+/i, '');
+  if (!/^-?\d+(\.\d+)?$/.test(bare)) return null;
+  if (/^-?0\d/.test(bare)) return null;              // 0012 is an ID, not 12
+  if (bare.replace(/[-.]/g, '').length > 15) return null;
+  const n = Number(bare);
+  if (!Number.isFinite(n)) return null;
+  return (neg ? -1 : 1) * (pct ? n / 100 : n);
+}
+
+/** Excel's day 0 is 1899-12-30, which is how its 1900-leap-year bug shakes out. */
+const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
+
+/**
+ * Text that means a date → an Excel serial number.
+ *
+ * 民國年 is in here because it is the reason this exists: a government or ERP
+ * export writes 113/1/5, Excel stores it as text, every date formula downstream
+ * returns #VALUE!, and no amount of 儲存格格式 fixes it because the cell was never
+ * a date. A year of three digits or fewer is read as 民國 and 1911 added.
+ *
+ * Deliberately narrow: y/m/d and y-m-d only. Nothing here guesses whether 3/4/24
+ * is March or April — that is a question about the person's locale, not about
+ * the data, and getting it wrong silently is worse than not converting at all.
+ */
+export function textToDateSerial(raw) {
+  if (raw instanceof Date) {
+    return Number.isFinite(raw.getTime())
+      ? Math.round((Date.UTC(raw.getUTCFullYear(), raw.getUTCMonth(), raw.getUTCDate())
+        - EXCEL_EPOCH_UTC) / 86400000)
+      : null;
+  }
+  const s = toHalfWidth(String(raw)).trim()
+    .replace(/[年月]/g, '/').replace(/日$/, '')
+    // An ISO timestamp is a date with a time bolted on; the day is the part two
+    // spreadsheets can be expected to agree about.
+    .replace(/[T ]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/, '');
+  const m = /^(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(s);
+  if (!m) return null;
+  let y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (m[1].length <= 3) y += 1911;                   // 民國
+  if (y < 1900 || y > 9999 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const t = Date.UTC(y, mo - 1, d);
+  const back = new Date(t);
+  // Rejects 2024/2/31, which Date.UTC would have rolled forward into March.
+  if (back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return null;
+  return Math.round((t - EXCEL_EPOCH_UTC) / 86400000);
+}
+
+/* ── text→value:end ───────────────────────────────────────────────────────── */
+
 /**
  * A cell as a number, or null when it is not one.
  *
- * Thousands separators, a trailing %, and accounting parentheses are stripped
- * because all three are how a number LOOKS, not what it is. An empty cell is
- * deliberately not zero: a blank where a figure should be is a difference worth
- * reporting, and folding it to 0 would hide exactly the rows somebody is
- * comparing to find.
+ * Looser than textToNumber on purpose, and the difference is deliberate: this
+ * one is for COMPARING, that one is for REWRITING a cell. '0012' must stay text
+ * when clean_data is about to overwrite the cell, because turning an id into 12
+ * destroys it — but when the question is only 「are these two cells the same
+ * value」, '0012' and 12 plainly are, and reporting them as a difference would
+ * fill the report with noise on every id column that survived a CSV round trip.
  */
 export function toNumber(v) {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   if (v === null || v === undefined) return null;
-  const s = String(v).trim();
+  const s = toHalfWidth(String(v)).trim();
   if (!s) return null;
-  const cleaned = s.replace(/,/g, '').replace(/^\((.*)\)$/, '-$1');
-  const pct = cleaned.endsWith('%');
-  const body = pct ? cleaned.slice(0, -1) : cleaned;
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(body)) return null;
-  const n = Number(body);
-  if (!Number.isFinite(n)) return null;
-  return pct ? n / 100 : n;
+
+  // Delegated rather than reimplemented. The first version of this had its own
+  // regex and quietly disagreed with textToNumber about NT$2000 — it stripped
+  // commas and parentheses but not the currency mark, so a workbook holding 2000
+  // and an export holding NT$2000 came back as a difference. One parser for
+  // "what does this text mean as a number"; this function only widens it.
+  const direct = textToNumber(s);
+  if (direct !== null) return direct;
+
+  // Leading zeros are the one place the two questions genuinely differ.
+  // textToNumber refuses '0012' because clean_data is about to REWRITE the cell
+  // and turning an id into 12 destroys it. Here the question is only whether two
+  // cells hold the same value, and '0012' and 12 plainly do — reporting them as
+  // a difference fills the report with noise on every id column that has been
+  // through a CSV.
+  const unpadded = s.replace(/^(-?)0+(?=\d)/, '$1');
+  return unpadded === s ? null : textToNumber(unpadded);
+}
+
+/**
+ * The window in which a bare number might really be a date.
+ *
+ * Excel hands an add-in a date as a serial — 45292, not 「2024/1/1」 — while a
+ * file that has been through a text extractor hands over the words. Without this
+ * they never match, and EVERY row of any report with a date column comes back as
+ * a difference. That is not a rare edge: it is most of the files anybody would
+ * reach for this tool with.
+ *
+ * The trade-off, stated plainly: a genuine quantity that happens to land between
+ * these bounds will be read as a date when the other side holds a date string,
+ * and a real difference is then hidden. The window is 1980-01-01 to 2079-12-31,
+ * and the coercion only fires when the OTHER side parses as a date — so it takes
+ * a column that is a number on one side and a date on the other, which is
+ * already broken data. Narrower than a bug in every dated report.
+ */
+const SERIAL_MIN = 29221;
+const SERIAL_MAX = 65744;
+const looksLikeSerial = (n) => Number.isInteger(n) && n >= SERIAL_MIN && n <= SERIAL_MAX;
+
+/**
+ * This cell as a date serial, or null.
+ *
+ * `asNumber` is passed in rather than recomputed so the caller's single parse is
+ * reused — and so this can tell 「a number that might be a serial」 from 「text
+ * that spells a date」 without parsing twice.
+ */
+function asDateSerial(v, asNumber) {
+  if (asNumber !== null) return looksLikeSerial(asNumber) ? asNumber : null;
+  return textToDateSerial(v);
 }
 
 /**
@@ -164,6 +282,13 @@ export function sameValue(a, b, opts = {}) {
   if (na !== null && nb !== null) {
     return tolerance > 0 ? Math.abs(na - nb) <= tolerance : na === nb;
   }
+
+  // Dates, second. One side arrives from Excel as a serial and the other from a
+  // text extractor as words, so this is the only place they can be made to meet.
+  const da = asDateSerial(a, na);
+  const db = asDateSerial(b, nb);
+  if (da !== null && db !== null) return da === db;
+
   let sa = cellText(a);
   let sb = cellText(b);
   if (trim) { sa = sa.trim(); sb = sb.trim(); }

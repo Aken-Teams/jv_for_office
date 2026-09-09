@@ -23,7 +23,10 @@ import { t } from '../i18n.js';
 import { makeScriptGuard } from './guard.js';
 // Pure arrays-in-arrays-out. The comparison itself lives there so it can be
 // tested without an Excel to stand up; only the reading and writing is here.
-import { parseSourceGrid, pickSheet, diffGrids, buildReport, REPORT_HEAD_CELL } from './compare.js';
+import {
+  parseSourceGrid, pickSheet, diffGrids, buildReport, REPORT_HEAD_CELL,
+  toHalfWidth, textToNumber, textToDateSerial,
+} from './compare.js';
 
 /**
  * The tools THIS build of the pane can actually execute.
@@ -1281,66 +1284,13 @@ async function tableOps(args) {
  */
 const MAX_CLEAN_CELLS = 200000;
 
-/** Full-width ！ through ～ sit exactly 0xFEE0 above their ASCII twins. */
-const toHalfWidth = (s) => s
-  .replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-  .replace(/　/g, ' ');
-
-/**
- * Text that means a number → a number. Handles what exported reports actually
- * contain: thousands separators, a currency mark, a trailing %, and accounting's
- * (1,234) for negatives.
- *
- * Returns null when the text is not a number — and null is also the answer for
- * '0012', because an ID with leading zeros is text and "cleaning" it to 12
- * destroys it. Same for anything past 15 digits, which is where IEEE doubles
- * start silently rounding account numbers.
- */
-function textToNumber(raw) {
-  const s = toHalfWidth(String(raw)).trim();
-  if (!s) return null;
-  const neg = /^\((.*)\)$/.exec(s);
-  const body = neg ? neg[1] : s;
-  const pct = /%$/.test(body);
-  const bare = body.replace(/%$/, '').replace(/[,\s]/g, '').replace(/^(NT|[$¥€£])+/i, '');
-  if (!/^-?\d+(\.\d+)?$/.test(bare)) return null;
-  if (/^-?0\d/.test(bare)) return null;              // 0012 is an ID, not 12
-  if (bare.replace(/[-.]/g, '').length > 15) return null;
-  const n = Number(bare);
-  if (!Number.isFinite(n)) return null;
-  return (neg ? -1 : 1) * (pct ? n / 100 : n);
-}
-
-/** Excel's day 0 is 1899-12-30, which is how its 1900-leap-year bug shakes out. */
-const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
-
-/**
- * Text that means a date → an Excel serial number.
- *
- * 民國年 is in here because it is the reason this exists: a government or ERP
- * export writes 113/1/5, Excel stores it as text, every date formula downstream
- * returns #VALUE!, and no amount of 儲存格格式 fixes it because the cell was never
- * a date. A year of three digits or fewer is read as 民國 and 1911 added.
- *
- * Deliberately narrow: y/m/d and y-m-d only. Nothing here guesses whether 3/4/24
- * is March or April — that is a question about the person's locale, not about
- * the data, and getting it wrong silently is worse than not converting at all.
- */
-function textToDateSerial(raw) {
-  const s = toHalfWidth(String(raw)).trim().replace(/[年月]/g, '/').replace(/日$/, '');
-  const m = /^(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(s);
-  if (!m) return null;
-  let y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  if (m[1].length <= 3) y += 1911;                   // 民國
-  if (y < 1900 || y > 9999 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  const t = Date.UTC(y, mo - 1, d);
-  const back = new Date(t);
-  // Rejects 2024/2/31, which Date.UTC would have rolled forward into March.
-  if (back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return null;
-  return Math.round((t - EXCEL_EPOCH_UTC) / 86400000);
-}
+// toHalfWidth / textToNumber / textToDateSerial / EXCEL_EPOCH_UTC used to live
+// here. They moved to compare.js (imported at the top of this file) when the
+// comparison engine turned out to need exactly the same three questions —
+// "is this text a number", "is this text a date", "are these the same value" —
+// and the alternative was a second copy of a parser whose whole value is in its
+// edge cases. 0012 stays text, 113/1/5 is 民國, 2024/2/31 is not a date: those
+// rules are hard-won and there must be one of them.
 
 const isBlank = (v) => v === '' || v === null || v === undefined;
 const isFormula = (f) => typeof f === 'string' && f.startsWith('=');
