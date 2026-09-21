@@ -300,8 +300,161 @@ const ANSWER = `# 比對測試 — 答案卷
 - **報表「位置」欄** → 點得動，會跳到「本月」對應的那一格。
 `;
 
+// ════════════════════════════════════════════════════════════════════════════
+// 進階：滾動預測與庫存快照
+//
+// The basic fixture above is a clean table with one key column. Neither of the
+// two things people actually compare looks like that. A forecast is wide, its
+// months roll every version, and a row is identified by 料號＋廠區＋客戶. An
+// inventory snapshot repeats the same 料號 in every warehouse and is identified
+// by 料號＋倉別＋批號. Keyed on one column, both produce a confidently wrong
+// report — which is why they are here.
+// ════════════════════════════════════════════════════════════════════════════
+
+const FC_V2_HEAD = ['料號', '廠區', '客戶', '2024-02', '2024-03', '2024-04', '2024-05', '合計'];
+const FC_V2 = [
+  ['PN-1001', '台中', 'ACME', 1200, 1300, 1250, 1400, 5150],
+  ['PN-1001', '蘇州', 'ACME', 800, 850, 800, 900, 3350],
+  ['PN-1002', '台中', 'ACME', 500, 520, 540, 560, 2120],
+  ['PN-1002', '台中', 'BETA', 300, 310, 320, 330, 1260],
+  ['PN-1003', '蘇州', 'BETA', 0, 0, 100, 200, 300],
+  ['PN-1004', '台中', 'GAMMA', 60, 60, 60, 60, 240],
+];
+
+// 上一版：月份整排往前一格，列序也不同——ERP 匯出很少保證排序穩定。
+const FC_V1_HEAD = ['料號', '廠區', '客戶', '2024-01', '2024-02', '2024-03', '2024-04', '合計'];
+const FC_V1 = [
+  ['PN-1002', '台中', 'BETA', 290, 300, 310, 320, 1220],
+  ['PN-1001', '蘇州', 'ACME', 780, 800, 850, 800, 3230],
+  ['PN-1001', '台中', 'ACME', 1100, 1200, 1300, 1250, 4850],
+  ['PN-1002', '台中', 'ACME', 480, 500, 600, 540, 2120],   // 2024-03 才是真差異
+  ['PN-1003', '蘇州', 'BETA', 0, 0, 0, 100, 100],
+  ['PN-1005', '台中', 'DELTA', 40, 40, 40, 40, 160],        // 只在上版
+];
+
+const INV_HEAD = ['料號', '倉別', '批號', '數量', '單位', '效期', '狀態'];
+const INV_TODAY = [
+  ['PN-1001', 'W01', 'L2401', 1200, 'PCS', d('2025-06-30'), '可用'],
+  ['PN-1001', 'W02', 'L2401', 300, 'PCS', d('2025-06-30'), '可用'],
+  ['PN-1001', 'W02', 'L2402', 450, 'PCS', d('2025-09-30'), '可用'],
+  ['PN-1002', 'W01', 'L2403', 80, 'PCS', d('2025-03-31'), '待驗'],
+  ['PN-1002', 'W03', 'L2403', 20, 'PCS', d('2025-03-31'), '可用'],
+  ['PN-1003', 'W01', 'L2404', 0, 'PCS', d('2026-01-31'), '凍結'],
+];
+
+async function writeAdvanced(file) {
+  const wb = new ExcelJS.Workbook();
+
+  const a = wb.addWorksheet('預測-本版');
+  a.addRow(FC_V2_HEAD);
+  FC_V2.forEach((r) => a.addRow(r));
+
+  const b = wb.addWorksheet('預測-上版');
+  b.addRow(FC_V1_HEAD);
+  FC_V1.forEach((r) => b.addRow(r));
+
+  const c = wb.addWorksheet('庫存-今日');
+  c.addRow(INV_HEAD);
+  INV_TODAY.forEach((r) => c.addRow(r));
+  c.getColumn(6).numFmt = 'yyyy/m/d';
+
+  await wb.xlsx.writeFile(file);
+}
+
+/**
+ * Yesterday's inventory, as an ERP writes it.
+ *
+ * Row order differs, quantities carry thousands separators and trailing spaces,
+ * and 效期 is 民國. Exactly one value really changed.
+ */
+function inventoryCsv() {
+  return [
+    '料號,倉別,批號,數量,單位,效期,狀態',
+    'PN-1002,W03,L2403,20,PCS,114/3/31,可用',
+    'PN-1001,W02,L2402,450,PCS,114/9/30,可用',
+    'PN-1001,W01,L2401,"1,200",PCS,114/6/30,可用',
+    'PN-1002,W01,L2403,100,PCS,114/3/31,待驗',
+    'PN-1001,W02,L2401,300 ,PCS,114/6/30,可用',
+    'PN-1003,W01,L2404,0,PCS,115/1/31,凍結',
+  ].join('\r\n') + '\r\n';
+}
+
+const ADVANCED = `# 進階測試 — 預測與庫存
+
+\`比對測試-進階.xlsx\` 有三張表：預測-本版、預測-上版、庫存-今日。
+搭配 \`庫存-昨日.csv\`。
+
+**這兩個測試的重點只有一件事：鍵要給好幾個欄位。**
+只給料號的話，同一個料號在每個倉別／每個廠區都有一筆，全部變成重複鍵，
+配對退回「出現順序」——而兩邊列序刻意不同，結果就是隨機配對。
+
+---
+
+## 測試五：滾動預測，本版 vs 上版
+
+> 比對「預測-本版」和「預測-上版」，鍵用 料號、廠區、客戶
+
+**應該要有 5 筆值不同 + 2 筆整列：**
+
+| 狀態 | 鍵值 | 欄位 | 本版 | 上版 |
+|---|---|---|---|---|
+| 值不同 | PN-1002 / 台中 / ACME | 2024-03 | 520 | 600 |
+| 值不同 | PN-1001 / 台中 / ACME | 合計 | 5150 | 4850 |
+| 值不同 | PN-1001 / 蘇州 / ACME | 合計 | 3350 | 3230 |
+| 值不同 | PN-1002 / 台中 / BETA | 合計 | 1260 | 1220 |
+| 值不同 | PN-1003 / 蘇州 / BETA | 合計 | 300 | 100 |
+| 只在本版 | PN-1004 / 台中 / GAMMA | （整列） | | |
+| 只在上版 | PN-1005 / 台中 / DELTA | （整列） | | |
+
+**四筆「合計」差異是對的，不是 bug**：兩版涵蓋的月份不一樣（本版 2–5 月、
+上版 1–4 月），合計本來就不該相等。真正的預測變動只有 PN-1002/台中/ACME 的 2024-03。
+
+**摘要區應該要有這兩列：**
+
+- 只在 預測-本版 的欄位：**2024-05**
+- 只在 預測-上版 的欄位：**2024-01**
+
+滾動掉的那個月和新長出來的那個月，是**整份檔案的一個事實，講一次就好**。
+如果它變成「每一列的 2024-01 和 2024-05 都不同」（多 12 筆假差異），就是有 bug。
+
+**只給料號當鍵會怎樣**：實測值不同會從 5 筆爆到 21 筆，而且廠區、客戶欄自己
+會出現「台中 → 蘇州」這種差異——那是配對錯了的招牌症狀。可以故意跑一次看看。
+
+---
+
+## 測試六：庫存快照，今日 vs 昨日
+
+開著 \`比對測試-進階.xlsx\`，把 \`庫存-昨日.csv\` 拖進去：
+
+> 用剛上傳的檔案比對「庫存-今日」，鍵用 料號、倉別、批號
+
+**正確答案只有一筆：**
+
+| 狀態 | 鍵值 | 欄位 | 今日 | 昨日 |
+|---|---|---|---|---|
+| 值不同 | PN-1002 / W01 / L2403 | 數量 | 80 | 100 |
+
+**其他全部都不可以出現：**
+
+| 今日 | 昨日 CSV | 為什麼相同 |
+|---|---|---|
+| 1200 | \`"1,200"\` | 千分位 |
+| 300 | \`300 \` | 尾隨空白（ERP 匯出常有） |
+| 2025/6/30 | \`114/6/30\` | 民國年 |
+| 2026/1/31 | \`115/1/31\` | 民國年跨年 |
+
+而且六列的順序在兩邊完全不同，正確配對之後不應該有任何「只在某一邊」。
+
+**只給料號當鍵會怎樣**：實測是 **15 筆差異，其中 14 筆是假的，
+而唯一那筆真的還配錯對**（把 W01 的 80 拿去跟 W03 的 20 比）。
+這就是為什麼工具說明裡要求寧可多給鍵也不要少給。
+`;
+
 fs.mkdirSync(OUT, { recursive: true });
 await writeMain(path.join(OUT, '比對測試-主檔.xlsx'));
+await writeAdvanced(path.join(OUT, '比對測試-進階.xlsx'));
+fs.writeFileSync(path.join(OUT, '庫存-昨日.csv'), '﻿' + inventoryCsv(), 'utf8');
+fs.writeFileSync(path.join(OUT, '答案卷-進階.md'), ADVANCED, 'utf8');
 await writeSource(path.join(OUT, '比對測試-來源.xlsx'));
 fs.writeFileSync(path.join(OUT, '比對測試-來源.csv'), '\ufeff' + csvText(), 'utf8');
 fs.writeFileSync(

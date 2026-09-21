@@ -1949,10 +1949,10 @@ export async function compareSource(args, source) {
       rightTruncated = right.truncatedFrom;
     }
 
-    const keyColumn = resolveKeyColumn(args.key_column, headers ? left.values[0] : null);
+    const keyColumns = resolveKeyColumns(args.key_column, headers ? left.values[0] : null);
     const diff = diffGrids(left.values, srcRows, {
       headers,
-      keyColumn,
+      keyColumn: keyColumns,
       ignoreCase: !!args.ignore_case,
       tolerance: Number(args.tolerance) || 0,
     });
@@ -1968,12 +1968,14 @@ export async function compareSource(args, source) {
       diff.notes.push(`${rightLabel} 那一側有 ${rightTruncated} 列，沒有全部比到。`);
     }
 
-    const keyPair = diff.columns.find((c) => c.cur === keyColumn);
+    const keyLabel = keyColumns
+      .map((k) => (diff.columns.find((c) => c.cur === k) || {}).label || `第 ${k + 1} 欄`)
+      .join(' + ');
     const grid = buildReport(diff, {
       leftLabel: sheetName,
       rightLabel,
       sheetName,
-      keyLabel: keyPair ? keyPair.label : '',
+      keyLabel,
       rangeText: left.address,
       rightRangeText: rightAddress,
       // The diff counts from the top-left of the COMPARED RANGE; these shift its
@@ -2036,13 +2038,25 @@ export async function compareSource(args, source) {
  * actually has: it read the sheet and saw 「客戶代號」, not 「column 2」. Making it
  * convert would be one more place to be off by one.
  */
-function resolveKeyColumn(raw, header) {
-  if (raw === null || raw === undefined || raw === '') return null;
-  if (Number.isFinite(Number(raw))) return Number(raw);
-  const want = String(raw).trim().toLowerCase();
-  if (!header) return null;
-  const i = header.findIndex((h) => String(h == null ? '' : h).trim().toLowerCase() === want);
-  return i < 0 ? null : i;
+function resolveKeyColumns(raw, header) {
+  if (raw === null || raw === undefined || raw === '') return [];
+  // 「料號,倉別,批號」 as one string is what a model writes when the schema says
+  // a list is allowed — accepted alongside a real array rather than rejected on
+  // a technicality the person asking would not recognise as their mistake.
+  const parts = Array.isArray(raw)
+    ? raw
+    : String(raw).split(/[,、+]/);
+  const out = [];
+  for (const part of parts) {
+    const one = String(part).trim();
+    if (!one) continue;
+    if (Number.isFinite(Number(one))) { out.push(Number(one)); continue; }
+    if (!header) continue;
+    const want = one.toLowerCase();
+    const i = header.findIndex((h) => String(h == null ? '' : h).trim().toLowerCase() === want);
+    if (i >= 0) out.push(i);
+  }
+  return [...new Set(out)];
 }
 
 /**

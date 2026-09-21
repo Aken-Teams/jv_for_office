@@ -342,20 +342,41 @@ export function alignColumns(curHeader, srcHeader, fallbackWidth = 0) {
   return Array.from({ length: width }, (_, i) => ({ label: `第 ${i + 1} 欄`, cur: i, src: i }));
 }
 
-/** Match rows by the value in the key column; unmatched rows on either side stand alone. */
+/** Joins the parts of a composite key.   cannot occur in a cell. */
+const KEY_SEP = ' ';
+
+/** What the report shows for a composite key: 「PN-1001 / W02 / L2402」. */
+const keyText = (row, cols) => cols.map((i) => cellText(row[i])).join(' / ');
+
+/**
+ * Match rows by their key; unmatched rows on either side stand alone.
+ *
+ * ── Why the key is a LIST ──
+ * One column is not enough for the data people actually compare. An inventory
+ * snapshot is keyed on 料號＋倉別＋批號 and the same 料號 appears in every
+ * warehouse; a rolling forecast is keyed on 料號＋廠區＋客戶. Keyed on 料號
+ * alone, every one of those rows is a duplicate, pairing falls back to
+ * occurrence order, and two exports that sorted differently — which is most
+ * pairs of exports — get matched row-for-row at random.
+ *
+ * Measured on a six-row inventory fixture that had exactly ONE real change:
+ * keyed on 料號 alone it produced fifteen differences, all but one spurious, and
+ * mis-paired the real one so its numbers were wrong too. That is the failure
+ * this signature exists to prevent, and it is worse than no tool at all.
+ */
 function pairByKey(curBody, srcBody, keyCur, keySrc, opts) {
-  const norm = (v) => {
-    let s = cellText(v);
+  const norm = (row, cols) => cols.map((i) => {
+    let s = cellText(row[i]);
     if (opts.trim) s = s.trim();
     if (opts.ignoreCase) s = s.toLowerCase();
     // '001' and 1 are the same customer id on two sides of an export.
     const n = toNumber(s);
     return n === null ? s : String(n);
-  };
+  }).join(KEY_SEP);
 
   const srcBuckets = new Map();
   srcBody.forEach((row, i) => {
-    const k = norm(row[keySrc]);
+    const k = norm(row, keySrc);
     if (!srcBuckets.has(k)) srcBuckets.set(k, []);
     srcBuckets.get(k).push(i);
   });
@@ -363,18 +384,17 @@ function pairByKey(curBody, srcBody, keyCur, keySrc, opts) {
   const pairs = [];
   const takenSrc = new Set();
   curBody.forEach((row, i) => {
-    const k = norm(row[keyCur]);
-    const bucket = srcBuckets.get(k);
-    // Duplicate keys pair in occurrence order — the second 「A001」 on one side
-    // goes with the second on the other, which is the least surprising rule
-    // available once the key has stopped being unique.
+    const bucket = srcBuckets.get(norm(row, keyCur));
+    // Still duplicates after the composite key? Then pair in occurrence order —
+    // the second 「A001」 on one side goes with the second on the other, which is
+    // the least surprising rule available once the key has stopped identifying.
     const j = bucket && bucket.length ? bucket.shift() : null;
     if (j !== null) takenSrc.add(j);
-    pairs.push({ c: i, s: j, key: cellText(row[keyCur]) });
+    pairs.push({ c: i, s: j, key: keyText(row, keyCur) });
   });
   srcBody.forEach((row, j) => {
     if (takenSrc.has(j)) return;
-    pairs.push({ c: null, s: j, key: cellText(row[keySrc]) });
+    pairs.push({ c: null, s: j, key: keyText(row, keySrc) });
   });
   return pairs;
 }
@@ -446,20 +466,52 @@ export function diffGrids(current, source, opts = {}) {
   const columns = alignColumns(curHeader, srcHeader, bodyWidth);
   const notes = [];
 
-  const wantKey = keyColumn !== null && keyColumn !== undefined && Number.isFinite(Number(keyColumn));
-  const keyCur = wantKey ? Number(keyColumn) : null;
-  // The key is named by its position in the WORKBOOK; find where that column
-  // landed on the source side rather than assuming it is the same index.
-  const keyPair = wantKey ? columns.find((c) => c.cur === keyCur) : null;
-  const keySrc = keyPair ? keyPair.src : keyCur;
-  const keyed = wantKey && keySrc !== null && keySrc !== undefined;
-  if (wantKey && !keyed) {
-    notes.push(`來源檔裡找不到對應的鍵欄位「${keyPair ? keyPair.label : keyCur}」，已改用列的先後順序比對。`);
+  // A single number stays valid — most comparisons really do have one key — but
+  // the list is the shape the hard cases need. See pairByKey.
+  const wanted = (Array.isArray(keyColumn) ? keyColumn : [keyColumn])
+    .filter((k) => k !== null && k !== undefined && Number.isFinite(Number(k)))
+    .map(Number);
+
+  // Each key column is named by its position in the WORKBOOK; find where each
+  // landed on the source side rather than assuming the indexes line up.
+  const keyCur = [];
+  const keySrc = [];
+  const missing = [];
+  for (const k of wanted) {
+    const pair = columns.find((c) => c.cur === k);
+    if (pair && pair.src !== null && pair.src !== undefined) {
+      keyCur.push(k);
+      keySrc.push(pair.src);
+    } else {
+      missing.push(pair ? pair.label : `第 ${k + 1} 欄`);
+    }
+  }
+  const keyed = keyCur.length > 0;
+  if (missing.length) {
+    notes.push(keyed
+      // Partial is worth saying out loud: the comparison still ran, but on a
+      // weaker key than was asked for, and that changes how much to trust it.
+      ? `來源檔裡找不到鍵欄位「${missing.join('、')}」，這次只用 ${keyCur.length} 個欄位對應。`
+      : `來源檔裡找不到鍵欄位「${missing.join('、')}」，已改用列的先後順序比對。`);
   }
 
   const pairs = keyed
     ? pairByKey(curBody, srcBody, keyCur, keySrc, { trim, ignoreCase })
     : pairByPosition(curBody, srcBody);
+
+  /**
+   * Columns that exist on one side only, reported ONCE instead of per row.
+   *
+   * PRD 3.2 asks for 差異列, 差異欄 and 差異值 as three separate things, and this
+   * is the middle one. Comparing a one-sided column cell by cell means every row
+   * carries a difference against an empty string — on a rolling forecast, where
+   * the oldest month drops off and a new one appears at the end, that is two
+   * spurious differences per row on top of the real ones. Said once at the top,
+   * it is the single fact it actually is: this column is new, that one is gone.
+   */
+  const common = columns.filter((c) => c.cur !== null && c.src !== null);
+  const columnsOnlyCurrent = columns.filter((c) => c.src === null).map((c) => c.label);
+  const columnsOnlySource = columns.filter((c) => c.cur === null).map((c) => c.label);
 
   const diffs = [];
   let changedRows = 0;
@@ -500,10 +552,10 @@ export function diffGrids(current, source, opts = {}) {
     }
 
     let rowChanged = false;
-    for (const col of columns) {
+    for (const col of common) {
       if (diffs.length >= limit) { truncated = true; break; }
-      const a = col.cur === null ? '' : curBody[c][col.cur];
-      const b = col.src === null ? '' : srcBody[s][col.src];
+      const a = curBody[c][col.cur];
+      const b = srcBody[s][col.src];
       if (sameValue(a, b, { trim, ignoreCase, tolerance })) continue;
       rowChanged = true;
       diffs.push({
@@ -525,6 +577,8 @@ export function diffGrids(current, source, opts = {}) {
   return {
     keyed,
     columns,
+    columnsOnlyCurrent,
+    columnsOnlySource,
     diffs,
     notes,
     counts: {
@@ -617,6 +671,16 @@ export function buildReport(diff, info) {
   if (rightRangeText) grid.push(['對照範圍', rightRangeText]);
   grid.push(
     ['比對方式', diff.keyed ? `以「${keyLabel}」對應列` : '依列的先後順序對應（沒有指定鍵欄位）'],
+  );
+  // 差異欄, stated once. A new or dropped column is one fact about the two
+  // files, not a difference in every row of them.
+  if (diff.columnsOnlyCurrent && diff.columnsOnlyCurrent.length) {
+    grid.push([`只在 ${leftLabel} 的欄位`, diff.columnsOnlyCurrent.join('、')]);
+  }
+  if (diff.columnsOnlySource && diff.columnsOnlySource.length) {
+    grid.push([`只在 ${rightLabel} 的欄位`, diff.columnsOnlySource.join('、')]);
+  }
+  grid.push(
     [`${leftLabel} 列數`, c.curRows],
     [`${rightLabel} 列數`, c.srcRows],
     ['值不同的儲存格', c.cells],
