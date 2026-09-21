@@ -1417,12 +1417,7 @@ async function openHistory() {
   $('history').setAttribute('aria-expanded', 'true');
   $('hist-list').innerHTML = `<div class="hist-empty">${escapeHtml(t('載入中…'))}</div>`;
 
-  if (!state.documentKey) {
-    // Minted on first send, so a file nobody has asked about yet has no id and
-    // therefore no history — which is the honest thing to say.
-    try { state.documentKey = (await host.getDocumentKey()) || ''; } catch { /* fall through */ }
-  }
-  const key = state.documentKey || state.documentName;
+  const key = (await ensureDocumentKey()) || state.documentName;
   try {
     const res = await fetch(
       `${state.apiBase}/api/${host.meta.api}/conversations?documentKey=${encodeURIComponent(key || '')}`,
@@ -1550,11 +1545,7 @@ async function send(message, opts = {}) {
     // then be answered with no tool call at all.
     //
     // First turn only: later turns resume the CLI session, which already has it.
-    // Minted here rather than at startup: it writes a custom property, which
-    // marks the file as modified, and merely opening the pane should not do that.
-    if (!state.documentKey) {
-      try { state.documentKey = (await host.getDocumentKey()) || ''; } catch { /* fall back to the name */ }
-    }
+    await ensureDocumentKey();
 
     let documentContext;
     if (!state.sessionId) {
@@ -2139,8 +2130,57 @@ function setSelection(sel) {
  * saves it there is one. Leaving 「（未命名文件）」 up for the rest of the
  * session makes the pane look like it lost track of the file.
  */
+/**
+ * Everything that belongs to ONE document, dropped when a different one arrives.
+ *
+ * ── The bug this closes ──
+ * SharedRuntime keeps the pane alive across workbooks — that is what it is for —
+ * but `documentKey` was only ever minted when it was empty, so it kept the FIRST
+ * workbook's id forever. Open A, ask something, open B: the header said B while
+ * the key still said A, so B's messages were filed under A's history and B's
+ * history came up blank. Coming back to A later could then find its thread split
+ * or missing, which is exactly 「同一個檔案，紀錄不見了」.
+ *
+ * The undo stack is the dangerous one. Its snapshots are cell values from the
+ * old workbook, and restoreSnapshot writes into whichever workbook is ACTIVE —
+ * so an undo after switching would have written A's old values into B.
+ */
+function documentSwitched() {
+  state.documentKey = '';
+  // The CLI session belongs to the other document's conversation; resuming it
+  // here would carry that context into this file.
+  state.sessionId = null;
+  state.undoStack = [];
+  state.recorded = [];
+  updateUndoButton();
+}
+
+/**
+ * The id of the document in front of us right now.
+ *
+ * Checks for a switch FIRST, because both callers used to trust a key that had
+ * been minted for a different workbook — see documentSwitched. Minted lazily
+ * rather than at startup: adding the custom property marks the file as modified,
+ * and merely opening the pane should not do that.
+ */
+async function ensureDocumentKey() {
+  await refreshDocumentName();
+  if (!state.documentKey) {
+    try { state.documentKey = (await host.getDocumentKey()) || ''; } catch { /* fall back to the name */ }
+  }
+  return state.documentKey;
+}
+
 async function refreshDocumentName() {
+  const was = state.documentName;
   try { state.documentName = await host.getDocumentName(); } catch { /* non-fatal */ }
+  // `was` empty means this is the first look, not a change.
+  //
+  // A RENAME also lands here, and that is fine: clearing the key only forces it
+  // to be re-read, and a renamed file still carries the same custom property —
+  // so it comes back with the same id and keeps its history, which is the whole
+  // reason the id exists. Only a genuinely different file yields a different one.
+  if (was && state.documentName && state.documentName !== was) documentSwitched();
   $('wb-name').textContent = state.documentName || t(host.meta.words.untitled);
   $('wb-name').title = state.documentName || '';
 }
