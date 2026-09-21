@@ -12,6 +12,7 @@
  * data. Do not "streamline" it away.
  */
 import { loadHost } from './hosts/index.js';
+import { prune, pruneSummary, buildPrompt } from './recorder.js';
 import { t, setLocale, applyStaticText, applyHostText } from './i18n.js';
 
 /**
@@ -120,6 +121,13 @@ const state = {
   attachments: [],
   /** Held for the length of one run so a tool call can still reach them. */
   sentAttachments: [],
+  /**
+   * What the agent actually did, with how each call ended.
+   *
+   * Kept for the length of the conversation, not the run: the procedure worth
+   * saving is usually spread over several turns.
+   */
+  recorded: [],
   /** 使用技能 (PRD 3.1) — what IT has published for THIS host. Empty hides the row. */
   skills: [],
   /** The chosen skill id. '' means 自動調度, which is the default and usually right. */
@@ -1149,6 +1157,7 @@ async function handleToolRequest(payload) {
         // A refusal that carries the person's own instruction is worth far more
         // than a bare "no": the agent can act on it immediately instead of
         // spending a round trip asking what they wanted.
+        state.recorded.push({ tool, args, rejected: true });
         await postToolResult(state.runId, callId, {
           ok: false,
           error: userNote
@@ -1187,6 +1196,10 @@ async function handleToolRequest(payload) {
   // on). False means the server judged it a read — and if it turns out not to be,
   // the guard inside runScript stops it rather than trusting that judgement.
   const result = await host.executeTool(tool, args, { writeApproved: !!needsConfirm, source });
+  // Recorded with its outcome, which is the whole point — see recorder.js. The
+  // snapshot is kept by REFERENCE so undoLast can find this entry again without
+  // anybody having to invent an id for it.
+  state.recorded.push({ tool, args, failed: result.ok === false, snapshot: result.snapshot });
   // Approving WITH a note means "do this, and here is something you should know".
   // Riding it back on the tool result gets it to the agent within the same turn,
   // instead of the person having to repeat themselves in the next message.
@@ -1248,6 +1261,12 @@ async function undoLast() {
   const snap = state.undoStack.pop();
   if (!snap) return false;
   updateUndoButton();
+  // A step that was taken back is not part of the procedure. Marked before the
+  // restore rather than after, so a restore that throws still leaves the step
+  // out — it was wrong either way, and a procedure that reproduces it is worse
+  // than one missing a line.
+  const undoneEntry = state.recorded.find((e) => e.snapshot === snap);
+  if (undoneEntry) undoneEntry.undone = true;
   try {
     // The host describes what it put back, already worded and translated: only
     // it knows whether that was a range of cells or four sheets' worth, and
@@ -2418,6 +2437,7 @@ function renderTemplateMenu() {
   }
   const save = $('tpl-save');
   if (save) save.disabled = !$('input').value.trim();
+  syncRecordButton();
 }
 
 const firstLine = (s) => {
@@ -2470,6 +2490,49 @@ async function saveTemplateText(content) {
 
 async function saveTemplate() {
   await saveTemplateText($('input').value);
+}
+
+/**
+ * Ask the agent to write up what it just did, so it can be saved.
+ *
+ * ── Why this is not simply "summarise our conversation" ──
+ * A conversation contains the fumbling: the first attempt with the wrong key
+ * columns, the write that got undone, the call the person declined. Summarised
+ * from prose, all of that comes back — and the saved procedure then reproduces
+ * 「do it wrong, then fix it」 rather than 「do it right」, which is worse than
+ * having no template at all.
+ *
+ * So the dead ends are removed mechanically first (see recorder.js) and the
+ * agent is handed only the steps that survived. It is not being asked to work
+ * out which steps were mistakes — that question was already answered with
+ * recorded facts.
+ *
+ * The write-up arrives as an ordinary reply, so it lands in a bubble with a
+ * 存成常用指令 button on it: the person reads it, edits if they want, and saves
+ * it the same way they would save anything else.
+ */
+function recordToTemplate() {
+  const kept = prune(state.recorded);
+  if (!kept.length) {
+    addNote(t('這個對話還沒有做過可以整理成流程的操作。'), 'note');
+    return;
+  }
+  const summary = pruneSummary(state.recorded, kept);
+  toggleTemplateMenu(false);
+  const dropped = summary.total - summary.kept;
+  if (dropped > 0) {
+    // Said out loud rather than silently shrinking the list: somebody who did
+    // twelve things and sees six in the write-up should know why.
+    addNote(t('實際做過 {0} 步，剔除失敗／被拒絕／被復原的之後剩 {1} 步。',
+      summary.total, summary.kept), 'note');
+  }
+  void send(buildPrompt(kept, summary));
+}
+
+/** The record button only makes sense once something has been recorded. */
+function syncRecordButton() {
+  const btn = $('tpl-record');
+  if (btn) btn.hidden = !prune(state.recorded).length;
 }
 
 async function renameTemplate(id) {
@@ -2927,6 +2990,7 @@ Office.onReady(async (info) => {
     if (edit) { void renameTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');
     if (del) { void deleteTemplate(del.dataset.del); return; }
+    if (e.target.closest('#tpl-record')) { recordToTemplate(); return; }
     if (e.target.closest('#tpl-save')) void saveTemplate();
   });
 

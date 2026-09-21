@@ -416,6 +416,13 @@
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
           <span class="src-name" data-t="把輸入框的內容存成常用指令">把輸入框的內容存成常用指令</span>
         </button>
+        <!-- Hidden until the agent has actually done something this conversation.
+             Offering "save what just happened" when nothing happened is an
+             invitation to save an empty procedure. -->
+        <button type="button" id="tpl-record" class="src-item tpl-add" hidden>
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>
+          <span class="src-name" data-t="把剛剛做過的流程整理成常用指令">把剛剛做過的流程整理成常用指令</span>
+        </button>
         <div id="tpl-note" class="src-note"></div>
       </div>
 
@@ -425,7 +432,7 @@
       <!-- Driven by the 上傳檔案 item in the ＋ menu. Kept out of the tab order
            because the menu item is the control people actually reach for. -->
       <input id="file-input" type="file" multiple hidden tabindex="-1"
-             accept=".pdf,.docx,.xlsx,.xls,.csv,.tsv,.txt,.md,.json,.xml,.html,.htm,.png,.jpg,.jpeg,.gif,.webp" />
+             accept=".pdf,.docx,.pptx,.xlsx,.xls,.csv,.tsv,.txt,.md,.json,.xml,.html,.htm,.png,.jpg,.jpeg,.gif,.webp" />
 
       <div class="input-shell">
         <button type="button" id="plus" class="plus-btn" aria-haspopup="true" aria-expanded="false"
