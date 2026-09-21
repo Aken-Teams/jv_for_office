@@ -134,6 +134,40 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
     formula.includes('CMD') && formula.includes('EXEC') && !/\bSUM\b/.test(formula));
 }
 
+// ── 不可以用瀏覽器的對話框 ─────────────────────────────────────────────────
+//
+// Office 增益集的 webview **不支援** prompt / confirm / alert，而且是無聲的失敗：
+// prompt 回 null，程式讀成「使用者按了取消」，於是點「存成常用指令」什麼事都
+// 不會發生，也不會有任何錯誤訊息。這是 bug 最糟的形狀——沒有東西可以搜尋。
+{
+  const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  const code = app.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok('沒有 window.prompt', !/window\.prompt\s*\(/.test(code));
+  ok('沒有 window.confirm', !/window\.confirm\s*\(/.test(code));
+  ok('沒有 window.alert', !/window\.alert\s*\(/.test(code));
+  ok('改用窗格自己的命名卡片', code.includes('function askName('));
+  ok('刪除確認也改用窗格自己的卡片', code.includes('function askYesNo('));
+}
+
+// ── 預覽與建議名稱要去掉 markdown ──────────────────────────────────────────
+//
+// 存下來的一律是原始 markdown（模型讀那個最準，套用時也要原樣回來），
+// 但「名稱」和清單裡那一行摘要是給人看的。agent 寫出來的流程開頭常是
+// 「## 流程」或「**先讀三張規則表**」，拿那個當名字等於給人看標點符號。
+{
+  const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  ok('有把 markdown 剝掉的函式', app.includes('function plainText('));
+  const fl = (app.match(/const firstLine = \(s\) => \{[\s\S]*?\n};/) || [''])[0];
+  ok('摘要那一行用剝過的文字', fl.includes('plainText(s)'));
+  // 「## 流程」剝完是「流程」——那是標題在做它的事，不是摘要在做它的事。
+  ok('會跳過太短的段落標題，挑真的有話的那一行', /length >= 4/.test(fl));
+  ok('建議名稱也用剝過的文字', /function suggestName\([\s\S]*?firstLine\(content\)/.test(app));
+  // 存進去的必須還是原文，不是剝過的。
+  const save = (app.match(/async function saveTemplateText\(content\)[\s\S]*?\n}/) || [''])[0];
+  ok('存的是原文，不是剝過的預覽',
+    save.includes('content: body') && !/content: plainText/.test(save));
+}
+
 // ── 選單裡的動作列不可以被當成資料來源停用 ─────────────────────────────────
 //
 // 「常用指令」第一版整列是灰的，點不動。它跟「上傳檔案」一樣掛在 ＋ 選單裡，

@@ -416,10 +416,11 @@
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
           <span class="src-name" data-t="把輸入框的內容存成常用指令">把輸入框的內容存成常用指令</span>
         </button>
-        <!-- Hidden until the agent has actually done something this conversation.
-             Offering "save what just happened" when nothing happened is an
-             invitation to save an empty procedure. -->
-        <button type="button" id="tpl-record" class="src-item tpl-add" hidden>
+        <!-- Always visible, disabled until the agent has actually done something.
+             It was hidden until then, and that was wrong: a feature nobody can
+             see is a feature nobody finds. Greyed out with a reason teaches what
+             it is for; absent teaches nothing. -->
+        <button type="button" id="tpl-record" class="src-item tpl-add">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>
           <span class="src-name" data-t="把剛剛做過的流程整理成常用指令">把剛剛做過的流程整理成常用指令</span>
         </button>

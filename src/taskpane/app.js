@@ -2414,7 +2414,8 @@ function renderTemplateMenu() {
     list.innerHTML = `<div class="tpl-empty">${escapeHtml(state.templateError)}</div>`;
   } else if (!state.templates.length) {
     list.innerHTML = `<div class="tpl-empty">${escapeHtml(
-      t('還沒有常用指令。把一段你常用的說法打進輸入框，再用下面那個按鈕存起來。'))}</div>`;
+      t('還沒有常用指令。兩種存法：把說法打進輸入框存起來，'
+        + '或是先讓 AI 做一次，再用下面的「整理成常用指令」把流程存下來。'))}</div>`;
   } else {
     list.innerHTML = state.templates.map((tpl) => `
       <div class="tpl-row">
@@ -2440,10 +2441,55 @@ function renderTemplateMenu() {
   syncRecordButton();
 }
 
+/**
+ * Strip markdown, for places that show a PREVIEW rather than the text itself.
+ *
+ * What gets saved is always the raw markdown — that is what the model reads best
+ * and what has to come back unchanged when the template is applied. But the
+ * one-line peek under a template's name, and the name suggested when saving,
+ * are both read by a person. A procedure the agent wrote opens with 「## 流程」
+ * or 「**先讀三張規則表**」, and offering 「## 流程」 as a name, or showing
+ * 「**先讀三張規則表**」 as the summary line, is showing somebody the punctuation
+ * instead of the sentence.
+ */
+function plainText(s) {
+  return String(s || '')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')          // headings
+    .replace(/^\s*[-*+]\s+/gm, '')               // bullets
+    .replace(/^\s*\d+\.\s+/gm, '')               // numbered items
+    .replace(/^\s*>\s?/gm, '')                   // quotes
+    .replace(/`{1,3}([^`]*)`{1,3}/g, '$1')       // code spans
+    .replace(/\*\*([^*]+)\*\*/g, '$1')           // bold
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')   // italics
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')     // links keep their words
+    .replace(/^\s*\|.*\|\s*$/gm, '')             // table rows are not a summary
+    .replace(/^\s*[-=]{3,}\s*$/gm, '');          // rules
+}
+
+/**
+ * The first line that actually says something.
+ *
+ * Not simply the first non-empty one. A procedure the agent wrote opens with a
+ * section label — 「## 流程」, 「## 步驟」 — and once the markdown is stripped that
+ * becomes 「流程」, which is a heading doing its job and a summary doing none.
+ * Four characters is the line between a label and a sentence; anything shorter
+ * is skipped in favour of what comes after it. A heading that IS descriptive
+ * （「月結比對流程」）clears the bar and gets used, which is the right answer too.
+ */
 const firstLine = (s) => {
-  const line = String(s || '').split('\n').find((l) => l.trim()) || '';
-  return line.trim().slice(0, 60);
+  const lines = plainText(s).split('\n').map((l) => l.trim()).filter(Boolean);
+  const said = lines.find((l) => l.replace(/\s/g, '').length >= 4) || lines[0] || '';
+  return said.slice(0, 60);
 };
+
+/** A name worth offering: short, readable, and never markdown punctuation. */
+function suggestName(content) {
+  const line = firstLine(content);
+  // Cut at the first natural break so 「比對本月與上月的庫存，用料號＋倉別＋批號」
+  // suggests 「比對本月與上月的庫存」 rather than a truncated middle of a sentence.
+  const cut = line.split(/[，。：,.:;、]/)[0].trim();
+  return (cut || line).slice(0, 20);
+}
 
 /** Apply one: the text lands in the composer, where it can still be changed. */
 function applyTemplate(id) {
@@ -2478,13 +2524,111 @@ function applyTemplate(id) {
  * and saving ITS reply: it has just done the work and can state the steps in the
  * order they actually happened.
  */
+/**
+ * Ask for a name, in the pane.
+ *
+ * ── Why not window.prompt ──
+ * Office task panes do not support it. `prompt()`, `confirm()` and `alert()` are
+ * blocked in the add-in webview, and blocked SILENTLY: prompt returns null, the
+ * code reads that as 「the person pressed Cancel」, and nothing happens. Clicking
+ * 存成常用指令 did nothing at all, with no error anywhere — the worst shape a bug
+ * can have, because there is nothing to search for.
+ *
+ * So naming happens where every other question in this pane happens: a card in
+ * the transcript. Same shape as askChoice, including Enter to accept.
+ */
+function askName({ title, value, placeholder, confirmLabel }) {
+  return new Promise((resolve) => {
+    clearEmptyState();
+    const card = document.createElement('div');
+    card.className = 'confirm choice';
+    card.setAttribute('role', 'alertdialog');
+    card.innerHTML = `
+      <div class="confirm-head">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
+        <span class="confirm-title">${escapeHtml(String(title || ''))}</span>
+      </div>
+      <input class="confirm-say" type="text" autocomplete="off"
+             value="${escapeHtml(String(value || ''))}"
+             placeholder="${escapeHtml(String(placeholder || ''))}"
+             aria-label="${escapeHtml(String(title || ''))}" />
+      <div class="choice-list">
+        <button class="choice-opt" data-go="1">
+          <span class="choice-label">${escapeHtml(confirmLabel || t('儲存'))}</span>
+        </button>
+        <button class="choice-opt" data-go="0">
+          <span class="choice-label">${escapeHtml(t('取消'))}</span>
+        </button>
+      </div>`;
+    $('log').appendChild(card);
+    scrollDown();
+
+    const field = card.querySelector('.confirm-say');
+    field.focus();
+    field.select();
+
+    const done = (answer) => {
+      resolveCard(card, answer === null ? 'no' : 'ok',
+        answer === null ? t('已取消') : t('名稱：{0}', answer));
+      resolve(answer);
+    };
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); if (field.value.trim()) done(field.value.trim()); }
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
+    });
+    for (const btn of card.querySelectorAll('.choice-opt')) {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.go !== '1') { done(null); return; }
+        if (field.value.trim()) done(field.value.trim());
+        else field.focus();
+      });
+    }
+  });
+}
+
+/** Same reason as askName: confirm() is blocked too, and silently. */
+function askYesNo(question, confirmLabel) {
+  return new Promise((resolve) => {
+    clearEmptyState();
+    const card = document.createElement('div');
+    card.className = 'confirm choice';
+    card.setAttribute('role', 'alertdialog');
+    card.innerHTML = `
+      <div class="confirm-head">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
+        <span class="confirm-title">${escapeHtml(t('請確認'))}</span>
+      </div>
+      <div class="confirm-body">${escapeHtml(String(question || ''))}</div>
+      <div class="choice-list">
+        <button class="choice-opt" data-go="1">
+          <span class="choice-label">${escapeHtml(confirmLabel || t('確定'))}</span>
+        </button>
+        <button class="choice-opt" data-go="0">
+          <span class="choice-label">${escapeHtml(t('取消'))}</span>
+        </button>
+      </div>`;
+    $('log').appendChild(card);
+    scrollDown();
+    for (const btn of card.querySelectorAll('.choice-opt')) {
+      btn.addEventListener('click', () => {
+        const yes = btn.dataset.go === '1';
+        resolveCard(card, yes ? 'ok' : 'no', yes ? t('已確認') : t('已取消'));
+        resolve(yes);
+      });
+    }
+  });
+}
+
 async function saveTemplateText(content) {
   const body = String(content || '').trim();
   if (!body) { addNote(t('沒有內容可以存。'), 'err'); return; }
-  const name = window.prompt(t('這則常用指令要叫什麼名字？'), firstLine(body).slice(0, 20));
+  const name = await askName({
+    title: t('這則常用指令要叫什麼名字？'),
+    value: suggestName(body),
+    placeholder: t('例如：月結比對'),
+  });
   if (name === null) return;
-  if (!name.trim()) { addNote(t('名稱不能是空的。'), 'err'); return; }
-  await templateRequest('POST', '', { name: name.trim(), content: body });
+  await templateRequest('POST', '', { name, content: body });
   addNote(t('已存成常用指令「{0}」。之後從 ＋ → 常用指令 叫出來。', name.trim()), 'note');
 }
 
@@ -2529,24 +2673,37 @@ function recordToTemplate() {
   void send(buildPrompt(kept, summary));
 }
 
-/** The record button only makes sense once something has been recorded. */
+/**
+ * The record button: always there, live only once there is something to record.
+ *
+ * `title` rather than silence, because 「why is this greyed out」 is the question
+ * a disabled control always raises and the only place to answer it is the
+ * control itself.
+ */
 function syncRecordButton() {
   const btn = $('tpl-record');
-  if (btn) btn.hidden = !prune(state.recorded).length;
+  if (!btn) return;
+  const n = prune(state.recorded).length;
+  btn.disabled = !n;
+  btn.title = n
+    ? t('把這個對話實際做過的 {0} 個步驟整理成一段指令。', n)
+    : t('先讓 AI 實際做一次（例如跑一次比對），這個按鈕就會亮起來。');
 }
 
 async function renameTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
   if (!tpl) return;
-  const name = window.prompt(t('改成什麼名字？'), tpl.name);
-  if (name === null || !name.trim()) return;
-  await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { name: name.trim() });
+  toggleTemplateMenu(false);
+  const name = await askName({ title: t('改成什麼名字？'), value: tpl.name });
+  if (name === null) return;
+  await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { name });
 }
 
 async function deleteTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
   if (!tpl) return;
-  if (!window.confirm(t('刪除常用指令「{0}」？這個動作沒辦法復原。', tpl.name))) return;
+  toggleTemplateMenu(false);
+  if (!await askYesNo(t('刪除常用指令「{0}」？這個動作沒辦法復原。', tpl.name), t('刪除'))) return;
   await templateRequest('DELETE', `/${encodeURIComponent(id)}`, null);
 }
 
@@ -2990,8 +3147,10 @@ Office.onReady(async (info) => {
     if (edit) { void renameTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');
     if (del) { void deleteTemplate(del.dataset.del); return; }
-    if (e.target.closest('#tpl-record')) { recordToTemplate(); return; }
-    if (e.target.closest('#tpl-save')) void saveTemplate();
+    const rec = e.target.closest('#tpl-record');
+    if (rec) { if (!rec.disabled) recordToTemplate(); return; }
+    const save = e.target.closest('#tpl-save');
+    if (save && !save.disabled) void saveTemplate();
   });
 
   // Click-away closes it. A menu that can only be dismissed by the button that
