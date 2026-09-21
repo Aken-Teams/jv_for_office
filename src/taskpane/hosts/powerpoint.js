@@ -67,6 +67,7 @@ import { makeScriptGuard } from './guard.js';
 import { renderMermaid } from './mermaid.js';
 // Pure string work — no canvas, no DOM. See svgchart.js for why vector.
 import { chartSvg, CHART_TYPES } from './svgchart.js';
+import { ornamentSvg } from './svgart.js';
 
 // ── Capability gates ─────────────────────────────────────────────────────────
 
@@ -330,6 +331,56 @@ const LOOKS = {
     masthead: 'frame', rule: 'none', ground: 'tint',
     titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'Rectangle', card: 'plain', cover: 'paper', topPad: 14,
+  },
+  academic: {
+    label: '學術', desc: '整頁細框、密集分欄、編號分明。論文口試、技術審查、內部評審。',
+    theme: 'corporate',
+    masthead: 'frame', rule: 'short', ground: 'white',
+    titleSize: 22, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'outline', cover: 'band', topPad: 0,
+  },
+  dashboard: {
+    label: '儀表板', desc: '左側色柱、點陣底、方格面板。給數據回顧、月結報告。',
+    theme: 'slate',
+    // The rail is the whole skeleton: a full-height column down the left edge
+    // with everything indented past it. No other look moves the content area,
+    // which is exactly why this one does not read as a recolour of any of them.
+    masthead: 'rail', rail: 52, texture: 'dots',
+    rule: 'none', ground: 'tint',
+    titleSize: 24, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
+    shape: 'Rectangle', card: 'tint', cover: 'bleed', topPad: 0,
+  },
+  courseware: {
+    label: '教材', desc: '大字、圓角、步驟分明、留白大方。教學、內訓、說明會。',
+    theme: 'fresh',
+    masthead: 'round', rule: 'short', ground: 'tint',
+    titleSize: 28, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'RoundRectangle', card: 'tint', cover: 'band', topPad: 6,
+  },
+  handmade: {
+    label: '手作', desc: '紙紋底、手繪框線。暖色、鬆一點的場合——提案、分享、對外簡介。',
+    theme: 'linen',
+    masthead: 'none', rule: 'none', ground: 'tint',
+    texture: 'paper', strokes: 'hand',
+    titleSize: 28, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'RoundRectangle', card: 'plain', cover: 'paper', topPad: 10,
+  },
+  whiteboard: {
+    label: '白板', desc: '接近全白、手繪線條、沒有色塊。講解、拆解、邊講邊畫的內容。',
+    theme: 'mono',
+    masthead: 'none', rule: 'none', ground: 'white',
+    strokes: 'hand',
+    titleSize: 26, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'plain', cover: 'plain', topPad: 10,
+  },
+  eink: {
+    label: '電子紙', desc: '紙紋、明體、純灰階、細線。長文、報告、需要被讀而不是被看的內容。',
+    font: '微軟正黑體', titleFont: '新細明體',
+    theme: 'mono',
+    masthead: 'none', rule: 'full', ground: 'tint',
+    texture: 'paper',
+    titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'outline', cover: 'paper', topPad: 12,
   },
 };
 
@@ -1292,10 +1343,52 @@ async function buildSlide(args) {
   // most of the mood, and it costs one extra field.
   const display = lk.titleFont || face;
 
+  /**
+   * The decorative layer, and why it cannot be drawn with the rest.
+   *
+   * Paper grain and a hand-drawn frame are SVG, and SVG reaches a slide through
+   * `setSelectedDataAsync` — a Common API that APPENDS to the current selection.
+   * Appending puts it on top, and a background on top of the content is not a
+   * background. So it goes in first, in its own step, before the shape batch
+   * that then lands above it.
+   *
+   * One document for the whole layer rather than one per ornament: each insert
+   * is its own round trip, and a slide wanting paper plus a frame plus a rule
+   * would otherwise pay for three.
+   */
+  const ornament = (lk.texture || lk.strokes === 'hand') && hasImageCoercion('1.2')
+    ? ornamentSvg({
+      texture: lk.texture,
+      strokes: lk.strokes,
+      theme: th,
+      ground: groundOf(th, lk),
+      ink: th.strong,
+      title: kind !== 'title' && kind !== 'section' && args.chrome !== false && !!args.title,
+      frame: lk.masthead === 'frame' || lk.strokes === 'hand',
+      footband: !!args.footband,
+      topPad: lk.topPad,
+    })
+    : null;
+
+  if (ornament) {
+    // The slide has to exist and be selected before anything can be inserted
+    // into it, so the append that buildSlide normally does inside its own batch
+    // happens here instead — and is skipped below so it does not happen twice.
+    await PowerPoint.run(async (ctx) => {
+      if (args.slide === undefined && args.append !== false && hasApi('1.3')) {
+        ctx.presentation.slides.add();
+        await ctx.sync();
+      }
+    });
+    await focusSlideFor(args.slide === undefined ? {} : args);
+    await insertImageData(ornament, Office.CoercionType.XmlSvg,
+      { left: 0, top: 0, width: GRID.W, height: GRID.H });
+  }
+
   return PowerPoint.run(async (ctx) => {
     // A recipe fills a slide, so it defaults to making a new one rather than
     // piling a second layout on top of whatever is already there.
-    if (args.slide === undefined && args.append !== false && hasApi('1.3')) {
+    if (!ornament && args.slide === undefined && args.append !== false && hasApi('1.3')) {
       ctx.presentation.slides.add();
       await ctx.sync();
     }
@@ -1354,6 +1447,9 @@ async function buildSlide(args) {
         : kind === 'statement' ? 'marks'
           : 'full';
     const dressed = frame !== 'none';
+    // Everything below lays out against this, so indenting here is all the
+    // rail look needs — no recipe has to know it exists.
+    const RAIL = lk.masthead === 'rail' ? (lk.rail || 52) : 0;
     if (dressed) {
       // The page ground goes down FIRST so everything else lands on top of it.
       //
@@ -1362,7 +1458,10 @@ async function buildSlide(args) {
       // content reads as typed straight onto the projector. Two percent of grey
       // gives the cards something to be lighter than, and that is what makes a
       // layout look built rather than filled in.
-      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, groundOf(th, lk));
+      // Skipped when the ornament is already down there carrying the ground,
+      // the texture and (for a hand look) the frame and the rule. Painting a
+      // flat rectangle over it would hide the entire decorative layer.
+      if (!ornament) band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, groundOf(th, lk));
 
       // The masthead. Each variant is a different answer to the same question —
       // how does the audience know a new slide started — and swapping between
@@ -1385,7 +1484,17 @@ async function buildSlide(args) {
         band({ left: 0, top: 0, width: 300, height: 34 }, th.strong);
       } else if (lk.masthead === 'hairline') {
         band({ left: 0, top: 0, width: GRID.W, height: 1 }, th.line);
-      } else if (lk.masthead === 'frame') {
+      } else if (lk.masthead === 'rail') {
+        // A full-height column down the left edge. The content is indented past
+        // it below — this is the only look that moves the content area, and
+        // that is precisely why it does not read as a recolour of another one.
+        band({ left: 0, top: 0, width: lk.rail || 52, height: GRID.H }, th.strong);
+        band({ left: 0, top: 0, width: lk.rail || 52, height: 5 }, th.accent);
+        if (args.page) {
+          text(String(args.page), { left: 0, top: GRID.H - 44, width: lk.rail || 52, height: 24 },
+            { size: 10, color: th.onCover, align: 'center', valign: 'middle' });
+        }
+      } else if (lk.masthead === 'frame' && !ornament) {
         // A hairline box inset from all four edges. It does two things at once:
         // it is the only ornament on the page, and it turns the margin into a
         // deliberate border instead of leftover space — which is the difference
@@ -1404,7 +1513,12 @@ async function buildSlide(args) {
       if (args.eyebrow) {
         const label = lk.eyebrowCase === 'upper'
           ? String(args.eyebrow).toUpperCase() : String(args.eyebrow);
-        text(label, { ...CHROME.eyebrow, left: lk.masthead === 'block' ? 16 : CHROME.eyebrow.left, top: eyeY },
+        text(label, {
+          ...CHROME.eyebrow,
+          left: lk.masthead === 'block' ? 16 : CHROME.eyebrow.left + RAIL,
+          width: CHROME.eyebrow.width - RAIL,
+          top: eyeY,
+        },
           {
             size: 11,
             color: lk.masthead === 'block' ? th.onCover : onGround(th, lk, 'muted'),
@@ -1413,14 +1527,21 @@ async function buildSlide(args) {
           });
       }
       if (title && frame === 'full') {
-        text(title, { ...CHROME.title, top: CHROME.title.top + lk.topPad },
+        text(title, {
+          ...CHROME.title,
+          left: CHROME.title.left + RAIL,
+          width: CHROME.title.width - RAIL,
+          top: CHROME.title.top + lk.topPad,
+        },
           {
             font: display,
             size: lk.titleSize, bold: lk.titleBold,
             color: onGround(th, lk, 'strong'),
             align: lk.titleAlign, valign: 'middle',
           });
-        if (lk.rule === 'short') {
+        if (ornament && lk.strokes === 'hand') {
+          // Already drawn, with a wobble. See ornamentSvg.
+        } else if (lk.rule === 'short') {
           band(lk.titleAlign === 'center'
             ? { ...CHROME.rule, left: (GRID.W - CHROME.rule.width) / 2, top: CHROME.rule.top + lk.topPad }
             : { ...CHROME.rule, top: CHROME.rule.top + lk.topPad }, th.accent);
@@ -1440,8 +1561,8 @@ async function buildSlide(args) {
           { size: 11, color: onGround(th, lk, 'muted'), align: 'right', valign: 'middle' });
       }
     }
-    const CL = CHROME.contentLeft;
-    const CW = CHROME.contentWidth;
+    const CL = CHROME.contentLeft + RAIL;
+    const CW = CHROME.contentWidth - RAIL;
 
     /**
      * The composer: one call, one whole page, no holes.

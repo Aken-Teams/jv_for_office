@@ -57,7 +57,14 @@ ok('內容少要先收攏而不是放大',
 // 風格的要求該用 look 回應，否則模型會拿換配色來交差——那是答非所問。
 ok('有版式這一節', ctx.includes('### 版式'));
 ok('每種版式都列出來',
-  ['business', 'editorial', 'literary', 'minimal', 'soft', 'bold', 'tech'].every(k => ctx.includes(k)));
+  ['business', 'editorial', 'literary', 'minimal', 'soft', 'bold', 'tech',
+    'academic', 'dashboard', 'courseware', 'handmade', 'whiteboard', 'eink']
+    .every(k => ctx.includes(k)));
+// 紋理那三個最容易被誤會成「要接生圖 API」。規則要把這件事講死，
+// 否則模型會去問使用者要金鑰，或乾脆不敢用。
+ok('說明紋理是本機用 SVG 算的，不是 AI 生圖', ctx.includes('不是 AI 生圖'));
+ok('而且強調轉換為圖形後還能編輯', ctx.includes('轉換為圖形'));
+ok('講出為什麼不走整頁生成', ctx.includes('改一個錯字就要重畫一整頁'));
 // 使用者說「文青」的時候，模型要知道那是 literary，不是把 editorial 換個顏色。
 ok('文青對應到 literary', /literary[\s\S]{0,80}文青/.test(ctx));
 ok('風格自帶配色，不要另外指定 theme', ctx.includes('每個版式自帶配色'));

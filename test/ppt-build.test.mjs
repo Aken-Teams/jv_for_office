@@ -89,16 +89,29 @@ const ctx = {
       add() { /* the fake starts with the slide already present */ },
       getItemAt: () => slide,
     },
+    // Needed since the ornament layer landed: an SVG background is inserted
+    // through the Common API, which lands on the SELECTED slide, so the host
+    // selects one first.
+    setSelectedSlides() {},
   },
   sync: async () => {},
   load: () => {},
 };
 
 globalThis.PowerPoint = { run: async (fn) => fn(ctx) };
+/** Every insert, in order — the ornament assertions read this. */
+let INSERTS = [];
 globalThis.Office = {
   context: {
     requirements: { isSetSupported: () => true },
-    document: { url: 'C:\\d.pptx', addHandlerAsync: () => {} },
+    document: {
+      url: 'C:\\d.pptx',
+      addHandlerAsync: () => {},
+      setSelectedDataAsync: (data, opts, cb) => {
+        INSERTS.push({ data, coercion: opts.coercionType });
+        cb({ status: 'ok' });
+      },
+    },
   },
   EventType: { DocumentSelectionChanged: 'sel' },
   CoercionType: { Image: 'image', XmlSvg: 'xmlsvg' },
@@ -710,6 +723,94 @@ const BAND_BOTTOM = 480;
       + `${Math.round(s.width)},${Math.round(s.height)}`).join(' | ');
   ok('單獨呼叫和寫在版型裡，數據卡畫出來一樣', solo === inBuild,
     `單獨 ${solo}\n    版型 ${inBuild}`);
+}
+
+// ── 裝飾層：紋理與手繪筆觸 ───────────────────────────────────────────────────
+//
+// 這一層要成立，三件事都得對，而且三件都是悄悄壞掉的那種。
+
+{
+  INSERTS = [];
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: '標題', body: ['一', '二'], look: 'handmade' });
+  ok('手作版式會插入一張裝飾 SVG', INSERTS.length === 1, `${INSERTS.length} 張`);
+  ok('而且走向量通道', INSERTS.length === 1 && INSERTS[0].coercion === 'xmlsvg',
+    JSON.stringify(INSERTS.map((x) => x.coercion)));
+  ok('裝飾層裡有紙紋和手繪線',
+    INSERTS.length === 1 && INSERTS[0].data.includes('feTurbulence')
+      && INSERTS[0].data.includes('<polyline'));
+  // setSelectedDataAsync 是「附加到最上層」，所以底圖必須在所有形狀之前插入。
+  // 順序反了的話，底圖就變成一塊蓋住內容的方塊——而且不會有任何錯誤。
+  const ground = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
+  ok('不會再鋪一塊平的底把紋理蓋掉', !ground,
+    ground ? `還有一塊 ${ground._fill} 的滿版色塊` : '');
+  // 手繪版式的標題底線由裝飾層畫，骨架就不該再畫一條直的。
+  ok('骨架不再畫那條直的短線',
+    !alive().some((s) => s.kind === 'geo' && s.width === 108 && s.height === 4));
+  ok('內容照常在上面', texts().includes('標題') && texts().includes('一'));
+}
+
+{
+  INSERTS = [];
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'business' });
+  ok('沒有紋理的版式不會多插一張圖', INSERTS.length === 0);
+  ok('而且照樣有平的底色',
+    alive().some((s) => s.kind === 'geo' && s.width === 960 && s.height === 540));
+}
+
+{
+  // 舊版 Office 沒有 ImageCoercion 1.2，裝飾層要整個讓開並退回平面版式，
+  // 而不是丟一個使用者看不懂的錯誤。
+  const real = Office.context.requirements.isSetSupported;
+  Office.context.requirements.isSetSupported = (name, v) =>
+    (name === 'ImageCoercion' ? Number(v) <= 1.1 : true);
+  INSERTS = [];
+  slide = fakeSlide();
+  const r = await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'eink' });
+  Office.context.requirements.isSetSupported = real;
+  ok('舊版 Office 會安靜退回沒有紋理的樣子', r.ok && INSERTS.length === 0, r.content);
+  ok('而且底色還在，不是一片空白',
+    alive().some((s) => s.kind === 'geo' && s.width === 960 && s.height === 540));
+}
+
+// ── 儀表板：左側色柱把整個內容區往右推 ───────────────────────────────────────
+{
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: '月結回顧', body: ['一', '二'], page: 'P.04',
+    look: 'dashboard' });
+  const rail = alive().find((s) => s.kind === 'geo' && s.height === 540 && s.width < 100);
+  ok('有一條滿高的左側色柱', !!rail && rail.left === 0, rail ? String(rail.width) : '沒有');
+  const title = alive().find((s) => s._text === '月結回顧');
+  ok('標題讓開色柱', title.left >= rail.width, `標題 ${title.left}，色柱寬 ${rail.width}`);
+  const cards = alive().filter((s) => s.kind === 'geo' && s.height > 20 && s.width > 400);
+  ok('內容也讓開色柱', cards.every((c) => c.left >= rail.width),
+    cards.map((c) => c.left).join(' '));
+  ok('內容沒有因此超出右邊界',
+    cards.every((c) => c.left + c.width <= 922), cards.map((c) => c.left + c.width).join(' '));
+  ok('頁碼收進色柱裡', alive().find((s) => s._text === 'P.04').left < rail.width);
+}
+
+// 十三種版式，骨架還是十三種——加東西不能把既有的變成彼此的複製品。
+{
+  const ALL = ['business', 'editorial', 'literary', 'minimal', 'soft', 'bold', 'tech',
+    'academic', 'dashboard', 'courseware', 'handmade', 'whiteboard', 'eink'];
+  const seen = new Map();
+  for (const name of ALL) {
+    INSERTS = [];
+    slide = fakeSlide();
+    await build({ kind: 'bullets', title: '標題', eyebrow: '01', body: ['一', '二'], look: name });
+    const t = alive().find((s) => s._text === '標題');
+    seen.set(name, JSON.stringify({
+      art: INSERTS.length ? INSERTS[0].data.slice(0, 200) : '',
+      bands: alive().filter((s) => s.kind === 'geo' && (s.height <= 8 || s.width <= 60))
+        .map((s) => `${Math.round(s.left)},${Math.round(s.top)},${Math.round(s.width)},${s.height}`)
+        .sort(),
+      title: `${t.left}/${t._font.size}/${t._font.bold}`,
+    }));
+  }
+  ok('十三種版式的骨架兩兩不同', new Set(seen.values()).size === ALL.length,
+    `只有 ${new Set(seen.values()).size} 種`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
