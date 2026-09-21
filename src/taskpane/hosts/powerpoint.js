@@ -1420,6 +1420,45 @@ async function addCards(args) {
  * SELECTED rather than one we name, and it cannot be batched with the shape work
  * above. All three are worth it to not ship a preview API.
  */
+/**
+ * Put the cursor on the slide an image is about to land on.
+ *
+ * ── The bug this fixes ──
+ * Every picture in this module goes in through setSelectedDataAsync, which is a
+ * Common API: it inserts into the CURRENT SELECTION and has no idea which slide
+ * the caller meant. Building a deck never changes the selection, so a run that
+ * created eight slides and drew a chart on each of them put all eight charts on
+ * whichever slide the person happened to be looking at — slide 1, in practice.
+ * Nothing failed; the deck was simply wrong, and wrong in a way that looks like
+ * the model chose it.
+ *
+ * Every other tool here resolves its target through targetSlide, which defaults
+ * to the LAST slide — the one just built. This makes the image path agree with
+ * the rest, by moving the selection first.
+ *
+ * Needs PowerPointApi 1.6 for setSelectedSlides. Below that the old behaviour is
+ * all there is, so the caller is told rather than silently misplacing the image.
+ */
+async function focusSlideFor(args) {
+  if (!hasApi('1.6')) {
+    return num(args.slide, 0)
+      ? '（這個 Office 版本沒辦法指定投影片，圖片會插在目前選取的那一張。）'
+      : '';
+  }
+  return PowerPoint.run(async (ctx) => {
+    const slides = ctx.presentation.slides;
+    slides.load('items/id');
+    await ctx.sync();
+    const items = slides.items || [];
+    if (!items.length) throw new Error('這份簡報沒有投影片，先用 ppt_add_slide 新增一張。');
+    const n = num(args.slide, 0);
+    const idx = n ? clamp(n, 1, items.length) - 1 : items.length - 1;
+    ctx.presentation.setSelectedSlides([items[idx].id]);
+    await ctx.sync();
+    return '';
+  });
+}
+
 function insertImageData(base64, coercion, geo) {
   return new Promise((resolve, reject) => {
     Office.context.document.setSelectedDataAsync(base64, {
@@ -1457,9 +1496,9 @@ async function addImage(args) {
   const data = String(args.data || '').replace(/^data:[^,]+,/, '');
   if (!data) throw new Error('data 是必要的（base64 圖片資料）。');
   const geo = fitToBody(num(args.natural_width, 800), num(args.natural_height, 450), args);
+  const note = await focusSlideFor(args);
   await insertImageData(data, Office.CoercionType.Image, geo);
-  return `已插入圖片，${geo.width}×${geo.height} 點，位置 (${geo.left},${geo.top})。\n`
-    + '它加在**目前選取的投影片**上——Common API 沒辦法指定投影片。';
+  return `已插入圖片，${geo.width}×${geo.height} 點，位置 (${geo.left},${geo.top})。${note}`;
 }
 
 /** The Word host's insertImage contract: a pasted picture from the composer. */
@@ -1470,6 +1509,7 @@ export async function insertImage(pic, args = {}) {
     throw new Error('這個 Office 版本不支援插入圖片（需要 ImageCoercion 1.1）。');
   }
   const geo = fitToBody(num(pic.width, 800), num(pic.height, 450), args);
+  await focusSlideFor(args);
   await insertImageData(data, Office.CoercionType.Image, geo);
   return `已把圖片放到目前的投影片，${geo.width}×${geo.height} 點。`;
 }
@@ -1494,15 +1534,16 @@ async function addDiagram(args) {
   const png = await renderMermaid(code, { theme: args.theme, font: args.font });
   const geo = fitToBody(png.width, png.height, args);
 
+  const note = await focusSlideFor(args);
   const vector = hasImageCoercion('1.2') && args.raster !== true && png.svg;
   if (vector) {
     await insertImageData(png.svg, Office.CoercionType.XmlSvg, geo);
-    return `已插入向量圖表，${geo.width}×${geo.height} 點。\n`
+    return `已插入向量圖表，${geo.width}×${geo.height} 點。${note}\n`
       + '它是 SVG，投影時不會糊掉；使用者在 PowerPoint 裡按右鍵「轉換為圖形」之後，'
       + '還可以直接拖動裡面的方塊。';
   }
   await insertImageData(png.data, Office.CoercionType.Image, geo);
-  return `已插入圖表，${geo.width}×${geo.height} 點（點陣圖）。\n`
+  return `已插入圖表，${geo.width}×${geo.height} 點（點陣圖）。${note}\n`
     + '這個 Office 版本不支援 SVG（要 ImageCoercion 1.2），所以放的是圖片，不能在 PowerPoint 裡編輯內容。';
 }
 
@@ -1545,8 +1586,9 @@ async function addChart(args) {
   }, th);
 
   const geo = fitToBody(num(args.width, 760), num(args.height, 380), args);
+  const note = await focusSlideFor(args);
   await insertImageData(svg, Office.CoercionType.XmlSvg, geo);
-  return `已插入${args.title ? `「${args.title}」` : ''}圖表，${geo.width}×${geo.height} 點。\n`
+  return `已插入${args.title ? `「${args.title}」` : ''}圖表，${geo.width}×${geo.height} 點。${note}\n`
     + '它是 SVG 向量圖：投影不會糊，使用者按右鍵「轉換為圖形」之後每一根長條都可以個別編輯。\n'
     + '但它**不是 PowerPoint 的圖表物件**，沒有連結的資料表——要改數字就重新產生一張。';
 }
