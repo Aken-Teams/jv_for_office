@@ -1532,7 +1532,7 @@ async function send(message, opts = {}) {
   addBubble('user', opts.display || message, state.sentAttachments);
   // Remembered for the whole run: when it ends, the reply IS the procedure, and
   // the person should be offered it rather than having to find the right bubble.
-  state.procedureRun = !!opts.procedure;
+  state.procedureRun = opts.procedure || false;
   progressStep(t('連線到伺服器…'));
 
   let bubble = null;
@@ -1728,8 +1728,12 @@ async function send(message, opts = {}) {
     // that looks important is the agent's 「回填完成，已驗過」 report, which is a
     // RESULT. Saving a result teaches next month's run nothing.
     if (state.procedureRun) {
+      const asked = state.procedureRun === 'save';
       state.procedureRun = false;
-      if (bubble && (bubble.dataset.raw || '').trim()) void offerProcedure(bubble.dataset.raw);
+      const draft = bubble && (bubble.dataset.raw || '').trim();
+      // Already said yes at the save prompt — asking a second time would be
+      // making them confirm the thing they just chose.
+      if (draft) void (asked ? saveTemplateText(bubble.dataset.raw) : offerProcedure(bubble.dataset.raw));
     }
   }
 }
@@ -2560,9 +2564,14 @@ function renderCmdMenu() {
   const chosen = state.skills.find((sk) => sk.id === state.skill);
   if (cur) cur.textContent = chosen ? chosen.name : '';
 
+  // Hidden, not greyed, while searching. Looking for a saved prompt and saving
+  // one are opposite errands, and two disabled rows under a filtered list are
+  // just noise in the place someone is reading fastest.
   const save = $('tpl-save');
-  if (save) save.disabled = !$('input').value.trim() || inSlashMode();
-  syncRecordButton();
+  if (save) {
+    save.hidden = inSlashMode();
+    save.disabled = !$('input').value.trim();
+  }
 }
 
 /** One place for the three writes, so they report failure the same way. */
@@ -2833,6 +2842,47 @@ function askName({ title, value, placeholder, confirmLabel }) {
   });
 }
 
+/**
+ * Pick one of a few options, or cancel. Resolves the index, or null.
+ *
+ * askYesNo covers two outcomes and this needs three — 「tidy it first」, 「save it
+ * as it is」, 「never mind」 — and collapsing that into two would be choosing for
+ * the person which of the two saves they meant.
+ */
+function askPick(question, options) {
+  return new Promise((resolve) => {
+    clearEmptyState();
+    const card = document.createElement('div');
+    card.className = 'confirm choice';
+    card.setAttribute('role', 'alertdialog');
+    card.innerHTML = `
+      <div class="confirm-head">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
+        <span class="confirm-title">${escapeHtml(String(question || ''))}</span>
+      </div>
+      <div class="choice-list">
+        ${options.map((o, i) => `
+          <button class="choice-opt" data-i="${i}">
+            <span class="choice-label">${escapeHtml(o.label)}</span>
+            ${o.detail ? `<span class="choice-detail">${escapeHtml(o.detail)}</span>` : ''}
+          </button>`).join('')}
+        <button class="choice-opt" data-i="-1">
+          <span class="choice-label">${escapeHtml(t('取消'))}</span>
+        </button>
+      </div>`;
+    $('log').appendChild(card);
+    scrollDown();
+    for (const btn of card.querySelectorAll('.choice-opt')) {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.i);
+        resolveCard(card, i < 0 ? 'no' : 'ok',
+          i < 0 ? t('已取消') : options[i].label);
+        resolve(i < 0 ? null : i);
+      });
+    }
+  });
+}
+
 /** Same reason as askName: confirm() is blocked too, and silently. */
 function askYesNo(question, confirmLabel) {
   return new Promise((resolve) => {
@@ -2902,7 +2952,7 @@ async function saveTemplate() {
  * 存成常用指令 button on it: the person reads it, edits if they want, and saves
  * it the same way they would save anything else.
  */
-function recordToTemplate() {
+function recordToTemplate(opts = {}) {
   const kept = prune(state.recorded);
   if (!kept.length) {
     addNote(t('這個對話還沒有做過可以整理成流程的操作。'), 'note');
@@ -2919,7 +2969,7 @@ function recordToTemplate() {
       summary.total, summary.kept), 'note');
   }
   void send(buildPrompt(kept, summary), {
-    procedure: true,
+    procedure: opts.autoSave ? 'save' : true,
     display: t('把剛剛做過的 {0} 個步驟整理成一段可以重複使用的指令。', summary.kept),
   });
 }
@@ -2931,28 +2981,45 @@ function recordToTemplate() {
  * just been produced — asking now, while it is on screen, is the only moment the
  * person can judge it against what they remember doing.
  */
+/**
+ * Save this text — or offer to have the agent write up what was actually done.
+ *
+ * ── Why the choice lives HERE ──
+ * 「把剛剛做過的流程整理成常用指令」 used to be a button inside the commands menu,
+ * two levels down from anything, next to a list of saved prompts. Nobody who was
+ * not told about it would ever find it, and nobody finding it would guess that
+ * it reads the tool log rather than the conversation.
+ *
+ * The moment a person wants it is the moment they press save. They have just
+ * decided this is worth keeping; 「keep exactly this」 and 「keep what I actually
+ * did」 are the two things they could mean, and asking takes one tap.
+ *
+ * The offer only appears when there IS a recording. Asking 「tidy it up?」 about a
+ * conversation where nothing ran is offering to do nothing.
+ */
+async function saveAsTemplate(text) {
+  const kept = prune(state.recorded);
+  if (!kept.length) { await saveTemplateText(text); return; }
+
+  // Terse on purpose. The long version explained what pruning is and why the
+  // tidied one reuses better — true, and not what somebody mid-save needs. The
+  // step count is the only fact that changes the answer; everything else was
+  // teaching, and a card is a bad classroom.
+  const pick = await askPick(t('要存成哪一種？'), [
+    { label: t('整理成流程再存'), detail: t('依實際做過的 {0} 步重寫', kept.length) },
+    { label: t('直接存這段文字') },
+  ]);
+  if (pick === null) return;
+  if (pick === 1) { await saveTemplateText(text); return; }
+  recordToTemplate({ autoSave: true });
+}
+
 async function offerProcedure(text) {
   const yes = await askYesNo(
     t('上面這段是剛剛那個流程的整理。要存成常用指令嗎？'), t('存起來'));
   if (yes) await saveTemplateText(text);
 }
 
-/**
- * The record button: always there, live only once there is something to record.
- *
- * `title` rather than silence, because 「why is this greyed out」 is the question
- * a disabled control always raises and the only place to answer it is the
- * control itself.
- */
-function syncRecordButton() {
-  const btn = $('tpl-record');
-  if (!btn) return;
-  const n = prune(state.recorded).length;
-  btn.disabled = !n;
-  btn.title = n
-    ? t('把這個對話實際做過的 {0} 個步驟整理成一段指令。', n)
-    : t('先讓 AI 實際做一次（例如跑一次比對），這個按鈕就會亮起來。');
-}
 
 async function renameTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
@@ -3308,7 +3375,7 @@ ${typed}` : tpl.content) : typed;
     const save = e.target.closest('[data-save-tpl]');
     if (!save) return;
     const bubble = save.closest('.bubble');
-    if (bubble) void saveTemplateText(bubble.dataset.raw || '');
+    if (bubble) void saveAsTemplate(bubble.dataset.raw || '');
   });
 
 
@@ -3329,8 +3396,6 @@ ${typed}` : tpl.content) : typed;
     if (edit) { void renameTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');
     if (del) { void deleteTemplate(del.dataset.del); return; }
-    const rec = e.target.closest('#tpl-record');
-    if (rec) { if (!rec.disabled) recordToTemplate(); return; }
     const save = e.target.closest('#tpl-save');
     if (save && !save.disabled) void saveTemplate();
   });

@@ -111,6 +111,11 @@ const zhCN = {
   '之後的訊息交給「{0}」處理。': '之后的消息交给「{0}」处理。',
   '已改回由 AI 自動判斷要用哪個做法。': '已改回由 AI 自动判断要用哪个做法。',
   '沒有內容可以存。': '没有内容可以存。',
+  '要存成哪一種？': '要存成哪一种？',
+  '整理成流程再存': '整理成流程再存',
+  '依實際做過的 {0} 步重寫': '依实际做过的 {0} 步重写',
+  '直接存這段文字': '直接存这段文字',
+
   '公司技能': '公司技能',
   '我的常用指令': '我的常用指令',
   '{0}/{1} 則 · 只有你看得到': '{0}/{1} 则 · 只有你看得到',
@@ -403,6 +408,11 @@ const en = {
   '之後的訊息交給「{0}」處理。': 'Later messages will be handled by "{0}".',
   '已改回由 AI 自動判斷要用哪個做法。': 'Back to letting the AI decide.',
   '沒有內容可以存。': 'There is nothing to save.',
+  '要存成哪一種？': 'Save it how?',
+  '整理成流程再存': 'Write it up as a procedure',
+  '依實際做過的 {0} 步重寫': 'Rewritten from the {0} steps that ran',
+  '直接存這段文字': 'Save this text as it is',
+
   '公司技能': 'Company skills',
   '我的常用指令': 'My saved prompts',
   '{0}/{1} 則 · 只有你看得到': '{0}/{1} saved · only you can see these',

@@ -205,7 +205,21 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
   ok('離開選單會把 /query 一起收掉', app.includes('function closeSlash('));
   // 「/月結」是查詢不是問句——送出鍵亮著等於邀請使用者送出一段斜線加半個名字。
   ok('slash 模式下送不出去', /const has = !inSlashMode\(\)/.test(app));
-  ok('slash 模式下也存不成常用指令', /save\.disabled = [^\n]*inSlashMode\(\)/.test(app));
+  // 找指令和存指令是相反的差事，搜尋中把存檔列整個收起來而不是留一列灰的。
+  ok('slash 模式下存檔那一列整個收起來', /save\.hidden = inSlashMode\(\)/.test(app));
+
+  // ── 「整理成流程」問在存檔的當下，不是藏在選單裡 ─────────────────────
+  //
+  // 它本來是指令選單裡的一顆按鈕，離任何東西都有兩層遠，旁邊還是一串常用指令。
+  // 沒被告知的人永遠找不到它，找到的人也猜不出它讀的是工具紀錄而不是對話。
+  ok('存檔時才問要不要整理', app.includes('async function saveAsTemplate('));
+  ok('bubble 的存檔鈕走這條', /saveAsTemplate\(bubble\.dataset\.raw/.test(app));
+  ok('沒有紀錄就不問——對什麼都沒跑過的對話問「要整理嗎」等於提議做白工',
+    /if \(!kept\.length\) \{ await saveTemplateText\(text\); return; \}/.test(app));
+  ok('選單裡不再有那顆按鈕', !app.includes('tpl-record'));
+  // 已經在存檔那一步說要存了，整理完再問一次等於要人確認自己剛做的決定。
+  ok('從存檔流程來的整理，寫完直接命名存檔',
+    /const asked = state\.procedureRun === 'save'/.test(app));
   // 整段貼進 350px 的輸入框，使用者連自己打的字都看不到。
   ok('套用是掛一張引用晶片，不是整段貼進輸入框',
     app.includes('function attachTemplate(') && /state\.attachedTemplate = tpl/.test(app));
