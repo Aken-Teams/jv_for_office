@@ -391,6 +391,36 @@ function clearEmptyState() {
  * Built fresh each time rather than kept: streaming replaces the bubble's whole
  * innerHTML on every delta, which takes the previous one with it.
  */
+/**
+ * Tuck long text under a chevron on a bubble.
+ *
+ * Same control as a tool result's 詳細內容 (see attachRaw), because it is the
+ * same situation: something that was genuinely sent, is genuinely worth being
+ * able to read, and is not what the person wants to look at by default.
+ */
+function attachFolded(bubble, text) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'card-more';
+  btn.setAttribute('aria-expanded', 'false');
+  btn.innerHTML = `<svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-chev"/></svg>`
+    + `<span>${escapeHtml(t('看送出的完整內容'))}</span>`;
+
+  const pre = document.createElement('pre');
+  pre.className = 'card-raw';
+  pre.hidden = true;
+  pre.textContent = text;
+
+  btn.addEventListener('click', () => {
+    pre.hidden = !pre.hidden;
+    btn.setAttribute('aria-expanded', String(!pre.hidden));
+    if (!pre.hidden) scrollDown();
+  });
+  // Before the action row, so 存成常用指令 stays the last thing in the bubble.
+  bubble.insertBefore(btn, bubble.querySelector('.bubble-acts'));
+  bubble.insertBefore(pre, bubble.querySelector('.bubble-acts'));
+}
+
 function bubbleActions() {
   const acts = document.createElement('div');
   acts.className = 'bubble-acts';
@@ -614,7 +644,13 @@ function resolveCard(card, kind, text, hint, raw) {
   if (kind === 'err') card.setAttribute('role', 'alert');
   else card.removeAttribute('aria-live');
   if (hint) card.title = hint; else card.removeAttribute('title');
-  const mark = { ok: 'i-check', denied: 'i-stop', err: 'i-warn', retry: 'i-warn' }[kind];
+  // 'no' — the person cancelled, so nothing happened. It was missing from this
+  // map, which dropped it through to the dots below: the 「in progress」 animation,
+  // on a card that had already finished. A cancelled edit sat there pulsing as
+  // though it were still working, which reads as a bug because it looks like one.
+  const mark = {
+    ok: 'i-check', denied: 'i-stop', err: 'i-warn', retry: 'i-warn', no: 'i-cancel',
+  }[kind];
   card.innerHTML = mark
     ? `<svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><use href="#${mark}"/></svg>${escapeHtml(text)}`
     : `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(text)}`;
@@ -1524,7 +1560,14 @@ async function send(message, opts = {}) {
   // request is a machine-generated wall of tool names and arguments; putting
   // that in the transcript as though the person typed it is noise, and it buries
   // the reply it exists to produce.
-  addBubble('user', opts.display || message, state.sentAttachments);
+  //
+  // A saved prompt is the same problem from the other side. 「/和碩 forecast」 is
+  // two thousand characters of rules the person deliberately chose NOT to retype
+  // — showing all of it back to them turns their own shorthand into a wall. The
+  // name is what they said; the text is available under it for when they want to
+  // check what actually went.
+  const userBubble = addBubble('user', opts.display || message, state.sentAttachments);
+  if (opts.folded) attachFolded(userBubble, opts.folded);
   // Remembered for the whole run: when it ends, the reply IS the procedure, and
   // the person should be offered it rather than having to find the right bubble.
   state.procedureRun = opts.procedure || false;
@@ -2579,7 +2622,7 @@ function renderCmdMenu() {
             <span class="tpl-peek">${escapeHtml(firstLine(tpl.content))}</span>
           </button>
           <button type="button" class="tpl-act" data-edit="${escapeHtml(tpl.id)}"
-                  title="${escapeHtml(t('改名'))}" aria-label="${escapeHtml(t('改名'))}">
+                  title="${escapeHtml(t('編輯'))}" aria-label="${escapeHtml(t('編輯'))}">
             <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-pencil"/></svg>
           </button>
           <button type="button" class="tpl-act danger" data-del="${escapeHtml(tpl.id)}"
@@ -2923,6 +2966,65 @@ function askPick(question, options) {
   });
 }
 
+/**
+ * Edit a saved prompt: its name and its text, in one card.
+ *
+ * ── Why the content is editable at all ──
+ * A generated procedure is a draft. It is written by an agent from a tool log
+ * and a conversation, and it will be slightly wrong in ways only the person who
+ * did the work can see — a rule stated too loosely, a sheet that has since been
+ * renamed, a step that only mattered that once. Without a way in, the only fix
+ * is to delete it and do the whole job again to produce a new one.
+ *
+ * Name and content together rather than as two actions, because editing one
+ * usually means editing the other, and two pencils in a row is a worse menu than
+ * one card.
+ */
+function askEdit(tpl) {
+  return new Promise((resolve) => {
+    clearEmptyState();
+    const card = document.createElement('div');
+    card.className = 'confirm choice';
+    card.setAttribute('role', 'alertdialog');
+    card.innerHTML = `
+      <div class="confirm-head">
+        <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-pencil"/></svg>
+        <span class="confirm-title">${escapeHtml(t('編輯常用指令'))}</span>
+      </div>
+      <input class="confirm-say" type="text" autocomplete="off"
+             value="${escapeHtml(tpl.name)}" aria-label="${escapeHtml(t('名稱'))}" />
+      <textarea class="confirm-body-edit" rows="10"
+                aria-label="${escapeHtml(t('內容'))}">${escapeHtml(tpl.content)}</textarea>
+      <div class="choice-list pair">
+        <button class="choice-opt" data-go="1"><span class="choice-label">${escapeHtml(t('儲存'))}</span></button>
+        <button class="choice-opt" data-go="0"><span class="choice-label">${escapeHtml(t('取消'))}</span></button>
+      </div>`;
+    $('log').appendChild(card);
+    scrollDown();
+
+    const nameField = card.querySelector('.confirm-say');
+    const bodyField = card.querySelector('.confirm-body-edit');
+    nameField.focus();
+    nameField.select();
+
+    for (const btn of card.querySelectorAll('.choice-opt')) {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.go !== '1') {
+          resolveCard(card, 'no', t('已取消'));
+          resolve(null);
+          return;
+        }
+        const name = nameField.value.trim();
+        const content = bodyField.value.trim();
+        if (!name) { nameField.focus(); return; }
+        if (!content) { bodyField.focus(); return; }
+        resolveCard(card, 'ok', t('名稱：{0}', name));
+        resolve({ name, content });
+      });
+    }
+  });
+}
+
 /** Same reason as askName: confirm() is blocked too, and silently. */
 function askYesNo(question, confirmLabel) {
   return new Promise((resolve) => {
@@ -3061,13 +3163,13 @@ async function offerProcedure(text) {
 }
 
 
-async function renameTemplate(id) {
+async function editTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
   if (!tpl) return;
-  toggleCmdMenu(false);
-  const name = await askName({ title: t('改成什麼名字？'), value: tpl.name });
-  if (name === null) return;
-  await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { name });
+  closeSlash();
+  const next = await askEdit(tpl);
+  if (!next) return;
+  await templateRequest('PATCH', `/${encodeURIComponent(id)}`, next);
 }
 
 async function deleteTemplate(id) {
@@ -3221,6 +3323,10 @@ Office.onReady(async (info) => {
     const msg = tpl ? (typed ? `${tpl.content}
 
 ${typed}` : tpl.content) : typed;
+    // What the transcript shows: what they actually said.
+    const shown = tpl ? (typed ? `/${tpl.name}
+
+${typed}` : `/${tpl.name}`) : '';
     // An image on its own is a whole message — 「這個」 with a screenshot attached
     // is a perfectly clear request, and refusing it would make people type a word
     // they do not mean just to get the send button back.
@@ -3231,7 +3337,8 @@ ${typed}` : tpl.content) : typed;
     input.style.height = 'auto';
     renderCharCount(input);
     $('send').disabled = true;
-    void send(msg || t('看一下這張圖。'));
+    void send(msg || t('看一下這張圖。'),
+      tpl ? { display: shown, folded: msg } : {});
   });
 
   // Paste an image straight into the composer. This is the path people actually
@@ -3433,7 +3540,7 @@ ${typed}` : tpl.content) : typed;
     const use = e.target.closest('.tpl-use');
     if (use) { attachTemplate(use.dataset.id); return; }
     const edit = e.target.closest('[data-edit]');
-    if (edit) { void renameTemplate(edit.dataset.edit); return; }
+    if (edit) { void editTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');
     if (del) { void deleteTemplate(del.dataset.del); return; }
     const save = e.target.closest('#tpl-save');

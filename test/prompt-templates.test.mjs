@@ -229,6 +229,37 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
     /const msg = tpl \? \(typed \? `\$\{tpl\.content\}/.test(app));
 }
 
+// ── 每一種卡片狀態都要有自己的圖示 ─────────────────────────────────────────
+//
+// resolveCard 的 mark 對照表查不到時，會掉進預設的「三個點」動畫——那是
+// 「進行中」的指示。取消編輯之後，一張已經結束的卡片在那裡一直跳，看起來
+// 就是壞了。新增一種 kind 而忘記補圖示，症狀不是缺圖，是看起來像 bug。
+{
+  const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/taskpane/taskpane.css', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../src/taskpane/taskpane.html', import.meta.url), 'utf8');
+
+  const map = (app.match(/const mark = \{[\s\S]*?\}\[kind\];/) || [''])[0];
+  // 所有實際會傳進 resolveCard 的 kind。
+  const used = new Set([...app.matchAll(/resolveCard\([^,]+,\s*(?:\w+ === null \? )?'(\w+)'/g)]
+    .map(m => m[1]));
+  const ternary = [...app.matchAll(/resolveCard\([^,]+,\s*\w+[^,]*\?\s*'(\w+)'\s*:\s*'(\w+)'/g)];
+  for (const m of ternary) { used.add(m[1]); used.add(m[2]); }
+
+  // 'running' 是唯一該用那三個點的 kind——自動允許的卡片留在對話裡，
+  // 而那個動作真的還在跑。其他每一種都是「已經結束」，跳動的點就是錯的。
+  used.delete('running');
+  ok('有 kind 可以檢查', used.size >= 3);
+  const missing = [...used].filter(k => !new RegExp(`\\b${k}:`).test(map));
+  ok(`每一種已結束的 kind 都有圖示${missing.length ? `（缺：${missing.join('、')}）` : ''}`,
+    missing.length === 0);
+  ok('取消有自己的圖示，不是進行中的動畫', /\bno: 'i-cancel'/.test(map));
+  ok('那個圖示真的存在', html.includes('id="i-cancel"'));
+  // 取消不是錯誤也不是拒絕——用紅色會把「改變主意」畫成「失敗」。
+  ok('取消是安靜的灰色，不是紅色',
+    /\.confirm\.resolved\.no \{[^}]*--line-strong/.test(css));
+}
+
 // ── 選單裡的動作列不可以被當成資料來源停用 ─────────────────────────────────
 //
 // 「常用指令」第一版整列是灰的，點不動。它跟「上傳檔案」一樣掛在 ＋ 選單裡，
@@ -268,6 +299,19 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
   ok('展開會把全文放進輸入框', exp.includes("$('input')") && exp.includes('tpl.content'));
   ok('展開後游標在最後，方便接著補這次的條件', exp.includes('setSelectionRange'));
   ok('展開會保留使用者已經打的字，不是蓋掉', exp.includes('typed'));
+
+  // 送出時對話裡顯示的是「/名稱」，不是那兩千字。使用者刻意不想重打的東西，
+  // 原樣回貼給他看，等於把他的簡寫變成一堵牆。完整內容收在雪佛龍底下。
+  ok('送出後對話顯示的是 /名稱', /const shown = tpl \? \(typed \? `\/\$\{tpl\.name\}/.test(app));
+  ok('完整內容收在可展開的區塊裡', app.includes('function attachFolded('));
+  ok('展開區塊排在存檔鈕前面，存檔鈕仍是最後一項',
+    /insertBefore\(pre, bubble\.querySelector\('\.bubble-acts'\)\)/.test(app));
+
+  // 產生出來的流程是草稿，一定會有只有當事人看得出來的小錯。沒有入口修改的話，
+  // 唯一的修法是刪掉、把整份工作重做一次來產生新的。
+  ok('常用指令的內容可以編輯', app.includes('function askEdit('));
+  ok('名稱和內容一起編，不是兩個動作', /askEdit[\s\S]*?confirm-body-edit/.test(app));
+  ok('編輯會把兩者一起送出', /templateRequest\('PATCH', `\/\$\{encodeURIComponent\(id\)\}`, next\)/.test(app));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

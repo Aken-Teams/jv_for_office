@@ -937,6 +937,10 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 /* An approved action Excel rejected. Grey, because the agent goes on to work
    around it — red is kept for what the person has to deal with themselves. */
 .confirm.resolved.retry { border-left-color: var(--line-strong); color: var(--fg-subtle); }
+/* Cancelled. Grey like .retry, and for the same reason: nothing went wrong and
+   nobody needs to do anything about it. Red would make a change of mind look
+   like a failure. */
+.confirm.resolved.no { border-left-color: var(--line-strong); color: var(--fg-subtle); }
 .confirm.resolved.running { border-left-color: var(--accent); }
 .confirm.resolved .dots { align-self: center; }
 
@@ -1240,6 +1244,14 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    above sets `column`, and a rule that only re-states `display: flex` inherits
    the direction it was trying to change. The buttons stayed stacked and looked
    like the CSS had not loaded. */
+/* Editing a saved prompt. Tall enough to see the shape of a procedure without
+   taking the whole pane; it scrolls past that. Monospace-ish line height rather
+   than the prose default, because what is being read here is structure. */
+.confirm-body-edit {
+  margin-top: 8px; max-height: 40vh; resize: vertical;
+  font-size: 12.5px; line-height: 1.5;
+}
+
 .choice-list.pair { flex-direction: row; gap: 6px; }
 .choice-list.pair .choice-opt {
   flex: 1 1 0; min-width: 0;
