@@ -120,6 +120,10 @@ const state = {
   attachments: [],
   /** Held for the length of one run so a tool call can still reach them. */
   sentAttachments: [],
+  /** 使用技能 (PRD 3.1) — what IT has published for THIS host. Empty hides the row. */
+  skills: [],
+  /** The chosen skill id. '' means 自動調度, which is the default and usually right. */
+  skill: '',
   /** 個人常用指令 — the caller's own saved prompts. PRD 3.5. */
   templates: [],
   /** The applied template, parked for the length of one run. See sentAttachments. */
@@ -1549,6 +1553,9 @@ async function send(message) {
         // Which 常用指令 this turn was started from, if any. The server checks it
         // belongs to this user before recording it — see templateForAudit.
         promptTemplateId: state.sentTemplateId || undefined,
+        // 使用技能 (PRD 3.1). The server re-checks the id against this host, so a
+        // stale one degrades to 自動調度 rather than reaching another surface.
+        skillId: state.skill || undefined,
       }),
     });
 
@@ -1798,6 +1805,7 @@ function showChat() {
   renderSourceMenu();
   void loadDataSources();
   void loadTemplates();
+  void loadSkills();
 }
 
 /**
@@ -2514,6 +2522,82 @@ function toggleTemplateMenu(show) {
   }
 }
 
+/**
+ * 使用技能 (PRD 3.1).
+ *
+ * ── Why the list is filtered by host ──
+ * Every skill written before this one generates a NEW FILE — pptx-gen,
+ * docx-gen, xlsx-gen — which is the opposite of what an add-in does. Offering
+ * 「PowerPoint Generator」 inside Excel would not be untidy, it would be wrong:
+ * somebody picks it and gets a download instead of a changed workbook. So the
+ * server only returns skills that declare this surface, and a skill has to opt
+ * in rather than out.
+ *
+ * ── Hidden when empty ──
+ * A menu entry that opens an empty list reads as broken, not as "IT has not
+ * published any yet". The model picker already works this way.
+ */
+async function loadSkills() {
+  try {
+    const res = await fetch(
+      `${state.apiBase}/api/skills?host=${encodeURIComponent(host.meta.api)}`,
+      { headers: { Authorization: `Bearer ${state.token}` } },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) { logout(err.error || t('登入已過期，請重新登入。')); return; }
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    state.skills = Array.isArray(body) ? body : [];
+  } catch {
+    // Silent: an older server predates the host filter, and a red note about a
+    // feature nobody asked for yet is noise. The row simply stays hidden.
+    state.skills = [];
+  }
+  // A skill chosen before a host switch or a server change may be gone now.
+  if (state.skill && !state.skills.some((s) => s.id === state.skill)) state.skill = '';
+  renderSkillMenu();
+}
+
+function renderSkillMenu() {
+  const row = $('src-skill');
+  if (row) row.hidden = !state.skills.length;
+  const cur = $('src-skill-cur');
+  const chosen = state.skills.find((s) => s.id === state.skill);
+  if (cur) cur.textContent = chosen ? chosen.name : '';
+
+  const list = $('skill-list');
+  if (!list) return;
+  // 留白＝AI 自動調度 is the first row and the default, because it is right far
+  // more often than any single specialist.
+  const rows = [{ id: '', name: t('自動調度'), description: t('讓 AI 自己判斷要用哪個做法。') }]
+    .concat(state.skills);
+  list.innerHTML = rows.map((s) => `
+    <button type="button" class="src-item" data-skill="${escapeHtml(s.id)}"
+            role="menuitemradio" aria-checked="${state.skill === s.id}">
+      <span class="src-name">
+        ${escapeHtml(s.name)}
+        ${s.description ? `<span class="skill-desc">${escapeHtml(s.description)}</span>` : ''}
+      </span>
+      <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+    </button>`).join('');
+
+  const note = $('skill-note');
+  if (note) note.textContent = t('技能由 IT 發佈，內容不可修改。留白就讓 AI 自己判斷。');
+}
+
+function toggleSkillMenu(show) {
+  const menu = $('skill-menu');
+  if (!menu) return;
+  menu.hidden = !show;
+  if (show) {
+    toggleSourceMenu(false);
+    toggleTemplateMenu(false);
+    renderSkillMenu();
+  }
+}
+
 /** Ask the server which cross-source MCPs this user could actually mount. */
 async function loadDataSources() {
   try {
@@ -2697,6 +2781,7 @@ Office.onReady(async (info) => {
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
     if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
+    if (!$('skill-menu').hidden) { e.preventDefault(); toggleSkillMenu(false); return; }
     if (!$('tpl-menu').hidden) { e.preventDefault(); toggleTemplateMenu(false); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
@@ -2800,6 +2885,7 @@ Office.onReady(async (info) => {
     if (key === 'file') { toggleSourceMenu(false); $('file-input').click(); return; }
     // Also not a toggle: it swaps this menu for the templates one.
     if (key === 'tpl') { toggleSourceMenu(false); toggleTemplateMenu(true); return; }
+    if (key === 'skill') { toggleSourceMenu(false); toggleSkillMenu(true); return; }
     state.sources = state.sources.includes(key)
       ? state.sources.filter(k => k !== key)
       : [...state.sources, key];
@@ -2818,6 +2904,20 @@ Office.onReady(async (info) => {
     if (!save) return;
     const bubble = save.closest('.bubble');
     if (bubble) void saveTemplateText(bubble.dataset.raw || '');
+  });
+
+  $('skill-menu').addEventListener('click', (e) => {
+    const item = e.target.closest('[data-skill]');
+    if (!item) return;
+    state.skill = item.dataset.skill;
+    renderSkillMenu();
+    toggleSkillMenu(false);
+    // In the transcript as well as the menu: this changes how the next answer is
+    // produced, and someone scrolling back should see when it changed.
+    const chosen = state.skills.find((sk) => sk.id === state.skill);
+    addNote(chosen
+      ? t('之後的訊息交給「{0}」處理。', chosen.name)
+      : t('已改回由 AI 自動判斷要用哪個做法。'), 'note');
   });
 
   $('tpl-menu').addEventListener('click', (e) => {
@@ -2849,6 +2949,11 @@ Office.onReady(async (info) => {
         && !e.target.closest('#tpl-menu') && !e.target.closest('#src-tpl')
         && !e.target.closest('#plus')) {
       toggleTemplateMenu(false);
+    }
+    if (!$('skill-menu').hidden
+        && !e.target.closest('#skill-menu') && !e.target.closest('#src-skill')
+        && !e.target.closest('#plus')) {
+      toggleSkillMenu(false);
     }
     if ($('src-menu').hidden) return;
     if (e.target.closest('#src-menu') || e.target.closest('#plus')) return;

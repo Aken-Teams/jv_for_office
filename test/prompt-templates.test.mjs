@@ -110,6 +110,30 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
     menu.length > 0 && !/(分享|匯出|上架|share|export|publish)/i.test(menu));
 }
 
+// ── 存檔前的注入掃描 ───────────────────────────────────────────────────────
+//
+// 這道防線擋的是「常駐化」。工作簿裡的注入本來是一次性的：影響一輪、確認閘門
+// 擋下破壞、就沒了。但存成常用指令會打破這件事——產生那段文字的 agent 一直在
+// 讀那份工作簿，而使用者會因為「是我自己存的」而信任它，然後每個月重播一次。
+{
+  ok('建立時會掃', /router\.post[\s\S]*?screen\(userId/.test(route));
+  // 只在建立時掃等於留了一條有紀錄的繞道：建一則乾淨的，再改成髒的。
+  ok('編輯時也會掃', /router\.patch[\s\S]*?screen\(userId/.test(route));
+  ok('掃到就不存，而且回得出原因',
+    /if \(refused\)[\s\S]*?status\(400\)/.test(route));
+  ok('擋下來要記稽核', /screen[\s\S]*?logSecurityEvent\([^)]*'prompt_injection', 'high'/.test(route));
+  ok('用散文的掃描器，不是檔案那條分塊路徑',
+    route.includes('analyzeInput(') && !route.includes('analyzeFileContentChunked'));
+}
+
+// 掃描器抓的是注入手法，不是破壞性動詞——這條確認我們沒有在誤擋正常用法。
+{
+  const guard = fs.readFileSync(new URL('services/inputGuard.ts', serverDir), 'utf8');
+  const formula = (guard.match(/function detectFormulaInjection[\s\S]*?\n}/) || [''])[0];
+  ok('公式注入只抓 CMD/EXEC 那一類，不會誤判 =SUM()',
+    formula.includes('CMD') && formula.includes('EXEC') && !/\bSUM\b/.test(formula));
+}
+
 // ── 選單裡的動作列不可以被當成資料來源停用 ─────────────────────────────────
 //
 // 「常用指令」第一版整列是灰的，點不動。它跟「上傳檔案」一樣掛在 ＋ 選單裡，

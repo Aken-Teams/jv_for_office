@@ -389,7 +389,21 @@
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
           <span class="src-name" data-t="常用指令">常用指令</span>
         </button>
+        <!-- Hidden until the server says this host has skills to offer. An entry
+             that opens an empty list is worse than no entry: it reads as broken
+             rather than as "not set up yet". Same rule the model picker follows. -->
+        <button type="button" class="src-item" data-src="skill" id="src-skill" role="menuitem" hidden>
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg>
+          <span class="src-name" data-t="使用技能">使用技能</span>
+          <span id="src-skill-cur" class="src-cur"></span>
+        </button>
         <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
+      </div>
+
+      <!-- 使用技能 (PRD 3.1). 留白＝AI 自動調度；選一個就直接交給它處理。 -->
+      <div id="skill-menu" class="src-menu" hidden role="menu" aria-labelledby="src-skill">
+        <div id="skill-list"></div>
+        <div id="skill-note" class="src-note"></div>
       </div>
 
       <!-- 個人常用指令 (PRD 3.5). Opens upward from the composer like the ＋ menu,

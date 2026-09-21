@@ -1159,6 +1159,14 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .tpl-add { border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; margin-top: 4px; }
 .tpl-add .ic-sm { color: var(--fg-subtle); }
 .tpl-empty { padding: 10px 9px; font-size: 12px; color: var(--fg-subtle); line-height: 1.5; }
+/* The chosen skill, shown on the ＋ menu row itself. A setting that persists
+   across messages and is only visible once you open two menus is a trap. */
+.src-cur { flex: none; max-width: 40%; font-size: 11px; color: var(--accent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-desc {
+  display: block; margin-top: 2px; font-size: 11px; color: var(--fg-subtle);
+  line-height: 1.35; white-space: normal;
+}
 
 .send-btn {
   display: flex; align-items: center; justify-content: center;
