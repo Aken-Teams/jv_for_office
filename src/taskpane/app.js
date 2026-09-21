@@ -130,6 +130,8 @@ const state = {
   recorded: [],
   /** True while a run whose reply is a procedure draft is in flight. */
   procedureRun: false,
+  /** 跨增益集交接 (PRD 3.5) — parcels waiting for THIS host. Empty hides the bar. */
+  handoffs: [],
   /** 使用技能 (PRD 3.1) — what IT has published for THIS host. Empty hides the row. */
   skills: [],
   /** The chosen skill id. '' means 自動調度, which is the default and usually right. */
@@ -1755,6 +1757,8 @@ async function send(message, opts = {}) {
     state.selectionDropped = false;
     void host.getSelectionRef().then(setSelection).catch(() => {});
     void refreshDocumentName();
+    // One may have landed while this turn was running.
+    void loadHandoffs();
     progressDone(false);
     // The reply to a write-up request is the thing being made. Offering it here
     // is the difference between this feature working and not: left to find it
@@ -1897,6 +1901,7 @@ function showChat() {
   void loadDataSources();
   void loadTemplates();
   void loadSkills();
+  void loadHandoffs();
 }
 
 /**
@@ -2528,6 +2533,116 @@ async function loadTemplates() {
     state.templateError = t('讀不到常用指令（{0}）。', e.message);
   }
   renderCmdMenu();
+}
+
+/**
+ * 跨增益集交接 (PRD 3.5, AC-44/45/46) — the receiving half.
+ *
+ * ── Why this is a parcel and not a call ──
+ * The Office add-in platform does not let one host drive another. Excel's pane
+ * cannot open PowerPoint, so 「turn this analysis into a deck」 is necessarily two
+ * actions with a server in between. Excel packs the conclusions and the figures;
+ * the person opens PowerPoint themselves; this asks whether anything is waiting.
+ *
+ * ── Why accepting SENDS rather than inserts ──
+ * The parcel carries content, never a finished file, because PRD 3.4 requires
+ * generated slides to inherit the deck's own layouts and colours and 3.3
+ * requires Word's changes to arrive as tracked changes. Neither is something a
+ * server can do. So accepting hands the content to the agent in THIS pane, which
+ * builds it with the native tools, in the document that is actually open.
+ */
+async function loadHandoffs() {
+  const bar = $('handoff-bar');
+  if (!bar) return;
+  try {
+    const res = await fetch(
+      `${state.apiBase}/api/handoffs?target=${encodeURIComponent(host.meta.api)}`,
+      { headers: { Authorization: `Bearer ${state.token}` } },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) { logout(err.error || t('登入已過期，請重新登入。')); return; }
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    state.handoffs = Array.isArray(body.handoffs) ? body.handoffs : [];
+  } catch {
+    // Silent: an older server predates this endpoint, and a red note about a
+    // handover nobody made is noise. The bar simply stays hidden.
+    state.handoffs = [];
+  }
+  renderHandoffBar();
+}
+
+const SOURCE_APP = { excel: 'Excel', word: 'Word', ppt: 'PowerPoint' };
+
+function renderHandoffBar() {
+  const bar = $('handoff-bar');
+  if (!bar) return;
+  // Newest only. Two offers stacked above the transcript is a queue, and a queue
+  // is something to manage rather than something to accept.
+  const h = state.handoffs[0];
+  bar.hidden = !h;
+  if (!h) { bar.innerHTML = ''; return; }
+  bar.innerHTML = `
+    <div class="handoff-from">${escapeHtml(t('從 {0} 帶過來的分析 · {1}',
+      SOURCE_APP[h.source_host] || h.source_host, h.source_name || ''))}</div>
+    <span class="handoff-title">${escapeHtml(h.title || '')}</span>
+    <div class="handoff-acts">
+      <button type="button" class="go" data-accept="${escapeHtml(h.id)}">${escapeHtml(t('接受'))}</button>
+      <button type="button" data-ignore="${escapeHtml(h.id)}">${escapeHtml(t('忽略'))}</button>
+    </div>`;
+}
+
+/**
+ * Take the parcel and set the agent to work on it.
+ *
+ * The payload is fetched only now, on accept. Listing it earlier would mean
+ * every pane opening pulled somebody's figures into a document they had not yet
+ * decided to use them in.
+ */
+async function acceptHandoff(id) {
+  let body;
+  try {
+    const res = await fetch(`${state.apiBase}/api/handoffs/${encodeURIComponent(id)}/accept`,
+      { method: 'POST', headers: { Authorization: `Bearer ${state.token}` } });
+    body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // AC-46: an expired parcel has to say so rather than failing quietly.
+      addNote(body.error || t('這個交接包已經失效了。'), 'err');
+      state.handoffs = state.handoffs.filter((h) => h.id !== id);
+      renderHandoffBar();
+      return;
+    }
+  } catch (e) {
+    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
+    return;
+  }
+
+  state.handoffs = state.handoffs.filter((h) => h.id !== id);
+  renderHandoffBar();
+
+  const from = SOURCE_APP[body.sourceHost] || body.sourceHost;
+  const what = host.meta.api === 'word' ? t('報告') : t('簡報');
+  void send(
+    t('下面是從 {0}「{1}」帶過來的分析。請在我目前開啟的這份檔案裡，'
+      + '依它的內容生成{2}——沿用這份檔案既有的版面與樣式，不要另外建立新檔。'
+      + '數字一律以下面的內容為準，不要自行補充或推估。\n\n{3}',
+      from, body.sourceName || '', what, body.payload),
+    {
+      display: t('接受從 {0} 帶過來的分析：{1}', from, body.title || ''),
+      folded: body.payload,
+    },
+  );
+}
+
+async function ignoreHandoff(id) {
+  state.handoffs = state.handoffs.filter((h) => h.id !== id);
+  renderHandoffBar();
+  try {
+    await fetch(`${state.apiBase}/api/handoffs/${encodeURIComponent(id)}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${state.token}` } });
+  } catch { /* it expires on its own within the day */ }
 }
 
 /**
@@ -3525,6 +3640,23 @@ ${typed}` : `/${tpl.name}`) : '';
     if (bubble) void saveAsTemplate(bubble.dataset.raw || '');
   });
 
+
+  $('handoff-bar').addEventListener('click', (e) => {
+    const go = e.target.closest('[data-accept]');
+    if (go) { void acceptHandoff(go.dataset.accept); return; }
+    const no = e.target.closest('[data-ignore]');
+    if (no) void ignoreHandoff(no.dataset.ignore);
+  });
+
+  $('tpl-chip-row').addEventListener('click', (e) => {
+    if (e.target.closest('[data-expand]')) { expandTemplate(); return; }
+    if (e.target.closest('[data-drop]')) {
+      state.attachedTemplate = null;
+      state.appliedTemplateId = '';
+      renderTemplateChip();
+      syncSendButton();
+    }
+  });
 
   $('cmd-menu').addEventListener('click', (e) => {
     const skill = e.target.closest('[data-skill]');

@@ -1252,6 +1252,30 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   font-size: 12.5px; line-height: 1.5;
 }
 
+/* 從別的增益集帶過來的分析。Accent-bordered rather than warn-coloured: this is
+   an offer, not a problem, and the pane already spends its warm colours on
+   things that went wrong. */
+.handoff-bar {
+  margin: 0 12px 10px; padding: 10px 11px;
+  border: 1px solid var(--accent); border-left-width: 3px;
+  border-radius: var(--radius); background: var(--accent-soft);
+  animation: rise 180ms ease-out;
+}
+.handoff-from { font-size: 11px; color: var(--fg-muted); }
+.handoff-title {
+  display: block; margin: 2px 0 8px; font-size: 13px; font-weight: 600; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.handoff-acts { display: flex; gap: 6px; }
+.handoff-acts button {
+  flex: 1; padding: 6px 8px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong); background: var(--bg);
+  font-size: 12.5px; color: var(--fg);
+  transition: background var(--speed), border-color var(--speed);
+}
+.handoff-acts .go { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.handoff-acts button:hover { background: var(--surface-hover); }
+
 .choice-list.pair { flex-direction: row; gap: 6px; }
 .choice-list.pair .choice-opt {
   flex: 1 1 0; min-width: 0;

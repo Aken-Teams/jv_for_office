@@ -117,6 +117,30 @@ for (const rel of FILES) {
   ok(`${rel.replace('../src/taskpane/', '')} 沒有呼叫不存在的函式`,
     list.length === 0,
     list.length ? `      找不到定義：${list.join('、')}` : '');
+
+  /**
+   * And the other direction: declared, never reached.
+   *
+   * The dangling-call check above is blind to this. `expandTemplate` survived a
+   * menu merge perfectly intact while the click handler that called it was
+   * deleted — so the chip could be neither opened nor removed, and nothing in
+   * the file was broken enough to notice. A function nobody calls is either dead
+   * or unwired, and unwired is a bug wearing dead code's clothes.
+   *
+   * Only top-level `function` declarations, and only in files with no exports to
+   * speak of: an exported helper is called from somewhere this check cannot see.
+   */
+  const declared = [...src.matchAll(/^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map(m => m[1]);
+  const exported = new Set(
+    [...src.matchAll(/^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)].map(m => m[1]));
+  const orphans = declared.filter((name) => {
+    if (exported.has(name)) return false;
+    // Its own declaration is one mention; anything else means somebody uses it.
+    return (src.match(new RegExp(`\\b${name}\\b`, 'g')) || []).length <= 1;
+  });
+  ok(`${rel.replace('../src/taskpane/', '')} 沒有宣告了卻沒人呼叫的函式`,
+    orphans.length === 0,
+    orphans.length ? `      沒人呼叫：${orphans.join('、')}` : '');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
