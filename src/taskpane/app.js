@@ -128,6 +128,8 @@ const state = {
    * saving is usually spread over several turns.
    */
   recorded: [],
+  /** True while a run whose reply is a procedure draft is in flight. */
+  procedureRun: false,
   /** 使用技能 (PRD 3.1) — what IT has published for THIS host. Empty hides the row. */
   skills: [],
   /** The chosen skill id. '' means 自動調度, which is the default and usually right. */
@@ -394,7 +396,12 @@ function addBubble(role, text, images) {
   clearEmptyState();
   const el = document.createElement('div');
   el.className = `bubble ${role}`;
-  el.innerHTML = role === 'user' ? escapeHtml(text) : renderMarkdown(text || '');
+  // Both roles go through renderMarkdown, which escapes before it formats (see
+  // inlineMd) — so this is not a hole, and it fixes a real one. An applied
+  // 常用指令 is often a procedure the agent wrote, tables and all; sent back as a
+  // plain-escaped user message it arrived as a wall of raw `|` pipes, which is
+  // the person's own saved text looking broken.
+  el.innerHTML = renderMarkdown(text || '');
   // The source text, kept beside the rendered HTML.
   //
   // 「存成常用指令」 has to save what was WRITTEN, not what was drawn. Reading it
@@ -1485,7 +1492,7 @@ function stopRun() {
   try { state.abort.abort(); } catch { /* already gone */ }
 }
 
-async function send(message) {
+async function send(message, opts = {}) {
   if (state.streaming) return;
   state.streaming = true;
   state.runId = crypto.randomUUID();
@@ -1507,7 +1514,14 @@ async function send(message) {
   renderAttachments();
 
   backToLive();
-  addBubble('user', message, state.sentAttachments);
+  // `display` lets a caller send one thing and show another. The write-up
+  // request is a machine-generated wall of tool names and arguments; putting
+  // that in the transcript as though the person typed it is noise, and it buries
+  // the reply it exists to produce.
+  addBubble('user', opts.display || message, state.sentAttachments);
+  // Remembered for the whole run: when it ends, the reply IS the procedure, and
+  // the person should be offered it rather than having to find the right bubble.
+  state.procedureRun = !!opts.procedure;
   progressStep(t('連線到伺服器…'));
 
   let bubble = null;
@@ -1697,6 +1711,15 @@ async function send(message) {
     void host.getSelectionRef().then(setSelection).catch(() => {});
     void refreshDocumentName();
     progressDone(false);
+    // The reply to a write-up request is the thing being made. Offering it here
+    // is the difference between this feature working and not: left to find it
+    // themselves, people save whichever bubble looks important — and the one
+    // that looks important is the agent's 「回填完成，已驗過」 report, which is a
+    // RESULT. Saving a result teaches next month's run nothing.
+    if (state.procedureRun) {
+      state.procedureRun = false;
+      if (bubble && (bubble.dataset.raw || '').trim()) void offerProcedure(bubble.dataset.raw);
+    }
   }
 }
 
@@ -2410,14 +2433,27 @@ function renderTemplateMenu() {
   const list = $('tpl-list');
   if (!list) return;
 
+  // Filtered by whatever is in the menu's own search box, if it has one. Fifty
+  // saved prompts is the documented ceiling and scrolling fifty rows in a 350px
+  // pane is not finding, it is hunting.
+  const q = ($('tpl-find') && $('tpl-find').value || '').trim().toLowerCase();
+  const shown = q
+    ? state.templates.filter((tpl) => `${tpl.name}
+${tpl.content}`.toLowerCase().includes(q))
+    : state.templates;
+  const find = $('tpl-find');
+  if (find) find.hidden = state.templates.length < 5;
+
   if (state.templateError) {
     list.innerHTML = `<div class="tpl-empty">${escapeHtml(state.templateError)}</div>`;
+  } else if (q && !shown.length) {
+    list.innerHTML = `<div class="tpl-empty">${escapeHtml(t('沒有符合「{0}」的常用指令。', q))}</div>`;
   } else if (!state.templates.length) {
     list.innerHTML = `<div class="tpl-empty">${escapeHtml(
       t('還沒有常用指令。兩種存法：把說法打進輸入框存起來，'
         + '或是先讓 AI 做一次，再用下面的「整理成常用指令」把流程存下來。'))}</div>`;
   } else {
-    list.innerHTML = state.templates.map((tpl) => `
+    list.innerHTML = shown.map((tpl) => `
       <div class="tpl-row">
         <button type="button" class="tpl-use" data-id="${escapeHtml(tpl.id)}">
           <span class="tpl-name">${escapeHtml(tpl.name)}</span>
@@ -2552,7 +2588,7 @@ function askName({ title, value, placeholder, confirmLabel }) {
              value="${escapeHtml(String(value || ''))}"
              placeholder="${escapeHtml(String(placeholder || ''))}"
              aria-label="${escapeHtml(String(title || ''))}" />
-      <div class="choice-list">
+      <div class="choice-list pair">
         <button class="choice-opt" data-go="1">
           <span class="choice-label">${escapeHtml(confirmLabel || t('儲存'))}</span>
         </button>
@@ -2599,7 +2635,7 @@ function askYesNo(question, confirmLabel) {
         <span class="confirm-title">${escapeHtml(t('請確認'))}</span>
       </div>
       <div class="confirm-body">${escapeHtml(String(question || ''))}</div>
-      <div class="choice-list">
+      <div class="choice-list pair">
         <button class="choice-opt" data-go="1">
           <span class="choice-label">${escapeHtml(confirmLabel || t('確定'))}</span>
         </button>
@@ -2670,7 +2706,23 @@ function recordToTemplate() {
     addNote(t('實際做過 {0} 步，剔除失敗／被拒絕／被復原的之後剩 {1} 步。',
       summary.total, summary.kept), 'note');
   }
-  void send(buildPrompt(kept, summary));
+  void send(buildPrompt(kept, summary), {
+    procedure: true,
+    display: t('把剛剛做過的 {0} 個步驟整理成一段可以重複使用的指令。', summary.kept),
+  });
+}
+
+/**
+ * Offer the freshly written procedure for saving.
+ *
+ * A card rather than a note, because the answer is a decision and the text has
+ * just been produced — asking now, while it is on screen, is the only moment the
+ * person can judge it against what they remember doing.
+ */
+async function offerProcedure(text) {
+  const yes = await askYesNo(
+    t('上面這段是剛剛那個流程的整理。要存成常用指令嗎？'), t('存起來'));
+  if (yes) await saveTemplateText(text);
 }
 
 /**
@@ -2736,9 +2788,14 @@ function toggleTemplateMenu(show) {
   const menu = $('tpl-menu');
   if (!menu) return;
   menu.hidden = !show;
+  const find = $('tpl-find');
   if (show) {
     toggleSourceMenu(false);
+    if (find) find.value = '';
     renderTemplateMenu();
+    // Straight into the search box when there is one: arriving here by typing
+    // 「/」 means the next keystroke is meant for it.
+    if (find && !find.hidden) find.focus();
   }
 }
 
@@ -3025,6 +3082,18 @@ Office.onReady(async (info) => {
     autoGrow(e.target);
     renderCharCount(e.target);
     syncSendButton();
+    // 「/」 on an otherwise empty composer opens the saved prompts. The menu is
+    // two clicks away and this is the thing people reach for most often once
+    // they have a few saved — every chat tool trains this reflex, and a feature
+    // you have to go and find is a feature used once.
+    if (e.target.value === '/') {
+      e.target.value = '';
+      autoGrow(e.target);
+      renderCharCount(e.target);
+      syncSendButton();
+      toggleTemplateMenu(true);
+      return;
+    }
     // Emptying the composer by hand means this is no longer that template's
     // turn; leaving the id set would attribute a from-scratch question to it.
     if (!e.target.value.trim()) state.appliedTemplateId = '';
@@ -3138,6 +3207,15 @@ Office.onReady(async (info) => {
     addNote(chosen
       ? t('之後的訊息交給「{0}」處理。', chosen.name)
       : t('已改回由 AI 自動判斷要用哪個做法。'), 'note');
+  });
+
+  $('tpl-find').addEventListener('input', renderTemplateMenu);
+  $('tpl-find').addEventListener('keydown', (e) => {
+    // Enter on a single match applies it — the whole point of typing to filter.
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const only = $('tpl-list').querySelectorAll('.tpl-use');
+    if (only.length === 1) applyTemplate(only[0].dataset.id);
   });
 
   $('tpl-menu').addEventListener('click', (e) => {

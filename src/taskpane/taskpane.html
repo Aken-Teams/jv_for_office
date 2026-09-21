@@ -411,6 +411,10 @@
            sending it, because AC-42 requires the text to arrive somewhere it can
            still be edited — a saved procedure is a starting point, not a macro. -->
       <div id="tpl-menu" class="src-menu" hidden role="menu" aria-labelledby="src-tpl">
+        <!-- Only appears once the list is long enough to be worth searching. -->
+        <input id="tpl-find" class="tpl-find" type="text" hidden autocomplete="off"
+               placeholder="搜尋常用指令…" data-t-ph="搜尋常用指令…"
+               aria-label="搜尋常用指令" data-t-al="搜尋常用指令" />
         <div id="tpl-list"></div>
         <button type="button" id="tpl-save" class="src-item tpl-add">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>

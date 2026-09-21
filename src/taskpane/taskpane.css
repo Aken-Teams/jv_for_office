@@ -1159,6 +1159,19 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .tpl-add { border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; margin-top: 4px; }
 .tpl-add .ic-sm { color: var(--fg-subtle); }
 .tpl-empty { padding: 10px 9px; font-size: 12px; color: var(--fg-subtle); line-height: 1.5; }
+.tpl-find {
+  width: 100%; margin-bottom: 4px; padding: 7px 9px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--fg); font-size: 12.5px;
+}
+.tpl-find:focus { outline: none; border-color: var(--accent); }
+/* Two buttons that are a pair — 儲存／取消, 刪除／取消 — sit side by side.
+   Stacked full-width they read as two unrelated choices and eat half the pane;
+   the list layout is for the agent's 「pick one of these answers」 cards, where
+   the options really are a list and each one needs a whole row. */
+.choice-list.pair { display: flex; gap: 6px; }
+.choice-list.pair .choice-opt { flex: 1; text-align: center; }
+.choice-list.pair .choice-label { font-weight: 500; }
 /* The chosen skill, shown on the ＋ menu row itself. A setting that persists
    across messages and is only visible once you open two menus is a trap. */
 .src-cur { flex: none; max-width: 40%; font-size: 11px; color: var(--accent);

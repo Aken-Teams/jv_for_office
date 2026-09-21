@@ -168,6 +168,30 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
     save.includes('content: body') && !/content: plainText/.test(save));
 }
 
+// ── 整理出來的流程要主動送到眼前 ───────────────────────────────────────────
+//
+// 這條是整個「錄製」功能成不成立的關鍵。讓使用者自己去對話裡找那則回覆，
+// 他會存看起來最重要的那一則——而看起來最重要的是 agent 的「回填完成，已驗過」
+// 報告，那是**結果**。存下結果，下個月的執行學不到任何東西。
+{
+  const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  ok('整理完會主動問要不要存', app.includes('function offerProcedure('));
+  ok('那一輪跑完就問，不用自己找 bubble',
+    /state\.procedureRun[\s\S]{0,300}offerProcedure\(bubble\.dataset\.raw\)/.test(app));
+  // 送出去的是一大串工具名稱，直接當成使用者訊息顯示只會把回覆淹掉。
+  ok('送出的提示詞跟顯示的文字可以分開',
+    /addBubble\('user', opts\.display \|\| message/.test(app));
+
+  // 套用常用指令送回去的常常是 agent 寫的流程（含表格）。使用者訊息若只做
+  // escape，那段會變成一整片原始的 | 符號——使用者自己存的文字看起來壞掉。
+  ok('使用者訊息也走 markdown（renderMarkdown 內部會先 escape）',
+    /el\.innerHTML = renderMarkdown\(text \|\| ''\)/.test(app));
+  ok('不再只對使用者訊息做 escape', !/role === 'user' \? escapeHtml\(text\)/.test(app));
+
+  ok('輸入框打 / 就叫得出常用指令', /e\.target\.value === '\/'/.test(app));
+  ok('清單長了才出現搜尋框', /find\.hidden = state\.templates\.length < 5/.test(app));
+}
+
 // ── 選單裡的動作列不可以被當成資料來源停用 ─────────────────────────────────
 //
 // 「常用指令」第一版整列是灰的，點不動。它跟「上傳檔案」一樣掛在 ＋ 選單裡，
