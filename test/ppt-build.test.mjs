@@ -493,5 +493,224 @@ const shot = (args) => { slide = fakeSlide(); return build(args).then(() => ({
     `fill ${tile._fill} line ${tile.lineFormat.visible}`);
 }
 
+// ── 骨架不能把整頁版型的標題再畫一次 ─────────────────────────────────────────
+//
+// 這是使用者截圖裡最刺眼的兩個問題，而且是同一個 bug：section 頁把「03 代理式 AI」
+// 印在頁首又印在中間，statement 頁把「逾 80%」用 25pt 印一次再用 84pt 印一次。
+// 印兩次不是強調，是看起來壞掉。
+
+for (const kind of ['section', 'statement']) {
+  slide = fakeSlide();
+  await build({ kind, title: '逾 80%', eyebrow: '02 THE GAP', page: 'P.05',
+    body: ['的受訪組織表示，AI 目前沒有可衡量的影響'] });
+  const same = texts().filter((t) => t === '逾 80%');
+  ok(`${kind}：標題只出現一次`, same.length === 1, `出現 ${same.length} 次`);
+  const eyes = texts().filter((t) => /02 THE GAP/i.test(t));
+  ok(`${kind}：章節標記也只出現一次`, eyes.length <= 1, `出現 ${eyes.length} 次`);
+}
+
+// statement 保留導覽標記（不然大數字真的不知道在講什麼），但不保留標題。
+{
+  slide = fakeSlide();
+  await build({ kind: 'statement', title: '逾 80%', eyebrow: '02 THE GAP', page: 'P.05',
+    body: ['的受訪組織表示，AI 沒有可衡量的影響'] });
+  ok('statement 保留 eyebrow 和頁碼', texts().some((t) => /02 THE GAP/i.test(t))
+    && texts().includes('P.05'));
+  // 一頁只有數字＝一道問答題。那句話必須讀得出來，不能是灰色小註。
+  const body = alive().find((s) => s._text.startsWith('的受訪組織'));
+  const num = alive().find((s) => s._text === '逾 80%');
+  ok('解釋那句話用內文色，不是淡灰', body._font.color !== '#8A93A0', String(body._font.color));
+  ok('而且緊跟在數字下面，不是掉在頁尾',
+    body.top - (num.top + num.height) < 80, `間隔 ${Math.round(body.top - (num.top + num.height))}`);
+  // 色塊給數字一個地板跟天花板，不然它就是浮在一片空白裡。
+  ok('數字有一塊底襯著', alive().some((s) => s.kind === 'geo' && s.width === 960
+    && s.height > 200 && s.top < num.top && s.top + s.height > body.top));
+}
+
+// section 是整頁滿版，不是一條中間的色帶——它唯一的工作是讓人一眼認出「換段了」。
+{
+  slide = fakeSlide();
+  await build({ kind: 'section', title: '代理式 AI', eyebrow: '03',
+    body: ['從「會回答」到「會執行」'] });
+  const full = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
+  ok('章節頁是滿版的', !!full, alive().filter((s) => s.kind === 'geo')
+    .map((s) => `${s.width}x${s.height}`).join(' '));
+  const lum = (c) => { const x = String(c).replace('#', '');
+    return (parseInt(x.slice(0, 2), 16) * 0.299 + parseInt(x.slice(2, 4), 16) * 0.587
+      + parseInt(x.slice(4, 6), 16) * 0.114) / 255; };
+  const t = alive().find((s) => s._text === '代理式 AI');
+  ok('章節頁的字在底色上讀得到',
+    Math.abs(lum(full._fill) - lum(t._font.color)) > 0.4,
+    `底 ${full._fill} 字 ${t._font.color}`);
+  const n = alive().find((s) => s._text === '03');
+  ok('段落編號比段落名稱還大', n._font.size > t._font.size, `${n._font.size} vs ${t._font.size}`);
+}
+{
+  // 文青風的章節頁不能變成一塊黑——暖紙簡報中間插一頁深色，那不是停頓，是另一份簡報。
+  slide = fakeSlide();
+  await build({ kind: 'section', title: '章節', eyebrow: '01', look: 'literary' });
+  const full = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
+  const lum = (c) => { const x = String(c).replace('#', '');
+    return (parseInt(x.slice(0, 2), 16) + parseInt(x.slice(2, 4), 16) + parseInt(x.slice(4, 6), 16)) / 765; };
+  ok('文青的章節頁留在紙上，不翻成深色', lum(full._fill) > 0.8, full._fill);
+  ok('而且字是深的', lum(alive().find((s) => s._text === '章節')._font.color) < 0.5);
+}
+
+// ── 封面要填滿，不是中間一條字帶 ─────────────────────────────────────────────
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: 'AI 的 2026', eyebrow: '年度報告',
+    body: ['副標'], footer: '資料來源：McKinsey', page: '2026' });
+  const ys = alive().filter((s) => s._text).map((s) => s.top);
+  // 原本上下各空掉四分之一，看起來就是 PowerPoint 預設換個顏色。
+  ok('封面上半部有東西', Math.min(...ys) < 160, `最高的字在 ${Math.min(...ys)}`);
+  ok('封面下半部也有東西', Math.max(...ys) > 440, `最低的字在 ${Math.max(...ys)}`);
+  ok('頁腳上面有一條線收尾',
+    alive().some((s) => s.kind === 'geo' && s.height <= 3 && s.top > 430 && s.width > 600));
+  const head = alive().find((s) => s._text === 'AI 的 2026');
+  ok('主標靠左，不再置中', head.left < 200, String(head.left));
+}
+
+// ── 流程列：內文被徽章擠掉三分之二的寬度 ─────────────────────────────────────
+{
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_cards', {
+    bar: 'top', arrows: true, columns: 4,
+    cards: [1, 2, 3, 4].map((n) => ({
+      number: `0${n}`, title: `步驟 ${n}`,
+      text: '選擇直接接到成本或營收指標的流程，不做全面導入',
+    })),
+  });
+  const panels = alive().filter((s) => s.kind === 'geo' && s.height > 100);
+  ok('有內文的流程卡會加高', panels.length === 4, `${panels.length} 張`);
+  const body = alive().find((s) => s._text.startsWith('選擇直接'));
+  const badge = alive().find((s) => s._text === '01');
+  // 內文繼承了徽章的位移，四欄之下每段只剩約 119 點——大概八個字，所以每行都斷。
+  ok('內文用整張卡的寬度，不是徽章旁邊剩下的',
+    body.left === badge.left && body.width > panels[0].width * 0.7,
+    `內文 left ${body.left} 寬 ${Math.round(body.width)}，卡片寬 ${Math.round(panels[0].width)}`);
+  ok('內文沒有超出卡片下緣',
+    body.top + body.height <= panels[0].top + panels[0].height,
+    `內文底 ${Math.round(body.top + body.height)}，卡片底 ${panels[0].top + panels[0].height}`);
+  const arrows = alive().filter((s) => s.geo === 'RightArrow');
+  ok('三個箭頭', arrows.length === 3, `${arrows.length} 個`);
+  // 箭頭用 line 色等於看不見，四個步驟就變成四個不相干的方塊。
+  ok('箭頭看得見，不是髮絲線的顏色', arrows[0]._fill !== '#D5DBE0', arrows[0]._fill);
+  ok('箭頭落在卡片之間的空隙裡',
+    arrows.every((a) => panels.some((pnl) => Math.abs(a.left - (pnl.left + pnl.width)) < 12)));
+}
+{
+  // 沒有內文的卡片不該無謂長高——那只會在下面留一條空白。
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_cards',
+    { bar: 'top', columns: 3, cards: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] });
+  ok('沒有內文就維持原本的高度',
+    alive().filter((s) => s.kind === 'geo' && s.height === 92).length === 3);
+}
+
+// ── 一頁的高度要有人負責 ─────────────────────────────────────────────────────
+//
+// 「一頁 PPT 這樣也太少東西了」的成因不是元件太小，是沒有人負責整頁的高度：
+// 模型各自替 kpi 和 callout 挑 top，剩下的就變成標題下方和頁尾上方的兩個洞。
+// 現在版面在畫任何東西之前先把帶子分完。
+
+const CONTENT_TOP = 124;
+/** 允許的最大空白：堆疊間距本身，再加一點捨入的餘裕。 */
+const STACK_GAP_MAX = 26;
+/** 有 footband 的時候內文帶的底線。 */
+const BAND_BOTTOM = 480;
+
+{
+  slide = fakeSlide();
+  await build({
+    kind: 'bullets', title: '米格魯是一隻用鼻子過生活的狗', eyebrow: '習性圖鑑',
+    body: ['鼻子當導航：聞到味道就進入自己的世界', '天生大嗓門：獵犬的嗥叫聲',
+      '食慾沒有煞車：飽了也還想吃', '最怕落單：成群狩獵的個性'],
+    kpi: [{ value: '13', label: '年壽命' }, { value: '2 小時', label: '每日運動' },
+      { value: '3 次', label: '每週嗅覺遊戲' }],
+    callout: '米格魯不是不聽話，牠只是正在聞一件牠覺得比你更重要的事。',
+    footband: true, footer: '資料整理：品種習性概述',
+  });
+
+  const boxes = alive().filter((s) => s.top !== undefined && s.top >= CONTENT_TOP
+    && s.top + s.height <= 541 && s.width > 40);
+  const tops = boxes.map((s) => s.top);
+  const bottoms = boxes.map((s) => s.top + s.height);
+
+  ok('內容從內文帶的頂端就開始', Math.min(...tops) <= CONTENT_TOP + 2,
+    `最高的東西在 ${Math.round(Math.min(...tops))}`);
+
+  // 找出最大的一段垂直空白。原本這裡會有兩塊將近 100 點的洞。
+  const spans = boxes.map((s) => [s.top, s.top + s.height]).sort((a, b) => a[0] - b[0]);
+  let reach = CONTENT_TOP;
+  let hole = 0;
+  let holeAt = 0;
+  for (const [a, b] of spans) {
+    if (a - reach > hole) { hole = a - reach; holeAt = reach; }
+    reach = Math.max(reach, b);
+  }
+  if (BAND_BOTTOM - reach > hole) { hole = BAND_BOTTOM - reach; holeAt = reach; }
+  ok('中間沒有大塊空白', hole <= STACK_GAP_MAX,
+    `在 y=${Math.round(holeAt)} 有 ${Math.round(hole)} 點的空白`);
+  ok('內容一路填到頁尾帶', reach >= BAND_BOTTOM - 4, `最低點 ${Math.round(reach)}`);
+
+  // 三層都在，而且順序正確。
+  const kpiVal = alive().find((s) => s._text === '13');
+  const callout = alive().find((s) => s._text.startsWith('米格魯不是'));
+  const card = alive().find((s) => s._text === '鼻子當導航');
+  ok('數據卡在最上面', kpiVal.top < card.top, `${kpiVal.top} vs ${card.top}`);
+  ok('結論在最下面', callout.top > card.top, `${callout.top} vs ${card.top}`);
+  ok('結論在頁尾帶上方，沒有壓到它',
+    callout.top + callout.height <= 494, `結論底 ${Math.round(callout.top + callout.height)}`);
+}
+
+// 沒有 kpi / callout 的時候，內容自己把整條帶子吃滿——不是留著等人來填。
+{
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一', '二', '三'], footband: true });
+  const panels = alive().filter((s) => s.kind === 'geo' && s.width === 884);
+  const lowest = Math.max(...panels.map((s) => s.top + s.height));
+  ok('沒有附加元件時內容自己填滿', lowest >= BAND_BOTTOM - 4, `最低點 ${Math.round(lowest)}`);
+}
+
+// 加了 kpi 之後內容帶要縮短，不是讓卡片跑到頁尾帶底下。
+{
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一', '二', '三'],
+    kpi: [{ value: '1' }, { value: '2' }], footband: true });
+  const panels = alive().filter((s) => s.kind === 'geo' && s.width === 884);
+  const lowest = Math.max(...panels.map((s) => s.top + s.height));
+  ok('有數據卡時內容往下縮，不會溢出', lowest >= BAND_BOTTOM - 4 && lowest <= BAND_BOTTOM + 1,
+    `最低點 ${Math.round(lowest)}`);
+  ok('內容從數據卡下面才開始',
+    Math.min(...panels.map((s) => s.top)) > CONTENT_TOP + 101,
+    `最高的卡片在 ${Math.round(Math.min(...panels.map((s) => s.top)))}`);
+}
+
+// 單獨呼叫的洞察框也要貼著帶子的底，不能停在半空中。
+{
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_callout', { text: '一句結論', footband: true });
+  const panel = alive().find((s) => s.kind === 'geo' && s.width === 884);
+  ok('單獨的洞察框預設貼著內文帶底部',
+    panel.top + panel.height >= BAND_BOTTOM - 1 && panel.top + panel.height <= BAND_BOTTOM + 1,
+    `底在 ${Math.round(panel.top + panel.height)}`);
+}
+
+// 同一個元件在兩條路上必須長得一模一樣，否則會是「同一個名字、兩種樣子」。
+{
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_kpi', { items: [{ value: '65%', label: '導入' }] });
+  const solo = alive().map((s) => `${s.kind}:${Math.round(s.left)},${Math.round(s.top)},`
+    + `${Math.round(s.width)},${Math.round(s.height)}`).join(' | ');
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一'], kpi: [{ value: '65%', label: '導入' }] });
+  const inBuild = alive().filter((s) => s.top < CONTENT_TOP + 101 && s.top >= CONTENT_TOP)
+    .map((s) => `${s.kind}:${Math.round(s.left)},${Math.round(s.top)},`
+      + `${Math.round(s.width)},${Math.round(s.height)}`).join(' | ');
+  ok('單獨呼叫和寫在版型裡，數據卡畫出來一樣', solo === inBuild,
+    `單獨 ${solo}\n    版型 ${inBuild}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

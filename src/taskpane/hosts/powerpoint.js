@@ -1331,7 +1331,29 @@ async function buildSlide(args) {
     // ── The chrome, on every slide that is not a full-bleed cover ──
     // Fixed geometry, applied the same way every time. See CHROME for why none
     // of it is a parameter.
-    const dressed = kind !== 'title' && args.chrome !== false;
+    /**
+     * How much of the frame this recipe wants.
+     *
+     * ── The bug this replaces ──
+     * The chrome used to go on every slide that was not the cover. But `section`
+     * and `statement` are WHOLE-PAGE compositions that draw their own title —
+     * so a section slide printed 「03 代理式 AI」 in the header and then again in
+     * the middle of the page, and a statement slide printed 「逾 80%」 as a 25pt
+     * heading above the same words at 84pt. Twice is not emphasis. It reads as a
+     * rendering fault, and it is the reason those slides looked unfinished while
+     * the ordinary ones looked fine.
+     *
+     * 'marks' is the middle case and exists for `statement` specifically: the
+     * eyebrow and the page number are NAVIGATION — they answer 「我們講到哪了」 —
+     * and a slide carrying one huge number needs that more than any other, since
+     * the number itself says nothing about where it sits in the argument. What it
+     * does not need is a title, because the number is the title.
+     */
+    const frame = args.chrome === false ? 'none'
+      : (kind === 'title' || kind === 'section') ? 'none'
+        : kind === 'statement' ? 'marks'
+          : 'full';
+    const dressed = frame !== 'none';
     if (dressed) {
       // The page ground goes down FIRST so everything else lands on top of it.
       //
@@ -1390,7 +1412,7 @@ async function buildSlide(args) {
             align: lk.titleAlign === 'center' ? 'center' : 'left',
           });
       }
-      if (title) {
+      if (title && frame === 'full') {
         text(title, { ...CHROME.title, top: CHROME.title.top + lk.topPad },
           {
             font: display,
@@ -1418,9 +1440,49 @@ async function buildSlide(args) {
           { size: 11, color: onGround(th, lk, 'muted'), align: 'right', valign: 'middle' });
       }
     }
-    const CT = CHROME.contentTop + lk.topPad;
     const CL = CHROME.contentLeft;
     const CW = CHROME.contentWidth;
+
+    /**
+     * The composer: one call, one whole page, no holes.
+     *
+     * ── What this replaces ──
+     * Building a dense slide used to be three calls — build_slide, then
+     * add_kpi, then add_callout — and each one chose its own `top`. No single
+     * call could see the others, so the leftovers landed wherever the model's
+     * arithmetic happened to leave them: a void under the title and another
+     * above the footer. 「一頁 PPT 這樣也太少東西了」 was that, exactly.
+     *
+     * Here the band is divided before anything is drawn. The fixed-height
+     * blocks take their share off the top and the bottom, and the recipe's own
+     * content gets ALL of what is left — so the page is full by construction
+     * rather than by the model guessing well.
+     */
+    const kit = { th, lk, face };
+    const pen = penFor(slide, (sh) => put.shape.push(sh), (sh) => put.text.push(sh));
+    let bandTop = CHROME.contentTop + lk.topPad;
+    let bandBottom = bandBottomFor(args);
+
+    const kpis = (Array.isArray(args.kpi) ? args.kpi : []).filter(Boolean).slice(0, 5);
+    if (kpis.length && dressed) {
+      drawKpiRow(pen, kit, kpis,
+        { left: CL, top: bandTop, width: CW, height: KPI_H });
+      bandTop += KPI_H + STACK_GAP;
+    }
+
+    const callout = typeof args.callout === 'string'
+      ? { text: args.callout }
+      : (args.callout && args.callout.text ? args.callout : null);
+    if (callout && dressed) {
+      drawCallout(pen, kit, callout,
+        { left: CL, top: bandBottom - CALLOUT_H, width: CW, height: CALLOUT_H });
+      bandBottom -= CALLOUT_H + STACK_GAP;
+    }
+
+    // What the recipes lay out against. CT stays the name every branch below
+    // already uses; it is simply no longer a constant.
+    const CT = bandTop;
+    const BODY_H = Math.max(120, bandBottom - bandTop);
 
     if (kind === 'title') {
       // ── The cover, composed four different ways ──
@@ -1524,45 +1586,107 @@ async function buildSlide(args) {
       } else {
         // 'bleed' — the full-colour cover. `cover`/`onCover` rather than
         // accent/onAccent: see THEMES for the bug that distinction prevents.
+        //
+        // ── Why this stopped being centred ──
+        // Everything used to sit in a band across the middle, which left the top
+        // quarter and the bottom quarter empty and made the slide read as a
+        // PowerPoint default with the colours changed. Ranged left with a mark at
+        // the top and a rule at the foot, the same words occupy the whole page —
+        // the type has not grown, it has been given somewhere to sit.
         band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
         band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
-        text(title, { left: 80, top: 190, width: GRID.W - 160, height: 96 },
-          { size: TYPE.display, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
-        // A short rule between title and subtitle, centred. The same idea as the
-        // one under a slide title: it belongs to the words above it.
-        band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 3 }, th.accent);
-        if (sub) {
-          text(sub, { left: 80, top: 322, width: GRID.W - 160, height: 40 },
-            { size: TYPE.heading, color: th.onCover, align: 'center' });
+        band({ left: 0, top: 6, width: 288, height: 2 }, th.onCover);
+        if (args.eyebrow) {
+          text(String(args.eyebrow).toUpperCase(), { left: 80, top: 116, width: 700, height: 24 },
+            { size: TYPE.small, color: th.accent });
         }
+        text(title, { left: 80, top: 168, width: 800, height: 128 },
+          { font: display, size: TYPE.display, bold: true, color: th.onCover, valign: 'middle' });
+        // A short rule between title and subtitle. The same idea as the one under
+        // a slide title: it belongs to the words above it.
+        band({ left: 80, top: 306, width: 120, height: 3 }, th.accent);
+        if (sub) {
+          text(sub, { left: 80, top: 326, width: 780, height: 60 },
+            { size: TYPE.heading, color: th.onCover });
+        }
+        // The foot. A hairline the width of the type block, then the metadata —
+        // this is what stops the bottom third being a hole.
+        band({ left: 80, top: 452, width: 800, height: 1 }, th.accent);
         if (args.footer) {
-          text(String(args.footer), { left: 80, top: 452, width: GRID.W - 160, height: 28 },
-            { size: TYPE.small, color: th.onCover, align: 'center' });
+          text(String(args.footer), { left: 80, top: 464, width: 640, height: 24 },
+            { size: TYPE.small, color: th.onCover });
+        }
+        if (args.page) {
+          text(String(args.page), { left: 740, top: 464, width: 140, height: 24 },
+            { size: TYPE.small, color: th.onCover, align: 'right' });
         }
       }
     } else if (kind === 'section') {
-      // A divider. The big number is what tells the audience where they are, and
-      // it is the element people actually navigate by.
-      band({ left: 0, top: 186, width: GRID.W, height: 168 }, th.tint);
-      band({ left: 0, top: 186, width: 8, height: 168 }, th.accent);
+      /**
+       * A divider, and the whole page is the divider.
+       *
+       * ── Why this is now full-bleed ──
+       * It used to be a tinted band across the middle of an otherwise ordinary
+       * slide, which made it look like a content page whose content had not
+       * arrived — and because the frame was drawn on top of it as well, the
+       * section number appeared twice. A deck's section slides have one job: to
+       * be unmistakably NOT a content slide, so the audience registers a break
+       * without reading anything. Flooding the page does that in a way a band
+       * never can.
+       *
+       * The 文青 look keeps its paper instead of going dark: a black slab in the
+       * middle of a warm-paper deck is not a pause, it is a different deck.
+       */
+      const paper = lk.cover === 'paper';
+      const ground = paper ? th.ground : th.cover;
+      const ink = paper ? th.strong : th.onCover;
+      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, ground);
+      band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
       if (args.eyebrow) {
-        text(String(args.eyebrow), { left: 76, top: 212, width: 200, height: 56 },
-          { size: 54, bold: true, color: th.accent, valign: 'middle' });
+        // The number is what people actually navigate by, so it is the largest
+        // thing on the page — larger than the section's own name.
+        text(String(args.eyebrow), { left: 80, top: 186, width: 220, height: 96 },
+          { font: display, size: 76, bold: true, color: th.accent, valign: 'middle' });
       }
-      text(title, { left: args.eyebrow ? 180 : 76, top: 220, width: 700, height: 48 },
-        { size: TYPE.title, bold: true, color: th.strong, valign: 'middle' });
+      const sx = args.eyebrow ? 220 : 80;
+      text(title, { left: sx, top: 196, width: 880 - sx, height: 60 },
+        { font: display, size: 36, bold: !paper, color: ink, valign: 'middle' });
+      band({ left: sx, top: 264, width: 96, height: 3 }, th.accent);
       if (body.length) {
-        text(body[0], { left: args.eyebrow ? 180 : 76, top: 274, width: 700, height: 30 },
-          { size: TYPE.body, color: th.muted });
+        text(body[0], { left: sx, top: 282, width: 880 - sx, height: 48 },
+          { size: TYPE.heading, color: paper ? th.muted : th.onCover });
+      }
+      if (args.footer) {
+        text(String(args.footer), { left: 80, top: 466, width: 640, height: 24 },
+          { size: TYPE.caption, color: paper ? th.muted : th.onCover });
+      }
+      if (args.page) {
+        text(String(args.page), { left: 740, top: 466, width: 140, height: 24 },
+          { size: TYPE.caption, color: paper ? th.muted : th.onCover, align: 'right' });
       }
     } else if (kind === 'statement') {
-      // One number, big. The slide that has exactly one job.
-      text(title, { left: CL, top: 176, width: CW, height: 120 },
-        { size: 84, bold: true, color: th.strong, align: 'center', valign: 'bottom' });
-      band({ left: (GRID.W - 120) / 2, top: 310, width: 120, height: 4 }, th.accent);
+      /**
+       * One number, big — and the one thing it must never be is 「不明所以」.
+       *
+       * A slide that says 逾 80% and nothing else is a quiz. The reading order
+       * has to be: what this is about (the eyebrow, drawn by the frame above) →
+       * the figure → the sentence that makes it mean something → where it came
+       * from. All four, or the number is decoration.
+       *
+       * The tinted panel is doing structural work rather than decorative: it
+       * gives the figure a floor and a ceiling, so the slide is a composition
+       * with something in the middle instead of a number floating in a void.
+       */
+      band({ left: 0, top: 150, width: GRID.W, height: 252 }, th.tint);
+      band({ left: 0, top: 150, width: GRID.W, height: 3 }, th.accent);
+      text(title, { left: CL, top: 176, width: CW, height: 116 },
+        { font: display, size: 84, bold: true, color: th.strong, align: 'center', valign: 'middle' });
+      band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 4 }, th.accent);
       if (body.length) {
-        text(body.join('\n'), { left: 140, top: 330, width: GRID.W - 280, height: 80 },
-          { size: TYPE.heading, color: th.muted, align: 'center' });
+        // The sentence is the half that stops it being a quiz, so it is set at
+        // reading size in the ink — not as a grey caption under a big number.
+        text(body.join('\n'), { left: 120, top: 318, width: GRID.W - 240, height: 70 },
+          { size: TYPE.heading, color: th.ink, align: 'center' });
       }
     } else if (kind === 'quote') {
       band({ left: CL, top: 150, width: 4, height: 200 }, th.accent);
@@ -1582,7 +1706,7 @@ async function buildSlide(args) {
         { head: args.left_title, lines: left, x: CL, tone: th.strong },
         { head: args.right_title, lines: right, x: CL + colW + 28, tone: th.second },
       ];
-      const colH = 340;
+      const colH = BODY_H - 8;
       for (const c of cols) {
         let y = CT;
         if (kind === 'compare') {
@@ -1623,7 +1747,7 @@ async function buildSlide(args) {
 
       if (asCards) {
         const AREA_TOP = CT;
-        const AREA_H = 348;
+        const AREA_H = BODY_H;
         const gap = items.length > 4 ? 12 : 16;
         const ch = (AREA_H - gap * (items.length - 1)) / items.length;
         const cycle = [th.strong, th.second, th.accent];
@@ -1680,13 +1804,13 @@ async function buildSlide(args) {
           const half = Math.ceil(items.length / 2);
           const colW = (CW - GRID.gutter) / 2;
           text(bullet(items.slice(0, half)),
-            { left: CL, top: CT, width: colW, height: 348 },
+            { left: CL, top: CT, width: colW, height: BODY_H },
             { size: TYPE.body, color: th.ink, valign: 'middle' });
           text(bullet(items.slice(half)),
-            { left: CL + colW + GRID.gutter, top: CT, width: colW, height: 348 },
+            { left: CL + colW + GRID.gutter, top: CT, width: colW, height: BODY_H },
             { size: TYPE.body, color: th.ink, valign: 'middle' });
         } else {
-          text(bullet(items), { left: CL, top: CT, width: CW, height: 348 },
+          text(bullet(items), { left: CL, top: CT, width: CW, height: BODY_H },
             { size: TYPE.body, color: th.ink, valign: 'middle' });
         }
       }
@@ -1746,6 +1870,139 @@ async function buildSlide(args) {
  * one hue, which is the thing that makes auto-generated slides look generated.
  */
 /**
+ * Where the body of a slide lives, top to bottom.
+ *
+ * ── Why this exists as a number and not as a habit ──
+ * The complaint was 「一頁 PPT 這樣也太少東西了」, and the cause was not that the
+ * elements were too small. It was that nothing owned the page's HEIGHT. The
+ * model placed a card row at its own guess of `top`, then a callout at another
+ * guess, and the leftovers became two holes — one under the title and one above
+ * the footer — that no single tool could see, because each one only knew about
+ * itself.
+ *
+ * So the band is stated once and the composer below divides it. 472 rather than
+ * 486 when there is no footer band: a hairline footer needs the room, and a
+ * block that ends exactly on the rule reads as an overflow.
+ */
+const bandBottomFor = (args) => (args.footband ? 480 : args.footer ? 472 : 490);
+
+/** Fixed heights, so the composer can divide what is left. */
+const KPI_H = 101;
+const CALLOUT_H = 52;
+/** Between stacked blocks. Smaller than the page margin on purpose — these are
+ *  parts of one composition, not separate things that happen to share a slide. */
+const STACK_GAP = 18;
+
+/**
+ * A drawing surface both the standalone tools and ppt_build_slide can write to.
+ *
+ * The two used to draw the same element in two places: addKpi built tiles with
+ * `slide.shapes.add*` and an array, while buildSlide had its own `text()`/`band()`
+ * helpers. Duplicating the geometry would mean a KPI row inside a built slide
+ * slowly drifting away from a KPI row added to one — same name, two looks, and
+ * no test could catch it because both would be self-consistent.
+ */
+function penFor(slide, onShape, onText) {
+  return {
+    rect(geo, opts = {}) {
+      const sh = slide.shapes.addGeometricShape(opts.shape || 'Rectangle', geo);
+      sh.name = stamp(opts.tag || 'box');
+      if (opts.fill) sh.fill.setSolidColor(opts.fill); else sh.fill.clear();
+      sh.lineFormat.visible = !!opts.line;
+      if (opts.line) {
+        sh.lineFormat.color = opts.line;
+        sh.lineFormat.weight = opts.weight || 1;
+      }
+      onShape(sh);
+      return sh;
+    },
+    label(content, geo, style = {}) {
+      const sh = slide.shapes.addTextBox(String(content), geo);
+      sh.name = stamp(style.tag || 'txt');
+      styleText(sh, { wrap: true, ...style });
+      sh.fill.clear();
+      sh.lineFormat.visible = false;
+      onText(sh);
+      return sh;
+    },
+  };
+}
+
+/**
+ * The KPI row, drawn into a box.
+ *
+ * `box.height` is honoured rather than fixed, so the same code makes the 101pt
+ * row the standalone tool asks for and whatever height the slide composer has
+ * left over. The type positions are proportional to it for the same reason.
+ */
+function drawKpiRow(pen, kit, items, box, opts = {}) {
+  const { th, lk, face } = kit;
+  const gap = num(opts.gap, 15);
+  const w = (box.width - gap * (items.length - 1)) / items.length;
+  const cycle = [th.strong, th.second, th.accent, th.warn || th.second, th.muted];
+
+  items.forEach((item, i) => {
+    const x = box.left + (w + gap) * i;
+    const tone = colour(item.color, cycle[i % cycle.length]);
+    const sk = skin(th, lk, tone, colour(opts.fill, th.bg));
+
+    pen.rect({ left: x, top: box.top, width: w, height: box.height },
+      { shape: boxOf(lk, 'Rectangle'), tag: 'kpi', fill: sk.fill, line: sk.line && sk.color });
+    // On the panel's top edge, not inside it: a border would draw all four sides.
+    pen.rect({ left: x, top: box.top, width: w, height: 4 },
+      { shape: boxOf(lk, 'Rectangle'), tag: 'kpibar', fill: tone });
+
+    const pad = 14;
+    const tx = x + pad;
+    const tw = w - pad * 2;
+    // The figure takes the room the label and note do not, so a tall row grows
+    // the number rather than leaving a gap under it.
+    const labelH = item.label ? 21 : 0;
+    const noteH = item.note ? 16 : 0;
+    const valueH = Math.max(36, box.height - 22 - labelH - noteH);
+    pen.label(item.value ?? '', { left: tx, top: box.top + 11, width: tw, height: valueH },
+      { font: face, size: 30, bold: true, color: tone, valign: 'middle', tag: 'kpival' });
+    let y = box.top + 11 + valueH;
+    if (item.label) {
+      pen.label(item.label, { left: tx, top: y, width: tw, height: labelH },
+        { font: face, size: 12, bold: true, color: th.strong, valign: 'middle', tag: 'kpilab' });
+      y += labelH;
+    }
+    if (item.note) {
+      pen.label(item.note, { left: tx, top: y, width: tw, height: noteH },
+        { font: face, size: 9, color: th.muted, valign: 'middle', tag: 'kpinote' });
+    }
+  });
+}
+
+/** The insight strip, drawn into a box. One paragraph — see ppt_add_callout. */
+function drawCallout(pen, kit, spec, box) {
+  const { th, lk, face } = kit;
+  const tone = colour(spec.color, th.strong);
+  const sk = skin(th, lk, tone, colour(spec.fill, th.tint));
+
+  pen.rect(box, {
+    shape: boxOf(lk, 'Rectangle'), tag: 'callout',
+    // The conclusion keeps its accent border on every skin — a hairline would
+    // make it read as one more card.
+    fill: sk.fill, line: tone,
+  });
+  pen.rect({ left: box.left, top: box.top, width: 4, height: box.height },
+    { tag: 'calloutbar', fill: tone });
+
+  let tx = box.left + 16;
+  let tw = box.width - 32;
+  if (spec.label) {
+    pen.label(spec.label, { left: tx, top: box.top + 4, width: 96, height: box.height - 8 },
+      { font: face, size: 11, bold: true, color: tone, valign: 'middle', tag: 'calloutlab' });
+    tx += 100;
+    tw -= 100;
+  }
+  pen.label(spec.text, { left: tx, top: box.top + 4, width: tw, height: box.height - 8 },
+    { font: face, size: 12, color: th.ink, valign: 'middle', tag: 'calloutbody' });
+}
+
+/**
  * A row of metric tiles — the element that makes a slide look finished.
  *
  * ── Why this is its own tool and not a shape of ppt_add_cards ──
@@ -1776,73 +2033,30 @@ async function addKpi(args) {
 
   const lk = look(args.look);
   const th = paletteFor(args, lk);
+  const kit = { th, lk, face: lk.font || th.font };
   const gap = num(args.gap, 15);
-  const left = num(args.left, CHROME.contentLeft);
-  const top = num(args.top, CHROME.contentTop);
-  const totalW = num(args.width, CHROME.contentWidth);
-  const h = num(args.height, 101);
-  const w = (totalW - gap * (items.length - 1)) / items.length;
-  // Four distinct tones, not one repeated: the row is a dashboard, not a table.
-  const cycle = [th.strong, th.second, th.accent, th.warn || th.second, th.muted];
-  const face = lk.font || th.font;
+  const box = {
+    left: num(args.left, CHROME.contentLeft),
+    top: num(args.top, CHROME.contentTop),
+    width: num(args.width, CHROME.contentWidth),
+    height: num(args.height, KPI_H),
+  };
 
   return PowerPoint.run(async (ctx) => {
     const { slide, index } = await targetSlide(ctx, args);
     const made_ = [];
-    const add = (shape) => { made_.push(shape); return shape; };
-
-    items.forEach((item, i) => {
-      const x = left + (w + gap) * i;
-      const tone = colour(item.color, cycle[i % cycle.length]);
-
-      const sk = skin(th, lk, tone, colour(args.fill, th.bg));
-      const panel = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
-        { left: x, top, width: w, height: h }));
-      panel.name = stamp('kpi');
-      if (sk.fill) panel.fill.setSolidColor(colour(args.fill, sk.fill)); else panel.fill.clear();
-      panel.lineFormat.visible = sk.line;
-      panel.lineFormat.color = sk.color;
-      panel.lineFormat.weight = 1;
-
-      // The bar sits ON the panel's top edge, not inside it — a separate shape
-      // because a border would draw on all four sides.
-      const bar = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
-        { left: x, top, width: w, height: 4 }));
-      bar.name = stamp('kpibar');
-      bar.fill.setSolidColor(tone);
-      bar.lineFormat.visible = false;
-
-      const pad = 14;
-      const value = add(slide.shapes.addTextBox(String(item.value ?? ''),
-        { left: x + pad, top: top + 11, width: w - pad * 2, height: 43 }));
-      value.name = stamp('kpival');
-      styleText(value, { font: face, size: 30, bold: true, color: tone, valign: 'middle' });
-      value.fill.clear();
-      value.lineFormat.visible = false;
-
-      if (item.label) {
-        const label = add(slide.shapes.addTextBox(String(item.label),
-          { left: x + pad, top: top + 60, width: w - pad * 2, height: 21 }));
-        label.name = stamp('kpilab');
-        styleText(label, { font: face, size: 12, bold: true, color: th.strong, valign: 'middle' });
-        label.fill.clear();
-        label.lineFormat.visible = false;
-      }
-      if (item.note) {
-        const note = add(slide.shapes.addTextBox(String(item.note),
-          { left: x + pad, top: top + 81, width: w - pad * 2, height: 16 }));
-        note.name = stamp('kpinote');
-        styleText(note, { font: face, size: 9, color: th.muted, valign: 'middle' });
-        note.fill.clear();
-        note.lineFormat.visible = false;
-      }
-    });
+    const keep = (sh) => made_.push(sh);
+    // Drawn by the same routine ppt_build_slide uses. Two copies of this
+    // geometry would drift — same tool name, two looks, and no test could catch
+    // it because each copy would be self-consistent.
+    drawKpiRow(penFor(slide, keep, keep), kit, items, box, { gap, fill: args.fill });
 
     made_.forEach((s) => s.load('id'));
     await ctx.sync();
     made_.forEach((s) => remember(slide.id, s.id));
+    const w = (box.width - gap * (items.length - 1)) / items.length;
     return `已在投影片 ${index} 放上 ${items.length} 個數據卡，`
-      + `${Math.round(w)}×${h} 點，從 (${left},${top}) 開始。`;
+      + `${Math.round(w)}×${box.height} 點，從 (${box.left},${box.top}) 開始。`;
   });
 }
 
@@ -1866,60 +2080,30 @@ async function addCallout(args) {
 
   const lk = look(args.look);
   const th = paletteFor(args, lk);
-  const face = lk.font || th.font;
-  const tone = colour(args.color, th.strong);
-  const left = num(args.left, CHROME.contentLeft);
-  const width = num(args.width, CHROME.contentWidth);
-  const h = num(args.height, 46);
-  // Defaults to the foot of the content area, which is where a conclusion goes.
-  const top = num(args.top, 430);
+  const kit = { th, lk, face: lk.font || th.font };
+  const h = num(args.height, CALLOUT_H);
+  const box = {
+    left: num(args.left, CHROME.contentLeft),
+    width: num(args.width, CHROME.contentWidth),
+    height: h,
+    // Sits on the floor of the content band by default, which is where a
+    // conclusion goes — and, just as importantly, is what stops a strip of
+    // nothing opening up between the last block and the footer.
+    top: num(args.top, bandBottomFor(args) - h),
+  };
 
   return PowerPoint.run(async (ctx) => {
     const { slide, index } = await targetSlide(ctx, args);
     const made_ = [];
-    const add = (shape) => { made_.push(shape); return shape; };
-
-    const sk = skin(th, lk, tone, colour(args.fill, th.tint));
-    const panel = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
-      { left, top, width, height: h }));
-    panel.name = stamp('callout');
-    if (sk.fill) panel.fill.setSolidColor(sk.fill); else panel.fill.clear();
-    // The callout keeps its accent border even on the tinted skin — it is the
-    // conclusion, and a faint hairline would make it read as another card.
-    panel.lineFormat.visible = true;
-    panel.lineFormat.color = tone;
-    panel.lineFormat.weight = 1;
-
-    const spine = add(slide.shapes.addGeometricShape('Rectangle',
-      { left, top, width: 4, height: h }));
-    spine.name = stamp('calloutbar');
-    spine.fill.setSolidColor(tone);
-    spine.lineFormat.visible = false;
-
-    let tx = left + 16;
-    let tw = width - 32;
-    if (args.label) {
-      const label = add(slide.shapes.addTextBox(String(args.label),
-        { left: tx, top: top + 4, width: 96, height: h - 8 }));
-      label.name = stamp('calloutlab');
-      styleText(label, { font: face, size: 11, bold: true, color: tone, valign: 'middle' });
-      label.fill.clear();
-      label.lineFormat.visible = false;
-      tx += 100;
-      tw -= 100;
-    }
-
-    const text = add(slide.shapes.addTextBox(body,
-      { left: tx, top: top + 4, width: tw, height: h - 8 }));
-    text.name = stamp('calloutbody');
-    styleText(text, { font: face, size: 12, color: th.ink, valign: 'middle', wrap: true });
-    text.fill.clear();
-    text.lineFormat.visible = false;
+    const keep = (sh) => made_.push(sh);
+    // Same routine ppt_build_slide uses — see addKpi for why that matters.
+    drawCallout(penFor(slide, keep, keep), kit,
+      { text: body, label: args.label, color: args.color, fill: args.fill }, box);
 
     made_.forEach((s) => s.load('id'));
     await ctx.sync();
     made_.forEach((s) => remember(slide.id, s.id));
-    return `已在投影片 ${index} 放上洞察框，寬 ${width} 點，位置 (${left},${top})。`;
+    return `已在投影片 ${index} 放上洞察框，寬 ${box.width} 點，位置 (${box.left},${box.top})。`;
   });
 }
 
@@ -1941,7 +2125,12 @@ async function addCards(args) {
   const top = num(args.top, CHROME.contentTop);
   const totalW = num(args.width, CHROME.contentWidth);
   const cw = (totalW - gutter * (cols - 1)) / cols;
-  const ch = num(args.height, bar === 'top' ? 92 : 68);
+  // 92 was the height of a card carrying a heading. A process step carries a
+  // heading AND two or three lines under it, and at 92 those lines had nowhere
+  // to go — which is what made the four-step row look cramped rather than
+  // designed. Measured against the content rather than guessed once.
+  const hasBody = cards.some((c) => c && c.text);
+  const ch = num(args.height, bar === 'top' ? (hasBody ? 118 : 92) : 68);
   const pitchY = ch + num(args.row_gap, 18);
 
   const cycle = [th.strong, th.second, th.accent];
@@ -1992,6 +2181,10 @@ async function addCards(args) {
       let tx = x + padX + (bar === 'left' ? 5 : 0);
       let tw = cw - padX * 2 - (bar === 'left' ? 5 : 0);
       let ty = y + (bar === 'top' ? 16 : 12);
+      // Where the body starts and how wide it runs, decided BEFORE the badge
+      // shifts tx. See the block below the badge for why that matters.
+      const bodyX = tx;
+      const bodyW = tw;
 
       // The number badge. Big, in the accent, set to the LEFT of the text rather
       // than above it — it is an index, not a heading.
@@ -2019,8 +2212,23 @@ async function addCards(args) {
         ty += 26;
       }
       if (card.text) {
+        /**
+         * The body runs the FULL width of the card, not the width left over
+         * beside the number.
+         *
+         * ── The bug, and why it only showed up on process rows ──
+         * `tx`/`tw` are shifted right by 56 points when there is a number badge,
+         * because the title has to sit beside it. The body was inheriting that
+         * shift, so on a four-across row each paragraph was rendering into about
+         * 119 points — barely eight characters — and every line broke. It looked
+         * like the text was too long. It was not; it was being given a third of
+         * the card to live in.
+         *
+         * The badge is an index at the top-left corner. Nothing below the title
+         * needs to avoid it.
+         */
         const body = add(slide.shapes.addTextBox(String(card.text),
-          { left: tx, top: ty, width: tw, height: y + ch - ty - 10 }));
+          { left: bodyX, top: ty, width: bodyW, height: y + ch - ty - 10 }));
         body.name = stamp('cb');
         styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted, valign: 'top' });
         body.fill.clear();
@@ -2041,11 +2249,15 @@ async function addCards(args) {
     // in the gutters rather than under a panel.
     if (args.arrows && bar === 'top' && cols > 1) {
       for (let c = 0; c < Math.min(cols, cards.length) - 1; c++) {
-        const ax = left + (cw + gutter) * c + cw + 4;
+        const ax = left + (cw + gutter) * c + cw + 5;
+        // In `line` these were all but invisible — line is the hairline colour,
+        // meant for gridlines under other things, and an arrow nobody can see
+        // turns a process into four unrelated boxes. `muted` is the quietest
+        // colour that still reads as a mark on the page.
         const arrow = add(slide.shapes.addGeometricShape('RightArrow',
-          { left: ax, top: top + ch / 2 - 7, width: gutter - 8, height: 14 }));
+          { left: ax, top: top + ch / 2 - 6, width: gutter - 10, height: 12 }));
         arrow.name = stamp('arrow');
-        arrow.fill.setSolidColor(th.line);
+        arrow.fill.setSolidColor(th.muted);
         arrow.lineFormat.visible = false;
       }
     }
