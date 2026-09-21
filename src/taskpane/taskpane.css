@@ -1213,6 +1213,21 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    second brand colour, which would read as a second kind of official. */
 .cmd-head.is-mine::before { background: var(--fg-subtle); }
 
+/* A sub-heading inside 我的常用指令, for the ones that are not tied to this
+   product. Quieter than .cmd-head and deliberately not sticky: it divides a
+   group, it does not label the section — and two sticky rows fighting for the
+   same top edge is worse than neither. */
+.cmd-sub {
+  padding: 8px 9px 3px 11px; font-size: 10px; color: var(--fg-subtle);
+  letter-spacing: .03em;
+}
+
+/* The globe stays visible when it is ON, unlike its neighbours.
+   「這則到處都看得到」 is a property of the row, and a property you can only see
+   by hovering is one nobody knows about. Off, it behaves like the others. */
+.tpl-act.is-on { opacity: .55; color: var(--accent); }
+.tpl-row:hover .tpl-act.is-on, .tpl-act.is-on:focus-visible { opacity: 1; }
+
 /* A rail rather than a fill: visible while scanning, invisible while reading. */
 .src-item.cmd-skill { border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0; }
 .tpl-row.cmd-mine { border-left: 2px solid var(--line-strong); border-radius: 0 8px 8px 0; }

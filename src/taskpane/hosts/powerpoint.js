@@ -164,6 +164,8 @@ const TYPE = { display: 40, title: 32, heading: 22, body: 18, small: 14, caption
  *   muted    eyebrows, page references, axis labels               #8A93A0
  *   ink      body text — NOT black. #3D3D3D reads softer on a projector
  *   line     hairlines and gridlines                              #D5DBE0
+ *   ground   the PAGE, not the card — off-white, not white           #F7F9FB
+ *   warn     a fourth tone, so a row of four KPIs is not three+one   #C9A227
  *
  * ── cover / onCover exist because of a bug this shape prevents ──
  * The old title recipe filled the whole slide with `accent` and wrote in
@@ -178,25 +180,25 @@ const THEMES = {
     label: '企業藍', font: '微軟正黑體',
     ink: '#3D3D3D', strong: '#1A3A5C', accent: '#C0392B', second: '#2E6DA4',
     tint: '#EEF3F8', muted: '#8A93A0', line: '#D5DBE0',
-    bg: '#FFFFFF', cover: '#1A3A5C', onCover: '#FFFFFF',
+    bg: '#FFFFFF', ground: '#F7F9FB', warn: '#C9A227', cover: '#1A3A5C', onCover: '#FFFFFF',
   },
   slate: {
     label: '沉穩灰', font: '微軟正黑體',
     ink: '#33383D', strong: '#2F4858', accent: '#B5651D', second: '#5E7C8B',
     tint: '#EFF2F4', muted: '#87909A', line: '#D8DDE1',
-    bg: '#FFFFFF', cover: '#2F4858', onCover: '#FFFFFF',
+    bg: '#FFFFFF', ground: '#F5F7F8', warn: '#A88B4A', cover: '#2F4858', onCover: '#FFFFFF',
   },
   fresh: {
     label: '清新綠', font: '微軟正黑體',
     ink: '#33403A', strong: '#0E6B3A', accent: '#C0392B', second: '#4C9B72',
     tint: '#EDF6F1', muted: '#849289', line: '#D6E2DB',
-    bg: '#FFFFFF', cover: '#0E6B3A', onCover: '#FFFFFF',
+    bg: '#FFFFFF', ground: '#F5FAF7', warn: '#C99A2E', cover: '#0E6B3A', onCover: '#FFFFFF',
   },
   warm: {
     label: '暖橘', font: '微軟正黑體',
     ink: '#40352D', strong: '#9C3D12', accent: '#1A3A5C', second: '#D08A50',
     tint: '#FBF2EA', muted: '#9C8B7C', line: '#E6D8CB',
-    bg: '#FFFFFF', cover: '#9C3D12', onCover: '#FFFFFF',
+    bg: '#FFFFFF', ground: '#FDF8F3', warn: '#2E7D6B', cover: '#9C3D12', onCover: '#FFFFFF',
   },
   night: {
     label: '深色', font: '微軟正黑體',
@@ -204,9 +206,190 @@ const THEMES = {
     // light type — the opposite of the light themes, stated rather than derived.
     ink: '#E8ECF1', strong: '#7FB2FF', accent: '#FF6B5B', second: '#4C9AFF',
     tint: '#1E2530', muted: '#98A3B3', line: '#2C3542',
-    bg: '#141A22', cover: '#0D1219', onCover: '#F5F7FA',
+    bg: '#141A22', ground: '#141A22', warn: '#F2C14E', cover: '#0D1219', onCover: '#F5F7FA',
+  },
+  linen: {
+    // 文青。Warm and desaturated the whole way through: paper rather than white,
+    // ink rather than black, a terracotta with the shout taken out of it.
+    // Corporate red on a warm ground is what made the first attempt look like a
+    // company report wearing a scarf.
+    label: '亞麻', font: '微軟正黑體',
+    ink: '#4A443C', strong: '#3E4A45', accent: '#A8705A', second: '#7D8B80',
+    tint: '#F1EDE5', muted: '#9A9187', line: '#E2DAD0',
+    bg: '#FFFDF9', ground: '#F7F2E9', warn: '#B8925A',
+    cover: '#3E4A45', onCover: '#F7F3EC',
+  },
+  muted: {
+    // 莫蘭迪。Every colour sits at roughly the same low saturation, which is what
+    // makes the family read as deliberate rather than as washed out.
+    label: '莫蘭迪', font: '微軟正黑體',
+    ink: '#4C4F52', strong: '#5C6B73', accent: '#A98467', second: '#8FA3A8',
+    tint: '#EDEFEE', muted: '#97A0A3', line: '#DDE2E1',
+    bg: '#FCFCFB', ground: '#F4F5F4', warn: '#B0A08A',
+    cover: '#4A5860', onCover: '#F4F6F5',
+  },
+  mono: {
+    // 墨黑。No hue anywhere except the one accent. The most forgiving palette in
+    // the set: nothing in it can clash with anything.
+    label: '墨黑', font: '微軟正黑體',
+    ink: '#2B2B2B', strong: '#1C1C1C', accent: '#8C6A4A', second: '#6B6B6B',
+    tint: '#F0F0F0', muted: '#8E8E8E', line: '#DCDCDC',
+    bg: '#FFFFFF', ground: '#F6F6F5', warn: '#A8A8A8',
+    cover: '#1C1C1C', onCover: '#FAFAFA',
   },
 };
+
+/**
+ * ── The second knob: how a slide is BUILT, not what colour it is ──
+ *
+ * THEMES above changes the paint. It does not change the look, and that turned
+ * out to be the whole complaint: five palettes produced five recolourings of one
+ * layout. Swap corporate for fresh and you get the same bar, the same 25pt bold
+ * left-aligned title, the same short rule, the same tinted cards — in green.
+ * Nobody calls that 「文青風」 or 「可愛風」; they call it the blue one and the
+ * green one.
+ *
+ * A LOOK changes the things that actually carry style:
+ *
+ *   masthead   whether there is a bar at the top at all, and what kind
+ *   rule       the mark under the title — short, full-width hairline, or none
+ *   title      size, weight and alignment of the biggest word on the page
+ *   ground     white page, tinted page, or a coloured one
+ *   shape      square corners or round — this alone separates 企業 from 可愛
+ *   card       filled, outlined, or nothing but type
+ *   cover      how slide 1 is composed
+ *
+ * ── Why looks and themes are separate ──
+ * Because the pairings are not fixed. 極簡 in warm orange and 極簡 in night are
+ * both coherent; fusing look into palette would need thirty entries to say what
+ * six and five say here. The cost is that the model has two knobs to keep steady
+ * instead of one, which the prompt handles by saying: pick both once, then stop
+ * touching them.
+ *
+ * ── About the fonts ──
+ * Only families Office actually ships on a Chinese Windows are named. A missing
+ * family does not error — PowerPoint silently substitutes — so an exotic choice
+ * here would look right on my machine and wrong on the customer's, which is the
+ * worst kind of styling bug because nothing reports it.
+ */
+const LOOKS = {
+  business: {
+    label: '企業', desc: '雙色頂條、短底線、方角卡片。給客戶、主管、對外提案。',
+    theme: 'corporate',
+    masthead: 'double', rule: 'short', ground: 'tint',
+    titleSize: 25, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
+    shape: 'Rectangle', card: 'tint', cover: 'bleed', topPad: 0,
+  },
+  editorial: {
+    label: '雜誌', desc: '沒有色條，標題大而不粗，下面一條細細的滿版線。像一篇報導的開頭。',
+    font: '微軟正黑體 Light',
+    theme: 'mono',
+    masthead: 'none', rule: 'full', ground: 'white',
+    titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'outline', cover: 'split', topPad: 10,
+  },
+  minimal: {
+    label: '極簡', desc: '什麼裝飾都沒有，只有字和留白。內容本身夠強的時候最好看。',
+    font: '微軟正黑體 Light',
+    theme: 'mono',
+    masthead: 'none', rule: 'none', ground: 'white',
+    titleSize: 22, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'plain', cover: 'plain', topPad: 18,
+  },
+  soft: {
+    label: '柔和', desc: '圓角、粗一點的色條、標題置中。給內部分享、教學、比較輕鬆的場合。',
+    theme: 'muted',
+    masthead: 'round', rule: 'none', ground: 'tint',
+    titleSize: 26, titleBold: true, titleAlign: 'center', eyebrowCase: 'keep',
+    shape: 'RoundRectangle', card: 'tint', cover: 'band', topPad: 4,
+  },
+  bold: {
+    label: '大字', desc: '標題佔掉上面一大塊，色塊當底。給只有一個重點、要講得很用力的場合。',
+    theme: 'corporate',
+    masthead: 'block', rule: 'none', ground: 'white',
+    titleSize: 34, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
+    shape: 'Rectangle', card: 'tint', cover: 'bleed', topPad: 6,
+  },
+  tech: {
+    label: '科技', desc: '細線、單色、深色底走向。給技術簡報、資料儀表板。',
+    theme: 'night',
+    masthead: 'hairline', rule: 'none', ground: 'strong',
+    titleSize: 24, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
+    shape: 'Rectangle', card: 'outline', cover: 'bleed', topPad: 0,
+  },
+  literary: {
+    label: '文青',
+    desc: '暖色紙張滿版、明體標題、細框線。沒有企業色，沒有色塊。',
+    // The serif is the single strongest signal and also the riskiest, so this is
+    // a family Windows actually ships rather than a fashionable one: 新細明體 is
+    // on every machine in Taiwan. Open the deck somewhere it is not and
+    // PowerPoint substitutes silently — the slide still reads, it just loses the
+    // mood. That is the failure mode we can live with.
+    font: '微軟正黑體', titleFont: '新細明體',
+    theme: 'linen',
+    masthead: 'frame', rule: 'none', ground: 'tint',
+    titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
+    shape: 'Rectangle', card: 'plain', cover: 'paper', topPad: 14,
+  },
+};
+
+const DEFAULT_LOOK = 'business';
+
+const look = (name) => LOOKS[String(name || '').toLowerCase()] || LOOKS[DEFAULT_LOOK];
+
+/**
+ * The palette for a call, with the look's own choice as the default.
+ *
+ * ── The bug this fixes ──
+ * Asking for 文青 used to change the skeleton and nothing else, so the slide came
+ * back in corporate navy with a bright red spine down the side. A style is a
+ * skeleton AND a palette; delivering half of one is not delivering a lighter
+ * version of it, it is delivering something else.
+ *
+ * An explicit `theme` still wins, because 「文青風但用我們的企業色」 is a real
+ * request and the two knobs are still independent — the look only supplies the
+ * default nobody stated.
+ */
+const paletteFor = (args, lk) => theme(args.theme || lk.theme);
+
+/**
+ * The page ground a look asks for, resolved against the palette.
+ *
+ * `strong` is the one worth explaining: it paints the page in the palette's dark
+ * colour, which on a light theme gives a dark slide with light type. That is the
+ * 科技 look, and it means `tech` + `corporate` is a navy deck without needing a
+ * sixth palette to say so.
+ */
+function groundOf(th, lk) {
+  if (lk.ground === 'white') return th.bg;
+  if (lk.ground === 'strong') return th.cover;
+  return th.ground;
+}
+
+/**
+ * How a panel is drawn, given the look — the one decision cards, KPI tiles and
+ * callouts all have to make the same way.
+ *
+ *   tint     filled, faint border. The default, and the densest-looking.
+ *   outline  no fill, a 1pt line in the accent. Lighter; lets the ground show.
+ *   plain    neither. Only the coloured bar survives, which on 極簡 is the point.
+ *
+ * Spelled out here rather than in each renderer because three copies of this
+ * drifting apart is exactly how a deck ends up with tinted cards on one slide
+ * and outlined ones on the next.
+ */
+function skin(th, lk, accent, fallbackFill) {
+  if (lk.card === 'plain') return { fill: null, line: false, color: accent };
+  if (lk.card === 'outline') return { fill: th.bg, line: true, color: accent };
+  return { fill: fallbackFill, line: true, color: th.line };
+}
+
+/** RoundRectangle if the look asks for it, otherwise whatever the caller wanted. */
+const boxOf = (lk, base) => (lk.shape === 'RoundRectangle' ? 'RoundRectangle' : base);
+
+/** Text colour that survives whatever groundOf just chose. */
+const onGround = (th, lk, role) =>
+  (lk.ground === 'strong' ? th.onCover : th[role]);
 
 const DEFAULT_THEME = 'corporate';
 
@@ -883,19 +1066,59 @@ async function formatShape(args) {
   });
 }
 
+/**
+ * Delete shapes — several at once, on purpose.
+ *
+ * ── Why this takes a list and not a number ──
+ * It used to take one index. Clearing a slide before rebuilding it therefore
+ * meant eight calls, and because deleting is destructive, eight separate
+ * confirmation cards: 「刪除第 8 個物件」「刪除第 7 個物件」… Nobody reads the
+ * eighth one. They click 允許 eight times, which trains them to click 允許
+ * without looking — and that is the exact habit the confirmation gate exists to
+ * prevent. A gate that fires eight times for one decision is worse than no gate,
+ * because it is the same protection with the attention spent.
+ *
+ * One call, one decision, one card: 「刪除投影片 5 的 8 個物件」.
+ *
+ * ── Deleting from the back ──
+ * The indices the model quotes come from ppt_read_slide, and they are positions
+ * in a list. Delete number 3 and everything after it shifts down one, so a
+ * forward loop deletes 3, then what used to be 5, then what used to be 8.
+ * Descending order is the only order where every index still means what it meant
+ * when it was read.
+ */
 async function deleteShape(args) {
-  const which = num(args.shape, 0);
-  if (!which) throw new Error('shape 是必要的。');
   return PowerPoint.run(async (ctx) => {
     const { slide, index } = await targetSlide(ctx, args);
     const shapes = slide.shapes;
     shapes.load('items/id');
     await ctx.sync();
     const items = shapes.items || [];
-    if (which > items.length) throw new Error(`投影片 ${index} 只有 ${items.length} 個物件。`);
-    items[which - 1].delete();
+
+    const asked = args.all === true
+      ? items.map((_, i) => i + 1)
+      : [...(Array.isArray(args.shapes) ? args.shapes : []),
+        ...(args.shape === undefined ? [] : [args.shape])]
+        .map((n) => num(n, 0)).filter(Boolean);
+
+    if (!asked.length) throw new Error('要刪哪些？給 shape（單一編號）、shapes（編號陣列）或 all: true。');
+
+    // Everything is checked before anything is deleted. A half-applied delete is
+    // the worst outcome here: the undo cannot bring shapes back, so a call that
+    // removes four things and then fails on the fifth has destroyed four things
+    // for nothing.
+    const uniq = [...new Set(asked)].sort((a, b) => a - b);
+    const bad = uniq.filter((n) => n < 1 || n > items.length);
+    if (bad.length) {
+      throw new Error(`投影片 ${index} 只有 ${items.length} 個物件，`
+        + `但你要刪第 ${bad.join('、')} 個。先用 ppt_read_slide 看一次目前的編號。`);
+    }
+
+    uniq.slice().reverse().forEach((n) => items[n - 1].delete());
     await ctx.sync();
-    return `已刪除投影片 ${index} 的第 ${which} 個物件。`;
+    return uniq.length === 1
+      ? `已刪除投影片 ${index} 的第 ${uniq[0]} 個物件。`
+      : `已刪除投影片 ${index} 的 ${uniq.length} 個物件（第 ${uniq.join('、')} 個）。`;
   });
 }
 
@@ -1012,6 +1235,25 @@ async function arrange(args) {
  */
 const CHROME = {
   strip: { left: 0, top: 0, width: GRID.W, height: 5 },
+  /**
+   * A second, shorter bar in the accent colour, tucked under the first.
+   *
+   * It costs one shape and it is the difference between a line and a masthead.
+   * 288 is 30% of the width — short enough to read as a deliberate marker rather
+   * than a second rule that failed to reach the edge.
+   */
+  strip2: { left: 0, top: 5, width: 288, height: 2 },
+  /**
+   * The full-bleed dark band along the bottom.
+   *
+   * ── Why a band and not a line of grey text ──
+   * A slide with white above and white below has the content floating in it. The
+   * reference deck closes every content page with a dark strip, and the effect is
+   * structural rather than decorative: it gives the page a floor, so the body has
+   * something to sit ON. It also absorbs whatever whitespace the content did not
+   * use, which is the actual cure for 「看起來很空」.
+   */
+  footband: { left: 0, top: 494, width: GRID.W, height: 46 },
   eyebrow: { left: 38, top: 22, width: 828, height: 19 },
   title: { left: 38, top: 42, width: 878, height: 42 },
   rule: { left: 38, top: 89, width: 108, height: 4 },
@@ -1043,7 +1285,12 @@ async function buildSlide(args) {
   if (!hasApi('1.4')) throw new Error('組版需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const kind = String(args.kind || 'bullets').toLowerCase();
   if (!RECIPES.has(kind)) throw new Error(`kind 必須是：${[...RECIPES].join('、')}。`);
-  const th = theme(args.theme);
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
+  // 文青 sets its titles in a Ming face and its body in a sans. That contrast is
+  // most of the mood, and it costs one extra field.
+  const display = lk.titleFont || face;
 
   return PowerPoint.run(async (ctx) => {
     // A recipe fills a slide, so it defaults to making a new one rather than
@@ -1061,7 +1308,7 @@ async function buildSlide(args) {
     const text = (content, geo, style) => {
       const s = slide.shapes.addTextBox(String(content), geo);
       s.name = stamp('build');
-      styleText(s, { font: th.font, wrap: true, ...style });
+      styleText(s, { font: face, wrap: true, ...style });
       put.text.push(s);
       return s;
     };
@@ -1086,42 +1333,212 @@ async function buildSlide(args) {
     // of it is a parameter.
     const dressed = kind !== 'title' && args.chrome !== false;
     if (dressed) {
-      band(CHROME.strip, th.accent);
+      // The page ground goes down FIRST so everything else lands on top of it.
+      //
+      // Off-white rather than white, and this is not a small difference: a pure
+      // white slide has no page, so a white card on it has no edge and the
+      // content reads as typed straight onto the projector. Two percent of grey
+      // gives the cards something to be lighter than, and that is what makes a
+      // layout look built rather than filled in.
+      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, groundOf(th, lk));
+
+      // The masthead. Each variant is a different answer to the same question —
+      // how does the audience know a new slide started — and swapping between
+      // them changes the deck's character more than any colour does.
+      if (lk.masthead === 'double') {
+        band(CHROME.strip, th.accent);
+        band(CHROME.strip2, th.strong);
+      } else if (lk.masthead === 'round') {
+        // Inset and rounded: a bar that does not touch the edges reads friendly
+        // rather than official. That is the whole of 柔和.
+        const r = slide.shapes.addGeometricShape('RoundRectangle',
+          { left: 38, top: 20, width: 96, height: 8 });
+        r.name = stamp('band');
+        r.fill.setSolidColor(th.accent);
+        r.lineFormat.visible = false;
+        put.shape.push(r);
+      } else if (lk.masthead === 'block') {
+        // A solid slab behind the eyebrow — the title then sits on white below
+        // it, and the contrast is what makes 大字 loud without a bigger font.
+        band({ left: 0, top: 0, width: 300, height: 34 }, th.strong);
+      } else if (lk.masthead === 'hairline') {
+        band({ left: 0, top: 0, width: GRID.W, height: 1 }, th.line);
+      } else if (lk.masthead === 'frame') {
+        // A hairline box inset from all four edges. It does two things at once:
+        // it is the only ornament on the page, and it turns the margin into a
+        // deliberate border instead of leftover space — which is the difference
+        // between 「留白」 and 「很空」.
+        const f = slide.shapes.addGeometricShape('Rectangle',
+          { left: 24, top: 24, width: GRID.W - 48, height: GRID.H - 48 });
+        f.name = stamp('frame');
+        f.fill.clear();
+        f.lineFormat.visible = true;
+        f.lineFormat.color = th.line;
+        f.lineFormat.weight = 1;
+        put.shape.push(f);
+      }
+
+      const eyeY = lk.masthead === 'block' ? 8 : CHROME.eyebrow.top + lk.topPad;
       if (args.eyebrow) {
-        text(String(args.eyebrow).toUpperCase(), CHROME.eyebrow,
-          { size: 11, color: th.muted, valign: 'middle' });
+        const label = lk.eyebrowCase === 'upper'
+          ? String(args.eyebrow).toUpperCase() : String(args.eyebrow);
+        text(label, { ...CHROME.eyebrow, left: lk.masthead === 'block' ? 16 : CHROME.eyebrow.left, top: eyeY },
+          {
+            size: 11,
+            color: lk.masthead === 'block' ? th.onCover : onGround(th, lk, 'muted'),
+            valign: 'middle',
+            align: lk.titleAlign === 'center' ? 'center' : 'left',
+          });
       }
       if (title) {
-        text(title, CHROME.title, { size: 25, bold: true, color: th.strong, valign: 'middle' });
-        band(CHROME.rule, th.accent);
+        text(title, { ...CHROME.title, top: CHROME.title.top + lk.topPad },
+          {
+            font: display,
+            size: lk.titleSize, bold: lk.titleBold,
+            color: onGround(th, lk, 'strong'),
+            align: lk.titleAlign, valign: 'middle',
+          });
+        if (lk.rule === 'short') {
+          band(lk.titleAlign === 'center'
+            ? { ...CHROME.rule, left: (GRID.W - CHROME.rule.width) / 2, top: CHROME.rule.top + lk.topPad }
+            : { ...CHROME.rule, top: CHROME.rule.top + lk.topPad }, th.accent);
+        } else if (lk.rule === 'full') {
+          // Full width and one point high. A short rule underlines the title; a
+          // hairline across the page separates the header from the body, which
+          // is the move a magazine makes and a slide deck usually does not.
+          band({ left: CHROME.contentLeft, top: CHROME.rule.top + lk.topPad + 4,
+            width: CHROME.contentWidth, height: 1 }, th.line);
+        }
       }
-      if (args.page) {
-        text(String(args.page), { left: 800, top: 22, width: 116, height: 19 },
-          { size: 11, color: th.muted, align: 'right', valign: 'middle' });
+      // With a footer band the page number lives down there instead — printing it
+      // in both corners is the kind of duplicate nobody notices until it is on a
+      // projector.
+      if (args.page && !args.footband) {
+        text(String(args.page), { left: 800, top: 22 + lk.topPad, width: 116, height: 19 },
+          { size: 11, color: onGround(th, lk, 'muted'), align: 'right', valign: 'middle' });
       }
     }
-    const CT = CHROME.contentTop;
+    const CT = CHROME.contentTop + lk.topPad;
     const CL = CHROME.contentLeft;
     const CW = CHROME.contentWidth;
 
     if (kind === 'title') {
-      // The cover: the one slide where full-bleed and centred type are right.
-      // `cover`/`onCover` rather than accent/onAccent — see THEMES for the bug
-      // that distinction exists to prevent.
-      band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
-      band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
-      text(title, { left: 80, top: 190, width: GRID.W - 160, height: 96 },
-        { size: TYPE.display, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
-      // A short rule between title and subtitle, centred. The same idea as the
-      // one under a slide title: it belongs to the words above it.
-      band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 3 }, th.accent);
-      if (body.length) {
-        text(body.join('　·　'), { left: 80, top: 322, width: GRID.W - 160, height: 40 },
-          { size: TYPE.heading, color: th.onCover, align: 'center' });
-      }
-      if (args.footer) {
-        text(String(args.footer), { left: 80, top: 452, width: GRID.W - 160, height: 28 },
-          { size: TYPE.small, color: th.onCover, align: 'center' });
+      // ── The cover, composed four different ways ──
+      //
+      // Slide 1 sets the expectation for everything after it, so this is where a
+      // look has to be most visible. All four keep the same promise — the title
+      // is the largest thing on the page and it has enough contrast to read from
+      // the back — and differ in everything else.
+      const sub = body.join('　·　');
+
+      if (lk.cover === 'split') {
+        // A magazine cover: white page, one narrow colour edge, type set left and
+        // ragged right. Nothing is centred, which is exactly why it reads as
+        // designed rather than as a template.
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        band({ left: 0, top: 0, width: 14, height: GRID.H }, th.accent);
+        if (args.eyebrow) {
+          text(String(args.eyebrow), { left: 96, top: 150, width: 700, height: 24 },
+            { size: TYPE.small, color: th.accent });
+        }
+        text(title, { left: 96, top: 182, width: 740, height: 110 },
+          { size: 42, bold: false, color: th.strong, valign: 'middle' });
+        band({ left: 96, top: 306, width: 740, height: 1 }, th.line);
+        if (sub) {
+          text(sub, { left: 96, top: 320, width: 740, height: 40 },
+            { size: TYPE.heading, color: th.muted });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 96, top: 456, width: 740, height: 24 },
+            { size: TYPE.small, color: th.muted });
+        }
+      } else if (lk.cover === 'band') {
+        // A rounded slab floating on a tinted page. Inset on all four sides, so
+        // the page frames it — the friendliest of the four and the only one that
+        // stays centred.
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.ground);
+        const slab = slide.shapes.addGeometricShape('RoundRectangle',
+          { left: 64, top: 132, width: GRID.W - 128, height: 276 });
+        slab.name = stamp('band');
+        slab.fill.setSolidColor(th.cover);
+        slab.lineFormat.visible = false;
+        put.shape.push(slab);
+        text(title, { left: 104, top: 188, width: GRID.W - 208, height: 92 },
+          { size: 38, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
+        band({ left: (GRID.W - 96) / 2, top: 292, width: 96, height: 3 }, th.accent);
+        if (sub) {
+          text(sub, { left: 104, top: 310, width: GRID.W - 208, height: 40 },
+            { size: TYPE.heading, color: th.onCover, align: 'center' });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 64, top: 432, width: GRID.W - 128, height: 24 },
+            { size: TYPE.small, color: th.muted, align: 'center' });
+        }
+      } else if (lk.cover === 'paper') {
+        // Full-bleed warm paper with a hairline frame. Nothing is white, which
+        // is the point: 「一頁滿版」 does not have to mean a photograph, it can
+        // just mean the page has a colour and the colour reaches the edges.
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.ground);
+        const f = slide.shapes.addGeometricShape('Rectangle',
+          { left: 24, top: 24, width: GRID.W - 48, height: GRID.H - 48 });
+        f.name = stamp('frame');
+        f.fill.clear();
+        f.lineFormat.visible = true;
+        f.lineFormat.color = th.line;
+        f.lineFormat.weight = 1;
+        put.shape.push(f);
+        if (args.eyebrow) {
+          text(String(args.eyebrow), { left: 88, top: 176, width: 700, height: 22 },
+            { size: TYPE.small, color: th.accent });
+        }
+        text(title, { left: 88, top: 208, width: 784, height: 104 },
+          { font: display, size: 40, bold: false, color: th.strong, valign: 'middle' });
+        band({ left: 88, top: 322, width: 64, height: 2 }, th.accent);
+        if (sub) {
+          text(sub, { left: 88, top: 338, width: 784, height: 40 },
+            { font: display, size: TYPE.heading, color: th.ink });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 88, top: 436, width: 784, height: 24 },
+            { size: TYPE.caption, color: th.muted });
+        }
+      } else if (lk.cover === 'plain') {
+        // Type and nothing else. The hardest one to get wrong and the easiest to
+        // dismiss — which is the point: when the content is strong, decoration
+        // is what makes it look weaker.
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        if (args.eyebrow) {
+          text(String(args.eyebrow), { left: 96, top: 196, width: 700, height: 22 },
+            { size: TYPE.small, color: th.muted });
+        }
+        text(title, { left: 96, top: 224, width: 768, height: 96 },
+          { size: 40, bold: false, color: th.strong, valign: 'middle' });
+        if (sub) {
+          text(sub, { left: 96, top: 326, width: 768, height: 36 },
+            { size: TYPE.heading, color: th.muted });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 96, top: 456, width: 768, height: 24 },
+            { size: TYPE.small, color: th.muted });
+        }
+      } else {
+        // 'bleed' — the full-colour cover. `cover`/`onCover` rather than
+        // accent/onAccent: see THEMES for the bug that distinction prevents.
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
+        band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
+        text(title, { left: 80, top: 190, width: GRID.W - 160, height: 96 },
+          { size: TYPE.display, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
+        // A short rule between title and subtitle, centred. The same idea as the
+        // one under a slide title: it belongs to the words above it.
+        band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 3 }, th.accent);
+        if (sub) {
+          text(sub, { left: 80, top: 322, width: GRID.W - 160, height: 40 },
+            { size: TYPE.heading, color: th.onCover, align: 'center' });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 80, top: 452, width: GRID.W - 160, height: 28 },
+            { size: TYPE.small, color: th.onCover, align: 'center' });
+        }
       }
     } else if (kind === 'section') {
       // A divider. The big number is what tells the audience where they are, and
@@ -1275,7 +1692,20 @@ async function buildSlide(args) {
       }
     }
 
-    if (args.footer && kind !== 'title') {
+    if (args.footband && kind !== 'title') {
+      // The heavy close. Text is optional — the band does its structural job
+      // whether or not anything is written in it.
+      band(CHROME.footband, th.strong);
+      band({ left: 0, top: CHROME.footband.top, width: 288, height: 3 }, th.accent);
+      if (args.footer) {
+        text(String(args.footer), { left: CL, top: CHROME.footband.top + 12, width: CW - 120, height: 22 },
+          { size: TYPE.small, color: '#FFFFFF', valign: 'middle' });
+      }
+      if (args.page) {
+        text(String(args.page), { left: GRID.W - 140, top: CHROME.footband.top + 12, width: 100, height: 22 },
+          { size: TYPE.small, color: '#FFFFFF', align: 'right', valign: 'middle' });
+      }
+    } else if (args.footer && kind !== 'title') {
       band({ left: CL, top: 486, width: CW, height: 1 }, th.line);
       text(String(args.footer), { left: CL, top: 494, width: CW, height: 24 },
         { size: TYPE.caption, color: th.muted });
@@ -1315,13 +1745,193 @@ async function buildSlide(args) {
  * Colours cycle strong → second → accent so a row of five is not a flat wall of
  * one hue, which is the thing that makes auto-generated slides look generated.
  */
+/**
+ * A row of metric tiles — the element that makes a slide look finished.
+ *
+ * ── Why this is its own tool and not a shape of ppt_add_cards ──
+ * A card carries a sentence; a KPI tile carries a NUMBER, and the two want
+ * opposite proportions. A card is wide and short so the text has a line to run
+ * along; a tile is tall enough to stack a large figure over a label over a
+ * footnote, and narrow enough that four sit side by side. Squeezing one into the
+ * other's geometry is how you get four cards with tiny numbers in them.
+ *
+ * ── The numbers come from a deck that works ──
+ * Measured off the reference: tiles 212×101 at y=133, 15pt apart across the
+ * 884pt content width; a 4pt bar across the TOP of each in its own colour; the
+ * figure at 30pt in that same colour; the label at 12 in the ink; the footnote
+ * at 9 in the muted grey. Those proportions are why the row reads as one band
+ * rather than as four boxes, so they are defaults rather than suggestions.
+ *
+ * Each tile takes its own colour by default. A row of four in one colour is a
+ * table; a row of four in four colours is a dashboard, and the difference costs
+ * nothing.
+ */
+async function addKpi(args) {
+  if (!hasApi('1.4')) throw new Error('數據卡需要 PowerPointApi 1.4，這個 Office 版本太舊。');
+  const items = (Array.isArray(args.items) ? args.items : []).filter(Boolean);
+  if (!items.length) throw new Error('items 是必要的，至少要一個。');
+  if (items.length > 5) {
+    throw new Error('一排最多 5 個數據卡——再多每個就窄到放不下數字了。挑最重要的幾個。');
+  }
+
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const gap = num(args.gap, 15);
+  const left = num(args.left, CHROME.contentLeft);
+  const top = num(args.top, CHROME.contentTop);
+  const totalW = num(args.width, CHROME.contentWidth);
+  const h = num(args.height, 101);
+  const w = (totalW - gap * (items.length - 1)) / items.length;
+  // Four distinct tones, not one repeated: the row is a dashboard, not a table.
+  const cycle = [th.strong, th.second, th.accent, th.warn || th.second, th.muted];
+  const face = lk.font || th.font;
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    const made_ = [];
+    const add = (shape) => { made_.push(shape); return shape; };
+
+    items.forEach((item, i) => {
+      const x = left + (w + gap) * i;
+      const tone = colour(item.color, cycle[i % cycle.length]);
+
+      const sk = skin(th, lk, tone, colour(args.fill, th.bg));
+      const panel = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+        { left: x, top, width: w, height: h }));
+      panel.name = stamp('kpi');
+      if (sk.fill) panel.fill.setSolidColor(colour(args.fill, sk.fill)); else panel.fill.clear();
+      panel.lineFormat.visible = sk.line;
+      panel.lineFormat.color = sk.color;
+      panel.lineFormat.weight = 1;
+
+      // The bar sits ON the panel's top edge, not inside it — a separate shape
+      // because a border would draw on all four sides.
+      const bar = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+        { left: x, top, width: w, height: 4 }));
+      bar.name = stamp('kpibar');
+      bar.fill.setSolidColor(tone);
+      bar.lineFormat.visible = false;
+
+      const pad = 14;
+      const value = add(slide.shapes.addTextBox(String(item.value ?? ''),
+        { left: x + pad, top: top + 11, width: w - pad * 2, height: 43 }));
+      value.name = stamp('kpival');
+      styleText(value, { font: face, size: 30, bold: true, color: tone, valign: 'middle' });
+      value.fill.clear();
+      value.lineFormat.visible = false;
+
+      if (item.label) {
+        const label = add(slide.shapes.addTextBox(String(item.label),
+          { left: x + pad, top: top + 60, width: w - pad * 2, height: 21 }));
+        label.name = stamp('kpilab');
+        styleText(label, { font: face, size: 12, bold: true, color: th.strong, valign: 'middle' });
+        label.fill.clear();
+        label.lineFormat.visible = false;
+      }
+      if (item.note) {
+        const note = add(slide.shapes.addTextBox(String(item.note),
+          { left: x + pad, top: top + 81, width: w - pad * 2, height: 16 }));
+        note.name = stamp('kpinote');
+        styleText(note, { font: face, size: 9, color: th.muted, valign: 'middle' });
+        note.fill.clear();
+        note.lineFormat.visible = false;
+      }
+    });
+
+    made_.forEach((s) => s.load('id'));
+    await ctx.sync();
+    made_.forEach((s) => remember(slide.id, s.id));
+    return `已在投影片 ${index} 放上 ${items.length} 個數據卡，`
+      + `${Math.round(w)}×${h} 點，從 (${left},${top}) 開始。`;
+  });
+}
+
+/**
+ * The insight strip — one sentence, tinted, usually at the foot of the slide.
+ *
+ * ── What it is for ──
+ * A slide full of figures says what happened. This says what it MEANS, and the
+ * reference deck puts one on nearly every content page for that reason. It also
+ * does something structural: a tinted band across the bottom gives the page a
+ * third layer, so the content stops floating in the middle of the slide.
+ *
+ * Deliberately one paragraph. A callout that grows into a list is the slide's
+ * content wearing a different colour, and then nothing on the page is the
+ * conclusion.
+ */
+async function addCallout(args) {
+  if (!hasApi('1.4')) throw new Error('洞察框需要 PowerPointApi 1.4，這個 Office 版本太舊。');
+  const body = String(args.text || '').trim();
+  if (!body) throw new Error('text 是必要的（要講的那句結論）。');
+
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
+  const tone = colour(args.color, th.strong);
+  const left = num(args.left, CHROME.contentLeft);
+  const width = num(args.width, CHROME.contentWidth);
+  const h = num(args.height, 46);
+  // Defaults to the foot of the content area, which is where a conclusion goes.
+  const top = num(args.top, 430);
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    const made_ = [];
+    const add = (shape) => { made_.push(shape); return shape; };
+
+    const sk = skin(th, lk, tone, colour(args.fill, th.tint));
+    const panel = add(slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+      { left, top, width, height: h }));
+    panel.name = stamp('callout');
+    if (sk.fill) panel.fill.setSolidColor(sk.fill); else panel.fill.clear();
+    // The callout keeps its accent border even on the tinted skin — it is the
+    // conclusion, and a faint hairline would make it read as another card.
+    panel.lineFormat.visible = true;
+    panel.lineFormat.color = tone;
+    panel.lineFormat.weight = 1;
+
+    const spine = add(slide.shapes.addGeometricShape('Rectangle',
+      { left, top, width: 4, height: h }));
+    spine.name = stamp('calloutbar');
+    spine.fill.setSolidColor(tone);
+    spine.lineFormat.visible = false;
+
+    let tx = left + 16;
+    let tw = width - 32;
+    if (args.label) {
+      const label = add(slide.shapes.addTextBox(String(args.label),
+        { left: tx, top: top + 4, width: 96, height: h - 8 }));
+      label.name = stamp('calloutlab');
+      styleText(label, { font: face, size: 11, bold: true, color: tone, valign: 'middle' });
+      label.fill.clear();
+      label.lineFormat.visible = false;
+      tx += 100;
+      tw -= 100;
+    }
+
+    const text = add(slide.shapes.addTextBox(body,
+      { left: tx, top: top + 4, width: tw, height: h - 8 }));
+    text.name = stamp('calloutbody');
+    styleText(text, { font: face, size: 12, color: th.ink, valign: 'middle', wrap: true });
+    text.fill.clear();
+    text.lineFormat.visible = false;
+
+    made_.forEach((s) => s.load('id'));
+    await ctx.sync();
+    made_.forEach((s) => remember(slide.id, s.id));
+    return `已在投影片 ${index} 放上洞察框，寬 ${width} 點，位置 (${left},${top})。`;
+  });
+}
+
 async function addCards(args) {
   if (!hasApi('1.4')) throw new Error('卡片需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const cards = Array.isArray(args.cards) ? args.cards.filter(Boolean) : [];
   if (!cards.length) throw new Error('cards 是必要的，至少要一張。');
   if (cards.length > 8) throw new Error('一排最多 8 張卡片——再多在 A4 寬的投影片上就窄到讀不了了。');
 
-  const th = theme(args.theme);
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
   const bar = String(args.bar || (cards.length > 3 ? 'top' : 'left')).toLowerCase();
   const cols = clamp(num(args.columns, bar === 'top' ? cards.length : Math.min(2, cards.length)), 1, 8);
   const rows = Math.ceil(cards.length / cols);
@@ -1351,14 +1961,19 @@ async function addCards(args) {
       // The panel. roundRect for a top-bar card and plain rect for a left-bar
       // one, matching the reference — a spine down the side of a rounded box
       // does not sit flush against the corner radius.
+      const sk = skin(th, lk, accent,
+        colour(card.fill, bar === 'top' ? th.bg : th.tint));
       const panel = add(slide.shapes.addGeometricShape(
-        bar === 'top' ? 'RoundRectangle' : 'Rectangle',
+        boxOf(lk, bar === 'top' ? 'RoundRectangle' : 'Rectangle'),
         { left: x, top: y, width: cw, height: ch }));
       panel.name = stamp('card');
-      panel.fill.setSolidColor(colour(card.fill, bar === 'top' ? th.bg : th.tint));
-      if (bar === 'top') {
-        panel.lineFormat.visible = true;
-        panel.lineFormat.color = accent;
+      if (sk.fill) panel.fill.setSolidColor(card.fill ? colour(card.fill) : sk.fill);
+      else panel.fill.clear();
+      // A left-bar card is normally borderless — the tint alone separates it.
+      // An outlined look has no tint to rely on, so it gets the line instead.
+      if (bar === 'top' || lk.card === 'outline') {
+        panel.lineFormat.visible = sk.line;
+        panel.lineFormat.color = sk.line ? accent : sk.color;
         panel.lineFormat.weight = 1;
       } else {
         panel.lineFormat.visible = false;
@@ -1384,7 +1999,7 @@ async function addCards(args) {
         const badge = add(slide.shapes.addTextBox(String(card.number),
           { left: tx, top: ty, width: 52, height: 40 }));
         badge.name = stamp('num');
-        styleText(badge, { font: th.font, size: 24, bold: true, color: accent, valign: 'top' });
+        styleText(badge, { font: face, size: 24, bold: true, color: accent, valign: 'top' });
         badge.fill.clear();
         badge.lineFormat.visible = false;
         tx += 56;
@@ -1396,7 +2011,7 @@ async function addCards(args) {
           { left: tx, top: ty, width: tw, height: card.text ? 24 : ch - 24 }));
         title.name = stamp('ct');
         styleText(title, {
-          font: th.font, size: num(args.size, 14), bold: true,
+          font: face, size: num(args.size, 14), bold: true,
           color: card.title_color ? colour(card.title_color) : th.ink, valign: 'top',
         });
         title.fill.clear();
@@ -1407,7 +2022,7 @@ async function addCards(args) {
         const body = add(slide.shapes.addTextBox(String(card.text),
           { left: tx, top: ty, width: tw, height: y + ch - ty - 10 }));
         body.name = stamp('cb');
-        styleText(body, { font: th.font, size: num(args.small, 11.5), color: th.muted, valign: 'top' });
+        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted, valign: 'top' });
         body.fill.clear();
         body.lineFormat.visible = false;
       }
@@ -1416,7 +2031,7 @@ async function addCards(args) {
         const note = add(slide.shapes.addTextBox(String(card.note),
           { left: x + cw - 74, top: y + ch / 2 - 14, width: 58, height: 28 }));
         note.name = stamp('cn');
-        styleText(note, { font: th.font, size: 11, color: th.muted, align: 'right', valign: 'middle' });
+        styleText(note, { font: face, size: 11, color: th.muted, align: 'right', valign: 'middle' });
         note.fill.clear();
         note.lineFormat.visible = false;
       }
@@ -1539,6 +2154,264 @@ async function addImage(args) {
   const note = await focusSlideFor(args);
   await insertImageData(data, Office.CoercionType.Image, geo);
   return `已插入圖片，${geo.width}×${geo.height} 點，位置 (${geo.left},${geo.top})。${note}`;
+}
+
+/**
+ * ── Photographs, and why the add-in fetches them itself ──
+ *
+ * The web platform puts a photo on a slide by writing an <img src> into HTML and
+ * letting the browser do the rest. PowerPoint has no equivalent: Office.js takes
+ * image BYTES, base64, through setSelectedDataAsync. There is no URL form.
+ *
+ * So somebody has to do the download, and the choice is the pane or the server.
+ * This does it in the pane, for one reason worth stating plainly: a server route
+ * that fetches any URL a language model asks for is an SSRF proxy sitting inside
+ * the corporate network, reachable by anything that can reach the bridge. The
+ * pane runs in the user's own WebView with the user's own network position — it
+ * can already reach exactly what the user can reach, and nothing more. That is a
+ * much smaller thing to get wrong.
+ *
+ * The cost is CORS: the remote host must allow a cross-origin read.
+ * images.unsplash.com does. Most corporate file shares do not, which is why the
+ * error below says which half failed instead of just 「插入圖片失敗」.
+ */
+
+/**
+ * Is this an illustration rather than a photograph?
+ *
+ * It matters because the two go in through different doors. A JPEG becomes
+ * base64 and goes through Office.CoercionType.Image. An SVG has to go through
+ * XmlSvg as TEXT — base64 through the Image door produces a broken picture
+ * placeholder, silently. Same call, same arguments, nothing thrown.
+ *
+ * Going in as a vector is also the better outcome on its own: the illustration
+ * stays sharp when somebody drags it bigger, and it survives being printed.
+ */
+const isSvg = (url, type) => /^image\/svg/i.test(type || '') || /\.svg(\?|$)/i.test(url);
+
+/** The crop each mode actually needs. 16:9 unless the slot says otherwise. */
+const PHOTO_MODES = {
+  hero: { w: 1920, h: 1080 },
+  side: { w: 768, h: 1080 },
+  block: { w: 1280, h: 720 },
+};
+
+/**
+ * Ask the CDN for the crop we are going to draw.
+ *
+ * A 16:9 photo stretched into a 384×540 side panel is visibly wrong — faces go
+ * narrow, horizons bend — and setSelectedDataAsync stretches, it does not crop.
+ * Unsplash will crop server-side if asked, so ask: the model supplies a photo,
+ * this decides its shape. Every other host is left alone, because there the
+ * query string means something we do not know.
+ */
+function cropUrl(raw, mode) {
+  const want = PHOTO_MODES[mode] || PHOTO_MODES.block;
+  try {
+    const u = new URL(raw);
+    if (isSvg(raw, '')) return raw;
+    if (!/(^|\.)unsplash\.com$/i.test(u.hostname)) return raw;
+    u.searchParams.set('w', String(want.w));
+    u.searchParams.set('h', String(want.h));
+    u.searchParams.set('fit', 'crop');
+    u.searchParams.set('q', '80');
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** ArrayBuffer → base64, in chunks: apply() on a 2MB array overflows the stack. */
+function toBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(out);
+}
+
+/** 6MB. Past that PowerPoint gets slow and the deck gets unmailable. */
+const PHOTO_MAX = 6 * 1024 * 1024;
+
+async function fetchPhoto(url, mode) {
+  let res;
+  try {
+    res = await fetch(cropUrl(url, mode));
+  } catch (e) {
+    throw new Error(`抓不到那張圖：${e.message}。`
+      + '通常是圖片主機不允許跨來源讀取（CORS），或這台電腦連不到外網。'
+      + '換一個公開圖床的網址，或請使用者把圖片直接拖進對話框。');
+  }
+  if (!res.ok) throw new Error(`抓不到那張圖（HTTP ${res.status}）。網址可能已經失效。`);
+  const type = String(res.headers.get('content-type') || '');
+  if (type && !/^image\//i.test(type)) {
+    throw new Error(`那個網址回來的不是圖片（${type}）。請給圖片檔本身的網址。`);
+  }
+  if (isSvg(url, type)) {
+    const svg = await res.text();
+    if (svg.length > PHOTO_MAX) throw new Error('這張向量圖太大了，換一張。');
+    return { svg };
+  }
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > PHOTO_MAX) {
+    throw new Error(`圖片太大（${Math.round(buf.byteLength / 1024 / 1024)}MB）。`
+      + '在網址加上 ?w=1600 之類的參數把它縮小。');
+  }
+  return { data: toBase64(buf) };
+}
+
+/**
+ * Put a photograph on a slide — composed, not merely placed.
+ *
+ * ── Three modes, three different jobs ──
+ *   hero   full-bleed behind a darkened scrim, title on top. Opens a deck or a
+ *          section, and it is the thing the reference decks do that we had no
+ *          answer for at all.
+ *   side   a full-height 40% panel with the content beside it. The magazine
+ *          split: it makes an ordinary content slide look composed without the
+ *          photo needing to carry any argument.
+ *   block  contained in the content area. For a photo that IS the evidence.
+ *
+ * ── The scrim is not decoration ──
+ * White type over an unknown photograph is unreadable about half the time, and
+ * we never get to look at the photograph first. So the darkening is applied
+ * always and its strength is a parameter — a judgement made in the open rather
+ * than blind.
+ */
+async function addPhoto(args) {
+  if (!hasImageCoercion('1.1')) {
+    throw new Error('這個 Office 版本不支援插入圖片（需要 ImageCoercion 1.1，Office 2021 以上）。');
+  }
+  const url = String(args.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) throw new Error('url 是必要的，而且要是 http(s) 開頭的圖片網址。');
+  const mode = String(args.mode || 'block').toLowerCase();
+  if (!PHOTO_MODES[mode]) throw new Error(`mode 必須是：${Object.keys(PHOTO_MODES).join('、')}。`);
+
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
+  const right = String(args.position || 'right').toLowerCase() !== 'left';
+
+  const geo = mode === 'hero'
+    ? { left: 0, top: 0, width: GRID.W, height: GRID.H }
+    : mode === 'side'
+      ? { left: right ? GRID.W - 384 : 0, top: 0, width: 384, height: GRID.H }
+      : {
+        left: num(args.left, CHROME.contentLeft),
+        top: num(args.top, CHROME.contentTop),
+        width: num(args.width, CHROME.contentWidth),
+        height: num(args.height, 300),
+      };
+
+  const got = await fetchPhoto(url, mode);
+  const note = await focusSlideFor(args);
+  if (got.svg) {
+    // Vectors need ImageCoercion 1.2. Saying so beats letting the call fail with
+    // whatever Office decides to call it.
+    if (!hasImageCoercion('1.2')) {
+      throw new Error('這個 Office 版本放不了向量插畫（需要 ImageCoercion 1.2）。'
+        + '改用 ppt_find_art 以外的做法：放照片，或用 ppt_add_diagram 畫圖解。');
+    }
+    await insertImageData(got.svg, Office.CoercionType.XmlSvg, geo);
+  } else {
+    await insertImageData(got.data, Office.CoercionType.Image, geo);
+  }
+
+  // Everything below is drawn AFTER the image, and that ordering is the whole
+  // trick: setSelectedDataAsync appends, so a scrim created first would end up
+  // underneath the photograph it is supposed to darken.
+  const title = String(args.title || '');
+  const sub = String(args.subtitle || '');
+  const caption = String(args.caption || '');
+  if (!title && !sub && !caption && mode !== 'hero') {
+    return `已插入圖片，${geo.width}×${geo.height} 點，位置 (${geo.left},${geo.top})。${note}`;
+  }
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    const made_ = [];
+    const add = (shape) => { made_.push(shape); return shape; };
+    const veil = (box, opacity) => {
+      const s = add(slide.shapes.addGeometricShape('Rectangle', box));
+      s.name = stamp('scrim');
+      s.fill.setSolidColor('#000000');
+      // transparency is not in every build's requirement set. Without it this is
+      // an opaque black rectangle covering the photograph — so a failure here
+      // removes the scrim rather than leaving a black slide.
+      try {
+        s.fill.transparency = opacity;
+      } catch {
+        s.delete();
+        made_.pop();
+        return null;
+      }
+      s.lineFormat.visible = false;
+      return s;
+    };
+    const say = (content, box, style) => {
+      const s = add(slide.shapes.addTextBox(String(content), box));
+      s.name = stamp('photo');
+      styleText(s, { font: face, wrap: true, ...style });
+      s.fill.clear();
+      s.lineFormat.visible = false;
+      return s;
+    };
+
+    if (mode === 'hero') {
+      // No scrim over a vector illustration: those have transparent or white
+      // grounds, so darkening them produces a grey rectangle with a drawing
+      // faintly visible inside it rather than a readable background.
+      if (!got.svg) {
+        const strength = clamp(num(args.scrim, 0.45), 0, 0.9);
+        veil({ left: 0, top: 0, width: GRID.W, height: GRID.H }, 1 - strength);
+      }
+      // White reads over a darkened photo. Over a pale illustration it vanishes,
+      // so the type falls back to the palette's own ink.
+      const onArt = got.svg ? th.strong : '#FFFFFF';
+      const subArt = got.svg ? th.ink : '#FFFFFF';
+      if (args.eyebrow) {
+        say(String(args.eyebrow), { left: 80, top: 214, width: GRID.W - 160, height: 24 },
+          { size: TYPE.small, color: onArt });
+      }
+      if (title) {
+        say(title, { left: 80, top: 244, width: GRID.W - 160, height: 96 },
+          { size: TYPE.display, bold: true, color: onArt, valign: 'middle' });
+      }
+      if (sub) {
+        say(sub, { left: 80, top: 348, width: GRID.W - 160, height: 40 },
+          { size: TYPE.heading, color: subArt });
+      }
+    } else if (mode === 'side') {
+      // Words go on the other 60%. The return value repeats those coordinates so
+      // the model can keep using the ordinary tools for the rest of the slide
+      // instead of guessing where the photo stopped.
+      const tx = right ? 60 : 444;
+      if (title) {
+        say(title, { left: tx, top: 150, width: 456, height: 72 },
+          { size: lk.titleSize, bold: lk.titleBold, color: th.strong, valign: 'middle' });
+      }
+      if (sub) {
+        say(sub, { left: tx, top: 230, width: 456, height: 120 },
+          { size: TYPE.body, color: th.ink });
+      }
+    }
+    if (caption) {
+      say(caption, mode === 'hero'
+        ? { left: 80, top: 470, width: GRID.W - 160, height: 20 }
+        : { left: geo.left, top: geo.top + geo.height + 6, width: geo.width, height: 20 },
+        { size: TYPE.caption, color: mode === 'hero' && !got.svg ? '#FFFFFF' : th.muted });
+    }
+
+    made_.forEach((s) => s.load('id'));
+    await ctx.sync();
+    made_.forEach((s) => remember(slide.id, s.id));
+    const room = mode === 'side'
+      ? `\n文字請放在另外 60%：left ${right ? 60 : 444}、寬 456。`
+      : '';
+    return `已在投影片 ${index} 用「${mode}」方式放上照片。${note}${room}`;
+  });
 }
 
 /** The Word host's insertImage contract: a pasted picture from the composer. */
@@ -1902,6 +2775,8 @@ export function supportedTools() {
     'ppt_add_shape',
     'ppt_add_line',
     'ppt_add_cards',
+    'ppt_add_kpi',
+    'ppt_add_callout',
     'ppt_set_text',
     'ppt_format_shape',
     'ppt_delete_shape',
@@ -1911,10 +2786,12 @@ export function supportedTools() {
     'ppt_read_attachment',
     'ppt_insert_attachment',
     'ppt_read_file',
+    // Answered by the server, not here — but it still has to be advertised.
+    'ppt_find_art',
   ];
   // Pictures are a Common API capability, not a PowerPointApi one, so they are
   // gated on their own requirement set rather than on the host version.
-  if (hasImageCoercion('1.1')) tools.push('ppt_add_image', 'ppt_add_diagram');
+  if (hasImageCoercion('1.1')) tools.push('ppt_add_image', 'ppt_add_photo', 'ppt_add_diagram');
   // Charts are vector-only on purpose: a rasterised chart on a projector is
   // worse than no chart, so this needs 1.2 rather than falling back to 1.1.
   if (hasImageCoercion('1.2')) tools.push('ppt_add_chart');
@@ -1923,9 +2800,9 @@ export function supportedTools() {
 
 const WRITES = new Set([
   'ppt_add_slide', 'ppt_delete_slide', 'ppt_build_slide', 'ppt_add_text',
-  'ppt_add_shape', 'ppt_add_line', 'ppt_add_cards', 'ppt_add_chart',
+  'ppt_add_shape', 'ppt_add_line', 'ppt_add_cards', 'ppt_add_kpi', 'ppt_add_callout', 'ppt_add_chart',
   'ppt_set_text', 'ppt_format_shape',
-  'ppt_delete_shape', 'ppt_arrange', 'ppt_apply_theme', 'ppt_add_image',
+  'ppt_delete_shape', 'ppt_arrange', 'ppt_apply_theme', 'ppt_add_image', 'ppt_add_photo',
   'ppt_add_diagram', 'ppt_run_script',
 ]);
 
@@ -1950,6 +2827,8 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
           ppt_add_cards: addCards,
+          ppt_add_kpi: addKpi,
+          ppt_add_callout: addCallout,
           ppt_add_chart: addChart,
           ppt_set_text: setText,
           ppt_format_shape: formatShape,
@@ -1957,6 +2836,7 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_arrange: arrange,
           ppt_apply_theme: applyTheme,
           ppt_add_image: addImage,
+          ppt_add_photo: addPhoto,
           ppt_add_diagram: addDiagram,
         }[tool];
         if (!run) return { ok: false, content: `這個增益集不認得工具 ${tool}。` };
@@ -1989,7 +2869,7 @@ export const meta = {
   },
 
   /** The slide canvas, so the pane can show it and the prompt can quote it. */
-  canvas: { width: GRID.W, height: GRID.H, grid: GRID, chrome: CHROME, type: TYPE, themes: THEMES },
+  canvas: { width: GRID.W, height: GRID.H, grid: GRID, chrome: CHROME, type: TYPE, themes: THEMES, looks: LOOKS },
 
   toolLabels: () => ({
     ppt_get_overview: t('正在讀取簡報結構…'),
@@ -2002,6 +2882,8 @@ export const meta = {
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
     ppt_add_cards: t('正在排卡片…'),
+    ppt_add_kpi: t('正在排數據卡…'),
+    ppt_add_callout: t('正在寫結論框…'),
     ppt_add_chart: t('正在畫圖表…'),
     ppt_set_text: t('正在改寫文字…'),
     ppt_format_shape: t('正在調整物件…'),
@@ -2009,9 +2891,11 @@ export const meta = {
     ppt_arrange: t('正在對齊排列…'),
     ppt_apply_theme: t('正在套用配色…'),
     ppt_add_image: t('正在插入圖片…'),
+    ppt_add_photo: t('正在抓圖片並排版…'),
     ppt_add_diagram: t('正在畫流程圖…'),
     ppt_read_attachment: t('正在看你貼的圖…'),
     ppt_insert_attachment: t('正在把圖片放進簡報…'),
+    ppt_find_art: t('正在找插畫…'),
     ppt_read_file: t('正在讀你上傳的檔案…'),
     ppt_run_script: t('正在執行程式…'),
   }),
@@ -2021,6 +2905,8 @@ export const meta = {
     ppt_arrange: t('正在盤算版面…'),
     ppt_add_diagram: t('正在設計流程圖…'),
     ppt_add_cards: t('正在設計版面…'),
+    ppt_add_kpi: t('正在挑要放哪幾個數字…'),
+    ppt_add_callout: t('正在想這頁的結論…'),
   }),
 
   words: {

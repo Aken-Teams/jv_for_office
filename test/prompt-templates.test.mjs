@@ -314,5 +314,34 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
   ok('編輯會把兩者一起送出', /templateRequest\('PATCH', `\/\$\{encodeURIComponent\(id\)\}`, next\)/.test(app));
 }
 
+// ── 主機範圍：在 PowerPoint 裡看到 Excel 的指令，整份清單就不可信了 ─────────
+//
+// 這不是美觀問題。一則跑不起來的指令混在裡面，整個清單就會被讀成「不是給我的」，
+// 而沒人信的清單就沒人打開。
+ok('常用指令有主機欄位', /ADD COLUMN host/.test(db));
+// 這個欄位以前不存在，舊資料沒有來源可以推斷——猜一個比承認不知道更糟。
+ok('舊資料預設為通用而不是亂猜', /host VARCHAR\(12\) NOT NULL DEFAULT 'all'/.test(db));
+ok('列表可以依主機過濾', /req\.query\.host/.test(routeSrc));
+// 過濾條件一定要包含 'all'，否則通用指令會在每個增益集裡消失。
+ok('過濾時仍然帶上通用的那些', /host = \? OR host = 'all'/.test(routeSrc));
+// 每個查詢都必須留著擁有者條件——這是這份測試最初的理由。
+ok('加了主機過濾之後擁有者條件還在',
+  routeSrc.split(String.fromCharCode(10))
+    .filter((l) => /FROM prompt_templates/.test(l) || /WHERE user_id/.test(l))
+    .join(' ').includes('user_id = ?'));
+ok('主機值有白名單，不是照收', /const HOSTS = new Set/.test(routeSrc));
+ok('可以改範圍', /host = \?[\s\S]{0,120}UPDATE|UPDATE prompt_templates SET[\s\S]{0,120}host = \?/.test(routeSrc));
+
+// 增益集那一側：存的時候要蓋章，讀的時候要帶條件，否則後端做了也沒用。
+{
+  const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  ok('讀取時帶上目前的主機', /prompt-templates\?host=/.test(app));
+  ok('儲存時蓋上目前的主機', /host: host\.meta\.api/.test(app));
+  ok('有切換適用範圍的按鈕', /data-scope/.test(app) && /setTemplateScope/.test(app));
+  // 存失敗卻回報「已存好」，比沒有回報更糟。
+  ok('存失敗不會謊報成功', /const saved = await templateRequest/.test(app)
+    && /if \(!saved\) return;/.test(app));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -207,6 +207,51 @@ for (const fn of ['executeTool', 'supportedTools', 'restoreSnapshot', 'goTo',
   ok(`主機契約：${fn}`, typeof host[fn] === 'function');
 }
 
+// ── 刪除要一次刪完 ───────────────────────────────────────────────────────────
+//
+// 每刪一個物件就是一張確認卡。清空一張投影片重做＝八張卡、八次「允許」——
+// 按到第三次就沒人在看內容了，那個確認門等於白做。一次決定，一張卡。
+{
+  const fresh = (n) => {
+    slide.shapes.items = Array.from({ length: n }, (_, i) => ({
+      id: `d${i + 1}`, tag: `#${i + 1}`, gone: false, delete() { this.gone = true; },
+    }));
+  };
+  const left = () => slide.shapes.items.filter((x) => !x.gone).map((x) => x.tag).join(' ');
+
+  fresh(8);
+  let r = await host.executeTool('ppt_delete_shape', { shapes: [3, 5, 8] });
+  ok('一次刪多個', r.ok && left() === '#1 #2 #4 #6 #7', left());
+  // 這是最容易寫錯的地方：由小到大刪的話，刪掉 3 之後原本的 5 已經變成 4。
+  ok('編號是讀取當下的編號，不會因為前面刪掉而位移', left() === '#1 #2 #4 #6 #7', left());
+  ok('回覆講清楚刪了幾個', /3 個物件/.test(r.content), r.content);
+
+  fresh(4);
+  r = await host.executeTool('ppt_delete_shape', { all: true });
+  ok('all: true 會清空整張', r.ok && left() === '', left());
+
+  fresh(3);
+  r = await host.executeTool('ppt_delete_shape', { shape: 2 });
+  ok('單一編號還是能用', r.ok && left() === '#1 #3', left());
+
+  fresh(3);
+  r = await host.executeTool('ppt_delete_shape', { shapes: [2, 2, 2] });
+  ok('重複的編號只算一次', r.ok && left() === '#1 #3', left());
+
+  // 刪除救不回來，所以「刪了兩個才發現第三個編號是錯的」是不能接受的結果。
+  fresh(3);
+  r = await host.executeTool('ppt_delete_shape', { shapes: [1, 2, 9] });
+  ok('有一個編號錯就整批不動', !r.ok && left() === '#1 #2 #3', left());
+  ok('而且說清楚是哪個錯、該怎麼辦',
+    /9/.test(r.content) && /ppt_read_slide/.test(r.content), r.content);
+
+  fresh(3);
+  r = await host.executeTool('ppt_delete_shape', {});
+  ok('什麼都沒給會被擋下來並列出可用的參數',
+    !r.ok && /shapes/.test(r.content) && /all/.test(r.content), r.content);
+  slide.shapes.items = [];
+}
+
 const tools = host.supportedTools();
 ok('工具清單不是空的', tools.length > 10, String(tools.length));
 // ask_user is excluded on purpose, and the Word host omits it for the same

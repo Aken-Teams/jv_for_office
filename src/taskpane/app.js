@@ -2510,9 +2510,12 @@ function sessionEnded(res, body) {
 
 async function loadTemplates() {
   try {
-    const res = await fetch(`${state.apiBase}/api/prompt-templates`, {
-      headers: { Authorization: `Bearer ${state.token}` },
-    });
+    // Scoped to this product. One Excel procedure showing up while somebody is
+    // editing a deck is enough to make the whole list read as not-for-them —
+    // and a list nobody trusts is a list nobody opens.
+    const res = await fetch(
+      `${state.apiBase}/api/prompt-templates?host=${encodeURIComponent(host.meta.api)}`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       if (sessionEnded(res, err)) {
@@ -2728,13 +2731,32 @@ function renderCmdMenu() {
       : t('還沒有常用指令。兩種存法：把說法打進輸入框存起來，'
         + '或是先讓 AI 做一次，再用下面的「整理成常用指令」把流程存下來。'))}</div>`);
   } else {
-    for (const tpl of templates) {
-      parts.push(`
+    // Two groups, in this order: what belongs here, then what belongs
+    // everywhere. The heading is what stops a general template reading as a
+    // stray — 「通用」 explains itself, an unexplained row does not.
+    const own = templates.filter((tpl) => tpl.host && tpl.host !== 'all');
+    const any = templates.filter((tpl) => !tpl.host || tpl.host === 'all');
+    for (const [group, heading] of [[own, ''], [any, t('通用（每個增益集都看得到）')]]) {
+      if (!group.length) continue;
+      if (heading && own.length) {
+        parts.push(`<div class="cmd-sub">${escapeHtml(heading)}</div>`);
+      }
+      for (const tpl of group) {
+        const general = !tpl.host || tpl.host === 'all';
+        parts.push(`
         <div class="tpl-row cmd-mine">
           <button type="button" class="tpl-use" data-id="${escapeHtml(tpl.id)}"
                   title="${escapeHtml(firstLine(tpl.content))}">
             <span class="tpl-name">${escapeHtml(tpl.name)}</span>
             <span class="tpl-peek">${escapeHtml(firstLine(tpl.content))}</span>
+          </button>
+          <button type="button" class="tpl-act${general ? ' is-on' : ''}"
+                  data-scope="${escapeHtml(tpl.id)}" data-general="${general ? '1' : ''}"
+                  title="${escapeHtml(general
+                    ? t('目前每個增益集都看得到，按一下改成只在這裡')
+                    : t('目前只在這裡，按一下改成每個增益集都看得到'))}"
+                  aria-label="${escapeHtml(t('切換適用範圍'))}">
+            <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-globe"/></svg>
           </button>
           <button type="button" class="tpl-act" data-edit="${escapeHtml(tpl.id)}"
                   title="${escapeHtml(t('編輯'))}" aria-label="${escapeHtml(t('編輯'))}">
@@ -2745,6 +2767,7 @@ function renderCmdMenu() {
             <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-trash"/></svg>
           </button>
         </div>`);
+      }
     }
   }
   list.innerHTML = parts.join('');
@@ -2790,13 +2813,16 @@ async function templateRequest(method, suffix, body) {
       // limit" from "not yours" from "blocked by the scanner", and those need
       // different things from the person.
       addNote(err.error || t('操作失敗（{0}）。', res.status), 'err');
-      return;
+      return false;
     }
   } catch (e) {
     addNote(t('連不上伺服器（{0}）。', e.message), 'err');
-    return;
+    return false;
   }
   await loadTemplates();
+  // Callers announce what happened, and announcing 「已存好」 after a 409 over
+  // the limit is worse than saying nothing — so the outcome comes back.
+  return true;
 }
 
 /**
@@ -3182,12 +3208,37 @@ async function saveTemplateText(content) {
     placeholder: t('例如：月結比對'),
   });
   if (name === null) return;
-  await templateRequest('POST', '', { name, content: body });
+  // Saved where it was worked out, so it comes back only where it can run.
+  // Promoting one to 「到處都能用」 is a click in the menu.
+  const saved = await templateRequest('POST', '', { name, content: body, host: host.meta.api });
+  if (!saved) return;
   addNote(t('已存成常用指令「{0}」。之後從 ＋ → 常用指令 叫出來。', name.trim()), 'note');
 }
 
 async function saveTemplate() {
   await saveTemplateText($('input').value);
+}
+
+/**
+ * Move a template between 「只在這裡」 and 「每個增益集都看得到」.
+ *
+ * ── Why this is a button and not a setting ──
+ * Every row saved before scoping existed became general, because we did not
+ * record where it came from and guessing would have been worse. This is how
+ * somebody fixes one — and it is also the honest answer to 「這則其實到處都能
+ * 用」, which is a real thing people will want for 「用條列式回我」 and similar.
+ *
+ * Flipping to 「只在這裡」 makes the row disappear from the other add-ins, so the
+ * note says which product it is now tied to rather than just 「已更新」.
+ */
+async function setTemplateScope(id, general) {
+  const tpl = state.templates.find((x) => x.id === id);
+  const to = general ? 'all' : host.meta.api;
+  const done = await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { host: to });
+  if (!done) return;
+  addNote(general
+    ? t('「{0}」改成每個增益集都看得到。', (tpl && tpl.name) || '')
+    : t('「{0}」改成只在這裡看得到。', (tpl && tpl.name) || ''), 'note');
 }
 
 /**
@@ -3671,6 +3722,8 @@ ${typed}` : `/${tpl.name}`) : '';
     }
     const use = e.target.closest('.tpl-use');
     if (use) { attachTemplate(use.dataset.id); return; }
+    const scope = e.target.closest('[data-scope]');
+    if (scope) { void setTemplateScope(scope.dataset.scope, !scope.dataset.general); return; }
     const edit = e.target.closest('[data-edit]');
     if (edit) { void editTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');

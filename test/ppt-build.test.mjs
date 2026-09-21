@@ -229,5 +229,269 @@ for (const [name, dark] of [['corporate', false], ['night', true]]) {
     `底 ${bg} 字 ${fg}——深色主題曾經做出淺藍底黑字，就是這條在擋`);
 }
 
+// ── Density elements: the KPI row, the callout, the footer band ──────────────
+//
+// 這三個是「一頁有上中下三層」的那三層。單獨看都只是幾個方塊，
+// 但參考簡報跟我們產出的差距，幾乎全在這裡——我們的頁面下半部是空的。
+
+slide = fakeSlide();
+await host.executeTool('ppt_add_kpi', { items: [
+  { value: '65%', label: '組織已導入', note: '2025 調查' },
+  { value: '$37B', label: '市場規模' },
+  { value: '5.1', label: '回收期（月）' },
+] });
+{
+  const tiles = alive().filter((s) => s.kind === 'geo' && s.height === 101);
+  ok('三個數據卡各有一張底板', tiles.length === 3, `${tiles.length} 張`);
+  ok('數據卡橫排不重疊',
+    tiles.every((t, i) => i === 0 || t.left >= tiles[i - 1].left + tiles[i - 1].width),
+    tiles.map((t) => `${Math.round(t.left)}+${Math.round(t.width)}`).join(' '));
+  ok('填滿內文寬度', Math.round(tiles[2].left + tiles[2].width) === 38 + 884,
+    `右緣 ${Math.round(tiles[2].left + tiles[2].width)}`);
+  // 一排同色是表格，一排不同色才是儀表板。
+  const bars = alive().filter((s) => s.kind === 'geo' && s.height === 4);
+  ok('每張卡頂有色條', bars.length === 3, `${bars.length} 條`);
+  ok('三條顏色不重複', new Set(bars.map((b) => b._fill)).size === 3,
+    bars.map((b) => b._fill).join(' '));
+  ok('數字用色條的顏色，不是內文黑',
+    alive().some((s) => s._text === '65%' && s._font.color === bars[0]._fill));
+  ok('數字比標籤大很多',
+    alive().find((s) => s._text === '65%')._font.size
+      > alive().find((s) => s._text === '組織已導入')._font.size * 2);
+  ok('沒有 note 的卡不會憑空生出小字', !texts().includes('undefined'));
+}
+
+// 五個以上就擠到放不下數字，擋掉比做出難看的東西好。
+{
+  slide = fakeSlide();
+  const r6 = await host.executeTool('ppt_add_kpi',
+    { items: Array.from({ length: 6 }, (_, i) => ({ value: `${i}` })) });
+  ok('超過五個會被擋下來', !r6.ok && /5/.test(r6.content), r6.content);
+}
+
+slide = fakeSlide();
+await host.executeTool('ppt_add_callout', { label: '洞察', text: '成長來自既有客戶，不是新客。' });
+{
+  const panel = alive().find((s) => s.kind === 'geo' && s.width === 884);
+  const spine = alive().find((s) => s.kind === 'geo' && s.width === 4);
+  ok('洞察框是一條滿內文寬的帶子', !!panel && panel.top >= 400,
+    panel ? `top ${panel.top}` : '沒有');
+  ok('左邊有色帶', !!spine && spine._fill === panel.lineFormat.color);
+  ok('小標和內文分開兩塊', texts().includes('洞察')
+    && texts().includes('成長來自既有客戶，不是新客。'));
+  const body = alive().find((s) => s._text.startsWith('成長'));
+  const lab = alive().find((s) => s._text === '洞察');
+  ok('內文讓出小標的位置', body.left > lab.left + 90,
+    `小標 ${lab.left} 內文 ${body.left}`);
+}
+
+slide = fakeSlide();
+await host.executeTool('ppt_add_callout', { text: '只有一句話。' });
+ok('沒有小標時內文從最左邊開始',
+  alive().find((s) => s._text === '只有一句話。').left === 38 + 16);
+
+// ── The page ground and the footer band ──────────────────────────────────────
+
+slide = fakeSlide();
+await build({ kind: 'bullets', title: 'T', body: ['一', '二'], page: 'P.03', footer: '資料來源：X',
+  footband: true });
+{
+  const full = alive().filter((s) => s.kind === 'geo' && s.width === 960);
+  const ground = full.find((s) => s.height === 540);
+  // 純白的投影片沒有「頁面」，所以白色卡片也就沒有邊——整頁看起來像直接打字上去的。
+  ok('內容頁有淡色底，不是純白', !!ground && ground._fill !== '#FFFFFF',
+    ground ? ground._fill : '沒有底');
+  ok('底色是第一個畫的，蓋不到別人',
+    slide._all.indexOf(ground) === 0, `第 ${slide._all.indexOf(ground)} 個`);
+  ok('頂條是雙色的',
+    full.some((s) => s.height === 5) && alive().some((s) => s.width === 288 && s.height === 2));
+  const band = full.find((s) => s.height === 46 && s.top === 494);
+  ok('滿版深色頁尾帶', !!band, full.map((s) => `${s.width}x${s.height}@${s.top}`).join(' '));
+  const foot = alive().find((s) => s._text === '資料來源：X');
+  ok('頁尾字在帶子裡而且是白的', foot && foot.top > 494 && foot._font.color === '#FFFFFF',
+    foot ? `top ${foot.top} color ${foot._font.color}` : '沒有');
+  // 左上跟右下同時印一次頁碼，是那種上了投影機才有人發現的重複。
+  ok('開了頁尾帶，頁碼只出現一次',
+    alive().filter((s) => s._text === 'P.03').length === 1);
+  ok('而且移到帶子裡', alive().find((s) => s._text === 'P.03').top > 494);
+}
+
+slide = fakeSlide();
+await build({ kind: 'bullets', title: 'T', body: ['一'], page: 'P.03', footer: '來源' });
+ok('沒開頁尾帶就維持原本的細線頁尾',
+  !alive().some((s) => s.height === 46 && s.top === 494)
+    && alive().some((s) => s.kind === 'geo' && s.height === 1 && s.top === 486));
+ok('沒開頁尾帶，頁碼還是在右上', alive().find((s) => s._text === 'P.03').top < 100);
+
+// ── Looks: the knob that actually changes the design ─────────────────────────
+//
+// 五個配色做出來是同一個版面的五種上色。使用者要的「文青風」「可愛風」不是顏色，
+// 是版式——所以這一段檢查的是：換 look 之後，版面的「結構」真的不一樣了。
+
+const LOOKS = ['business', 'editorial', 'literary', 'minimal', 'soft', 'bold', 'tech'];
+const shot = (args) => { slide = fakeSlide(); return build(args).then(() => ({
+  geos: alive().filter((s) => s.kind === 'geo'),
+  words: alive().filter((s) => s.kind === 'text'),
+  all: alive(),
+})); };
+
+{
+  const seen = new Map();
+  for (const name of LOOKS) {
+    const v = await shot({ kind: 'bullets', title: '標題', eyebrow: '01 章節',
+      body: ['一', '二'], look: name });
+    // 結構指紋：裝飾方塊的幾何 + 標題的字級與粗細 + 圓角與否。
+    const t = v.words.find((s) => s._text === '標題');
+    seen.set(name, JSON.stringify({
+      bands: v.geos.filter((s) => s.height <= 8)
+        .map((s) => `${Math.round(s.left)},${Math.round(s.top)},${Math.round(s.width)},${s.height}`).sort(),
+      title: `${t._font.size}/${t._font.bold}/${t.paraAlign || ''}`,
+    }));
+  }
+  const uniq = new Set(seen.values());
+  ok('每種版式的骨架都不一樣', uniq.size === LOOKS.length,
+    `只有 ${uniq.size} 種不同： `
+      + [...seen].map(([k, v]) => `${k}=${v}`).join(' | '));
+}
+
+// 沒有色條的版式就真的不能有色條，否則「極簡」只是換個名字的企業風。
+{
+  const v = await shot({ kind: 'bullets', title: 'T', body: ['一'], look: 'minimal' });
+  ok('極簡沒有任何頂條', !v.geos.some((s) => s.width === 960 && s.height <= 8));
+  ok('極簡也沒有標題底線', !v.geos.some((s) => s.width === 108));
+  const t = v.words.find((s) => s._text === 'T');
+  ok('極簡的標題不是粗體', t._font.bold === false);
+}
+{
+  const v = await shot({ kind: 'bullets', title: 'T', body: ['一'], look: 'editorial' });
+  ok('雜誌用細滿版線，不是短底線',
+    !v.geos.some((s) => s.width === 108)
+      && v.geos.some((s) => s.width === 884 && s.height === 1));
+  ok('雜誌的標題比企業風大',
+    v.words.find((s) => s._text === 'T')._font.size > 25);
+}
+{
+  const v = await shot({ kind: 'bullets', title: 'T', body: ['一'], look: 'soft' });
+  ok('柔和用圓角', v.geos.some((s) => s.geo === 'RoundRectangle'));
+  ok('柔和的色條是短的，不貼邊', v.geos.some((s) => s.geo === 'RoundRectangle'
+    && s.width < 200 && s.left > 0 && s.top > 0));
+}
+{
+  const v = await shot({ kind: 'bullets', title: 'T', eyebrow: '01', body: ['一'], look: 'bold' });
+  ok('大字在左上角有一塊實色', v.geos.some((s) => s.width === 300 && s.height === 34));
+  const eb = v.words.find((s) => s._text === '01');
+  ok('大字的章節號寫在那塊色上，用淺色字',
+    eb.top < 34 && eb._font.color === '#FFFFFF');
+}
+{
+  const v = await shot({ kind: 'bullets', title: 'T', eyebrow: '01 章節', page: 'P.02',
+    body: ['一'], look: 'tech' });
+  const ground = v.geos.find((s) => s.width === 960 && s.height === 540);
+  const lum = (c) => { const x = String(c).replace('#', '');
+    return (parseInt(x.slice(0, 2), 16) + parseInt(x.slice(2, 4), 16) + parseInt(x.slice(4, 6), 16)) / 765; };
+  ok('科技是深色底', lum(ground._fill) < 0.35, ground._fill);
+  // 深底配深字是這一版最容易出的 bug，而且只有在投影出來才看得到。
+  ok('深色底的標題是淺色字',
+    lum(v.words.find((s) => s._text === 'T')._font.color) > 0.5,
+    v.words.find((s) => s._text === 'T')._font.color);
+  const small = v.words.filter((s) => s._font.size === 11);
+  ok('深色底的章節號與頁碼也讀得到',
+    small.length === 2 && small.every((s) => lum(s._font.color) > 0.4),
+    small.map((s) => `${s._text}=${s._font.color}`).join(' '));
+}
+
+// 封面是整份簡報的第一印象，所以四種構圖一定要真的不同。
+{
+  const covers = new Map();
+  for (const name of LOOKS) {
+    slide = fakeSlide();
+    await build({ kind: 'title', title: '2026 趨勢', body: ['副標'], look: name });
+    const heading = alive().find((s) => s._text === '2026 趨勢');
+    covers.set(name, `${Math.round(heading.left)},${Math.round(heading.top)},`
+      + `${heading._font.size},${heading._font.bold}`);
+    const lum = (c) => { const x = String(c).replace('#', '');
+      return (parseInt(x.slice(0, 2), 16) * 0.299 + parseInt(x.slice(2, 4), 16) * 0.587
+        + parseInt(x.slice(4, 6), 16) * 0.114) / 255; };
+    // 底色取標題正下方那一層，而不是第一個 960 寬的方塊——band 版型的字是壓在
+    // 中間那塊圓角色板上，不是壓在頁面底色上。
+    const under = alive().filter((s) => s.kind === 'geo' && s._fill
+      && s.left <= heading.left && s.top <= heading.top
+      && s.left + s.width >= heading.left && s.top + s.height >= heading.top);
+    const bg = under.length ? under[under.length - 1]._fill : '#FFFFFF';
+    ok(`${name} 封面的字讀得到`,
+      Math.abs(lum(bg) - lum(heading._font.color)) > 0.4,
+      `底 ${bg} 字 ${heading._font.color}`);
+  }
+  ok('封面構圖至少有五種', new Set(covers.values()).size >= 5,
+    [...covers].map(([k, v]) => `${k} ${v}`).join(' | '));
+}
+
+// 風格＝骨架＋顏色。只換骨架就是使用者說「文青一點」卻拿到企業藍配大紅的原因。
+{
+  const ink = async (name) => {
+    const v = await shot({ kind: 'bullets', title: 'T', body: ['一'], look: name });
+    return (v.geos.find((s) => s.width === 960 && s.height === 540) || {})._fill;
+  };
+  const business = await ink('business');
+  ok('文青不會用到企業風的底色', await ink('literary') !== business);
+  ok('柔和也不會', await ink('soft') !== business);
+  // 但兩個知識都要成立：明講 theme 的時候，使用者說了算。
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'literary', theme: 'corporate' });
+  ok('明確指定 theme 的時候使用者說了算',
+    alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540)._fill
+      === business);
+}
+
+// 文青的判準不是「有沒有比較好看」，是三件可以驗的事：暖紙滿版、明體標題、
+// 沒有鮮豔的企業色。少任何一件，使用者看到的就還是商務簡報。
+{
+  const v = await shot({ kind: 'bullets', title: '標題', eyebrow: '前言', body: ['一'],
+    look: 'literary' });
+  const ground = v.geos.find((s) => s.width === 960 && s.height === 540);
+  const sat = (c) => {
+    const x = String(c).replace('#', '');
+    const r = parseInt(x.slice(0, 2), 16), g = parseInt(x.slice(2, 4), 16), b = parseInt(x.slice(4, 6), 16);
+    const hi = Math.max(r, g, b), lo = Math.min(r, g, b);
+    return hi === 0 ? 0 : (hi - lo) / hi;
+  };
+  ok('文青的底是暖色紙張，不是白的', ground._fill !== '#FFFFFF' && sat(ground._fill) > 0.02,
+    ground._fill);
+  ok('而且是滿版的，沒有白邊', ground.left === 0 && ground.top === 0);
+  const t = v.words.find((s) => s._text === '標題');
+  ok('標題用明體', /明體/.test(t._font.name || ''), String(t._font.name));
+  ok('內文不用明體',
+    v.words.filter((s) => s._text !== '標題').every((s) => !/明體/.test(s._font.name || '')));
+  ok('沒有任何高彩度的色塊',
+    v.geos.filter((s) => s._fill).every((s) => sat(s._fill) < 0.35),
+    v.geos.filter((s) => s._fill).map((s) => s._fill).join(' '));
+  // 邊框讓留白變成「有意的邊」，而不是「沒填滿的空」——使用者嫌空的那一頁就是沒有它。
+  ok('有一圈細框線', v.geos.some((s) => s.lineFormat.visible && !s._fill
+    && s.width > 800 && s.height > 400));
+}
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: '封面', body: ['副標'], look: 'literary' });
+  const ground = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
+  ok('文青封面也是滿版暖紙，不是深色滿版', ground && ground._fill !== '#FFFFFF');
+  ok('文青封面的大標一樣是明體',
+    /明體/.test(alive().find((s) => s._text === '封面')._font.name || ''));
+}
+
+// 卡片也要跟著版式走，否則一頁的骨架是極簡、卡片卻還是企業藍的實色塊。
+{
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_cards',
+    { cards: [{ title: 'A' }, { title: 'B' }], look: 'soft' });
+  ok('柔和的卡片是圓角',
+    alive().filter((s) => s.geo === 'RoundRectangle').length >= 2);
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_kpi', { items: [{ value: '1' }], look: 'minimal' });
+  const tile = alive().find((s) => s.height === 101);
+  ok('極簡的數據卡不填色也不描邊',
+    tile._fill === null && tile.lineFormat.visible === false,
+    `fill ${tile._fill} line ${tile.lineFormat.visible}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
