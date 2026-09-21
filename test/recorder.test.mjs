@@ -136,9 +136,23 @@ ok('不同工作表不是同一個目標',
   const kept = prune([{ tool: 'excel_compare_source', args: { sheet: 'A' } }]);
   const p = buildPrompt(kept, pruneSummary([...kept, { tool: 'x', args: {}, undone: true }], kept));
   ok('要求寫成可以直接說出口的一段話', p.includes('直接說出口'));
-  ok('要求把具體值換成佔位', p.includes('佔位'));
-  ok('要求只寫最短路徑，不要寫摸索過程', p.includes('最短路徑'));
   ok('有講剔除了幾步', p.includes('共剔除 1 步'));
+
+  // 實測發現的問題：第一版只叫模型看工具清單，還加了一句「不要把摸索過程
+  // 寫進去」。模型照字面做——把對話裡的東西全丟了，寫出一份沒有工作表名稱、
+  // 沒有 Key、沒有單位規則的清單，比直接存 AI 原本的回覆還糟。
+  // 工具紀錄只有「做了什麼」，「為什麼」全在對話裡。
+  ok('明講對話本身也是材料', p.includes('這整段對話'));
+  ok('明講兩份材料都要用', p.includes('兩份都要用'));
+  ok('點名工作表要寫進去', p.includes('工作表'));
+  ok('點名 Key／對應關係要寫進去', p.includes('Key'));
+  ok('點名單位與期別規則要寫進去', p.includes('單位換算') && p.includes('期別'));
+  ok('點名驗證方式要寫進去', p.includes('確認結果是對的'));
+  // 換佔位只該換「這一次的值」——規則和欄位名不是值。
+  ok('規則與欄位名不可以被當成佔位換掉',
+    p.includes('規則、欄位名稱、工作表名稱不是值'));
+  // 「摸索過程」限縮成試錯，而不是泛指對話。
+  ok('剔除的只有試錯，不是整段對話', p.includes('試錯') && !p.includes('最短路徑'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -161,23 +161,52 @@ export function describe(kept) {
 /**
  * The instruction that asks for the write-up.
  *
- * Written here rather than inline at the call site because it is the whole
- * feature: everything above only decides WHICH steps to hand over, and this
- * decides what gets made of them. The three rules it carries are the three ways
- * a generated template goes wrong — too specific to reuse, too vague to follow,
- * or quietly carrying this month's data into next month.
+ * ── The pruned log is HALF the material, and the first version forgot that ──
+ * Everything above decides which steps survived. What it cannot produce is why
+ * any of them were the right steps: which sheet is the source and which is the
+ * one being filled, that the Key is Plant + MRP ID + PN Model, that quantities
+ * are in thousands and have to be multiplied by 1000, that a ship date after
+ * Wednesday rolls to the following week. None of that is in a tool call. All of
+ * it is in the conversation, which the agent still has in front of it.
+ *
+ * The first version of this prompt ended with 「只寫最短路徑，不要把我摸索的過程
+ * 寫進去」 and the model read it exactly as written: it dropped everything that
+ * came from the conversation and wrote up the tool list alone. The result named
+ * no sheets and carried no rules — measurably WORSE than saving the agent's own
+ * reply verbatim, which at least mentioned the sheets.
+ *
+ * Two different things had been collapsed into one rule:
+ *
+ *   - dead ends (failed, declined, undone) — genuinely worth dropping, and
+ *     already gone before the model sees the list
+ *   - domain knowledge (sheets, keys, units, date rules, how to verify) — the
+ *     entire reason the procedure is worth saving
+ *
+ * So the prompt now names both sources explicitly and lists what must survive.
+ * The pruning still earns its place: it is what stops the write-up reproducing
+ * 「do it wrong, then fix it」. It was never meant to be the only input.
  */
 export function buildPrompt(kept, summary) {
   const dropped = summary.total - summary.kept;
-  return '請把我剛剛在這個對話裡實際做過的事，整理成一段**之後可以重複使用的指令**。\n\n'
-    + '下面是實際執行過的步驟（已經自動剔除失敗、被我拒絕、以及被我復原的步驟'
-    + (dropped > 0 ? `，共剔除 ${dropped} 步` : '')
-    + '）：\n\n'
+  return '請把我剛剛在這個對話裡做的事，整理成一段**之後可以重複使用的指令**。\n\n'
+    + '【你手上有兩份材料，兩份都要用】\n\n'
+    + '**一、上面這整段對話。** 裡面有「為什麼這樣做」——用了哪幾張工作表、'
+    + 'Key 是哪幾個欄位組成的、單位怎麼換算、日期或期別怎麼切、有哪些對照表、'
+    + '做完怎麼驗證。**這些才是這段指令的價值所在**，沒有它們，'
+    + '下次照著做的人會重新踩一次同樣的坑。\n\n'
+    + '**二、下面這份實際執行過的步驟。** 已經自動剔除失敗、被我拒絕、以及被我復原的步驟'
+    + (dropped > 0 ? `（共剔除 ${dropped} 步）` : '')
+    + '，所以它代表「最後真正對的那條路」，不是我摸索的全程。\n\n'
     + describe(kept)
-    + '\n\n寫的時候請遵守：\n'
+    + '\n\n【寫的時候】\n\n'
     + '1. **寫成我下次可以直接說出口的一段話**，不是步驟編號清單，也不要提到工具名稱。\n'
-    + '2. **把這次的具體值換成佔位**——寫「用本月的檔案」而不是「用 2024-03-報表.xlsx」，'
-    + '但**保留那些不會變的設定**，例如用哪幾個欄位當鍵、要不要忽略大小寫。\n'
-    + '3. **只寫最短路徑**。上面的步驟已經是結果，不要把我摸索的過程寫進去。\n\n'
+    + '2. **這些一定要寫進去**：\n'
+    + '   - 用到哪幾張工作表，各自扮演什麼角色（哪張是來源、哪張是要填的、哪張是規則表）\n'
+    + '   - Key 或對應關係怎麼組（哪幾個欄位）\n'
+    + '   - 單位換算、日期與期別規則、任何查表或推算邏輯\n'
+    + '   - 做完之後要怎麼確認結果是對的\n'
+    + '3. **只有「這一次的值」換成佔位**——檔名、月份、這次的數字。'
+    + '**規則、欄位名稱、工作表名稱不是值，要原樣留著。**\n'
+    + '4. 不要寫我試錯、走回頭路的過程——那些已經從上面的清單剔除了。\n\n'
     + '只要輸出那段指令本身，前後不要加說明。';
 }
