@@ -96,6 +96,15 @@
               fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
         <circle cx="10" cy="14.2" r=".95" fill="currentColor"/>
       </g>
+      <g id="i-pencil">
+        <path d="M13.3 4.4l2.3 2.3M4 16l.85-3.2 8.1-8.1a1.25 1.25 0 011.77 0l1.4 1.4a1.25 1.25 0 010 1.77l-8.1 8.1L4.85 16.85A.6.6 0 014 16z"
+              fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <g id="i-trash">
+        <path d="M3.6 5.6h12.8M8 5.6V4.2a1 1 0 011-1h2a1 1 0 011 1v1.4M5.6 5.6l.68 10.1a1.2 1.2 0 001.2 1.1h5.04a1.2 1.2 0 001.2-1.1l.68-10.1"
+              fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M8.6 8.6v5M11.4 8.6v5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      </g>
       <g id="i-warn">
         <path d="M10 3.2L18 16.8H2L10 3.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
         <path d="M10 8v3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
@@ -385,51 +394,52 @@
              Sits in the ＋ menu because that is already where "bring something
              into this message" lives, and a seventh icon in the top bar would
              not fit a 350px pane. -->
-        <button type="button" class="src-item" data-src="tpl" id="src-tpl" role="menuitem">
+        <button type="button" class="src-item" data-src="cmd" id="src-cmd" role="menuitem">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
-          <span class="src-name" data-t="常用指令">常用指令</span>
-        </button>
-        <!-- Hidden until the server says this host has skills to offer. An entry
-             that opens an empty list is worse than no entry: it reads as broken
-             rather than as "not set up yet". Same rule the model picker follows. -->
-        <button type="button" class="src-item" data-src="skill" id="src-skill" role="menuitem" hidden>
-          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-shield"/></svg>
-          <span class="src-name" data-t="使用技能">使用技能</span>
+          <span class="src-name" data-t="指令與技能">指令與技能</span>
           <span id="src-skill-cur" class="src-cur"></span>
         </button>
         <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
       </div>
 
-      <!-- 使用技能 (PRD 3.1). 留白＝AI 自動調度；選一個就直接交給它處理。 -->
-      <div id="skill-menu" class="src-menu" hidden role="menu" aria-labelledby="src-skill">
-        <div id="skill-list"></div>
-        <div id="skill-note" class="src-note"></div>
-      </div>
+      <!--
+        指令與技能 — one menu, reached with 「/」 or from the ＋ menu.
 
-      <!-- 個人常用指令 (PRD 3.5). Opens upward from the composer like the ＋ menu,
-           and for the same reason. Applying one fills the composer rather than
-           sending it, because AC-42 requires the text to arrive somewhere it can
-           still be edited — a saved procedure is a starting point, not a macro. -->
-      <div id="tpl-menu" class="src-menu" hidden role="menu" aria-labelledby="src-tpl">
-        <!-- Only appears once the list is long enough to be worth searching. -->
-        <input id="tpl-find" class="tpl-find" type="text" hidden autocomplete="off"
-               placeholder="搜尋常用指令…" data-t-ph="搜尋常用指令…"
-               aria-label="搜尋常用指令" data-t-al="搜尋常用指令" />
-        <div id="tpl-list"></div>
+        Merged because that is how people look for them: 「what can I invoke?」 is
+        one question, not two. But the two halves stay SEPARATELY LABELLED, which
+        PRD 3.5 asks for and which is not decoration — a skill carries tools,
+        connectors and a may-skip-confirmation flag, so publishing one is granting
+        a permission and only IT may. A 常用指令 is text its owner wrote. A list
+        that blurred those would be a list that hides who is trusting whom.
+
+        They also BEHAVE differently, and the sections have to make that legible:
+        picking a skill sets a mode for the conversation and sticks; picking a
+        saved prompt attaches one reference to the next message and is gone after
+        it is sent.
+      -->
+      <div id="cmd-menu" class="src-menu" hidden role="menu" aria-labelledby="src-cmd">
+        <div id="cmd-list"></div>
         <button type="button" id="tpl-save" class="src-item tpl-add">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
           <span class="src-name" data-t="把輸入框的內容存成常用指令">把輸入框的內容存成常用指令</span>
         </button>
-        <!-- Always visible, disabled until the agent has actually done something.
-             It was hidden until then, and that was wrong: a feature nobody can
-             see is a feature nobody finds. Greyed out with a reason teaches what
-             it is for; absent teaches nothing. -->
         <button type="button" id="tpl-record" class="src-item tpl-add">
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-clock"/></svg>
           <span class="src-name" data-t="把剛剛做過的流程整理成常用指令">把剛剛做過的流程整理成常用指令</span>
         </button>
-        <div id="tpl-note" class="src-note"></div>
+        <div id="cmd-note" class="src-note"></div>
       </div>
+
+      <!--
+        The saved prompt riding along with the next message.
+
+        A reference, not a paste. A worked-out procedure runs to a couple of
+        thousand characters and dropping that into a 350px composer buries the
+        one line the person actually wants to add this time. AC-42 asks for the
+        content to be editable, and it is: clicking the chip expands it into the
+        composer, which is the same affordance one step later.
+      -->
+      <div id="tpl-chip-row" class="tpl-chip-row" hidden></div>
 
       <!-- Thumbnails of images pasted into the composer, and chips for uploaded
            files. Hidden until there is one; cleared when the message goes. -->

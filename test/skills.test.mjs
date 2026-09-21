@@ -53,14 +53,22 @@ for (const host of ['excel', 'word', 'ppt']) {
 
 // ── 窗格 ────────────────────────────────────────────────────────────────────
 {
-  const row = (html.match(/<button[^>]*id="src-skill"[^>]*>/) || [''])[0];
-  ok('技能那一列預設是隱藏的', row.includes('hidden'));
-  ok('技能那一列是動作列，不是資料來源開關', /role="menuitem"/.test(row));
+  const row = (html.match(/<button[^>]*id="src-cmd"[^>]*>/) || [''])[0];
+  ok('＋ 選單裡有「指令與技能」這一列', row.length > 0);
+  ok('那一列是動作列，不是資料來源開關', /role="menuitem"/.test(row));
 
-  const fn = (app.match(/function renderSkillMenu\(\)[\s\S]*?\n}/) || [''])[0];
-  ok('沒有技能可選時整列收起來，而不是開一張空清單',
-    /row\.hidden = !state\.skills\.length/.test(fn));
-  ok('清單第一項是「自動調度」，而且是預設', fn.includes("id: ''") && fn.includes('自動調度'));
+  // 技能與常用指令合併成一個 / 選單，但 PRD 3.5 要求「介面上分開命名」——
+  // 技能綁工具與權限，常用指令只是文字，混成一區就看不出誰在信任誰。
+  const fn = (app.match(/function renderCmdMenu\(\)[\s\S]*?\n}/) || [''])[0];
+  ok('兩者分區標示', fn.includes('公司技能') && fn.includes('我的常用指令'));
+  // 說明從列上移到 tooltip：一眼要看的是「這是誰的」，不是它做什麼。
+  ok('技能的說明移到 tooltip，不佔版面', fn.includes('title="${escapeHtml(sk.description'));
+  ok('用顏色分區，不是靠文字', fn.includes('is-skill') && fn.includes('is-mine'));
+  ok('沒有技能時整個技能區不出現，而不是留一張空清單',
+    /if \(state\.skills\.length\) \{/.test(fn));
+  ok('技能區第一項是「自動調度」，而且是預設', fn.includes("id: ''") && fn.includes('自動調度'));
+  // 選技能是設定這場對話的模式（會留著），選常用指令是掛一則到下一封訊息。
+  ok('技能用 radio 語意，常用指令不是', fn.includes('role="menuitemradio"'));
 
   ok('送出訊息時帶上 skillId', /skillId: state\.skill \|\| undefined/.test(app));
   ok('請求會帶 host，不是整包拿回來自己篩',

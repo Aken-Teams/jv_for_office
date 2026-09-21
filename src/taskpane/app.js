@@ -138,6 +138,13 @@ const state = {
   templates: [],
   /** The applied template, parked for the length of one run. See sentAttachments. */
   sentTemplateId: '',
+  /**
+   * The saved prompt riding along with the next message, as a reference.
+   *
+   * Held whole rather than as an id, so sending does not depend on the list
+   * still being loaded — and so expanding it into the composer is instant.
+   */
+  attachedTemplate: null,
   templateMax: 50,
   /** Set when the endpoint could not be read, so an empty list is not mistaken for "you have none". */
   templateError: '',
@@ -979,8 +986,12 @@ function renderAttachments() {
 function syncSendButton() {
   const input = $('input');
   if (!input) return;
-  const has = !!input.value.trim() || state.attachments.length > 0
-    || state.files.some(f => f.status === 'ready');
+  // A half-typed 「/月結」 is a query, not a question. Letting the send button
+  // light up invites sending it, and what arrives at the agent is a slash and a
+  // fragment of a name.
+  const has = !inSlashMode() && (!!input.value.trim() || state.attachments.length > 0
+    || !!state.attachedTemplate
+    || state.files.some(f => f.status === 'ready'));
   $('send').disabled = !has || state.streaming;
 }
 
@@ -2359,7 +2370,10 @@ function toggleSourceMenu(show) {
   const open = show === undefined ? menu.hidden : show;
   menu.hidden = !open;
   $('plus').setAttribute('aria-expanded', String(open));
-  if (open) renderSourceMenu();
+  // One menu at a time. Both open together is two overlapping panels in a 350px
+  // column, and the ＋ menu is where 「/」 is reached FROM — so opening it while
+  // the command list is up shows the door next to the room it leads into.
+  if (open) { toggleCmdMenu(false); renderSourceMenu(); }
 }
 
 /**
@@ -2426,67 +2440,283 @@ async function loadTemplates() {
     state.templates = [];
     state.templateError = t('讀不到常用指令（{0}）。', e.message);
   }
-  renderTemplateMenu();
+  renderCmdMenu();
 }
 
-function renderTemplateMenu() {
-  const list = $('tpl-list');
+/**
+ * 使用技能 (PRD 3.1) — what IT has published for THIS host.
+ *
+ * ── Why the list is filtered by host ──
+ * Every skill written before the add-ins existed generates a NEW FILE —
+ * pptx-gen, docx-gen, xlsx-gen — which is the opposite of what an add-in does.
+ * Offering 「PowerPoint Generator」 inside Excel would not be untidy, it would be
+ * wrong: somebody picks it and gets a download instead of a changed workbook. So
+ * the server only returns skills that declare this surface.
+ */
+async function loadSkills() {
+  try {
+    const res = await fetch(
+      `${state.apiBase}/api/skills?host=${encodeURIComponent(host.meta.api)}`,
+      { headers: { Authorization: `Bearer ${state.token}` } },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) { logout(err.error || t('登入已過期，請重新登入。')); return; }
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    state.skills = Array.isArray(body) ? body : [];
+  } catch {
+    // Silent: an older server predates the host filter, and a red note about a
+    // feature nobody asked for yet is noise. The section simply stays empty.
+    state.skills = [];
+  }
+  // A skill chosen before a server change may be gone now. Left set, it would be
+  // rejected on every turn by a server that no longer knows the id.
+  if (state.skill && !state.skills.some((sk) => sk.id === state.skill)) state.skill = '';
+  renderCmdMenu();
+}
+
+/**
+ * The 指令與技能 list: skills on top, saved prompts under them.
+ *
+ * One list, two sections, and the sections are the point. A skill is published
+ * by IT and carries tools and permissions; a saved prompt is text its owner
+ * wrote and can do nothing they could not already do. PRD 3.5 asks for that
+ * distinction to be visible, and it should be — a person picking off this list
+ * is choosing between 「something the company gave me」 and 「something I wrote」,
+ * and those carry different trust.
+ *
+ * They also behave differently and the rows say so: a skill sticks for the
+ * conversation, a prompt rides along with the next message only.
+ */
+function renderCmdMenu() {
+  const list = $('cmd-list');
   if (!list) return;
 
-  // Filtered by whatever is in the menu's own search box, if it has one. Fifty
-  // saved prompts is the documented ceiling and scrolling fifty rows in a 350px
-  // pane is not finding, it is hunting.
-  const q = ($('tpl-find') && $('tpl-find').value || '').trim().toLowerCase();
-  const shown = q
-    ? state.templates.filter((tpl) => `${tpl.name}
-${tpl.content}`.toLowerCase().includes(q))
-    : state.templates;
-  const find = $('tpl-find');
-  if (find) find.hidden = state.templates.length < 5;
+  const q = slashQuery();
+  const hit = (a, b) => !q || `${a}\n${b || ''}`.toLowerCase().includes(q);
 
-  if (state.templateError) {
-    list.innerHTML = `<div class="tpl-empty">${escapeHtml(state.templateError)}</div>`;
-  } else if (q && !shown.length) {
-    list.innerHTML = `<div class="tpl-empty">${escapeHtml(t('沒有符合「{0}」的常用指令。', q))}</div>`;
-  } else if (!state.templates.length) {
-    list.innerHTML = `<div class="tpl-empty">${escapeHtml(
-      t('還沒有常用指令。兩種存法：把說法打進輸入框存起來，'
-        + '或是先讓 AI 做一次，再用下面的「整理成常用指令」把流程存下來。'))}</div>`;
-  } else {
-    list.innerHTML = shown.map((tpl) => `
-      <div class="tpl-row">
-        <button type="button" class="tpl-use" data-id="${escapeHtml(tpl.id)}">
-          <span class="tpl-name">${escapeHtml(tpl.name)}</span>
-          <span class="tpl-peek">${escapeHtml(firstLine(tpl.content))}</span>
-        </button>
-        <button type="button" class="tpl-act" data-edit="${escapeHtml(tpl.id)}"
-                title="${escapeHtml(t('改名'))}">${escapeHtml(t('改名'))}</button>
-        <button type="button" class="tpl-act danger" data-del="${escapeHtml(tpl.id)}"
-                title="${escapeHtml(t('刪除'))}">${escapeHtml(t('刪除'))}</button>
-      </div>`).join('');
+  const skills = state.skills.filter((sk) => hit(sk.name, sk.description));
+  const templates = state.templates.filter((tpl) => hit(tpl.name, tpl.content));
+
+  const parts = [];
+
+  // 自動調度 only belongs here when there is something to switch away from.
+  if (state.skills.length) {
+    parts.push(`<div class="cmd-head is-skill">${escapeHtml(t('公司技能'))}</div>`);
+    const auto = { id: '', name: t('自動調度'), description: t('讓 AI 自己判斷要用哪個做法。') };
+    for (const sk of (q ? skills : [auto, ...skills])) {
+      parts.push(`
+        <button type="button" class="src-item cmd-skill" data-skill="${escapeHtml(sk.id)}"
+                role="menuitemradio" aria-checked="${state.skill === sk.id}"
+                title="${escapeHtml(sk.description || sk.name)}">
+          <span class="src-name">${escapeHtml(sk.name)}</span>
+          <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>`);
+    }
   }
 
-  const note = $('tpl-note');
+  parts.push(`<div class="cmd-head is-mine">${escapeHtml(t('我的常用指令'))}</div>`);
+  if (state.templateError) {
+    parts.push(`<div class="tpl-empty">${escapeHtml(state.templateError)}</div>`);
+  } else if (!templates.length) {
+    parts.push(`<div class="tpl-empty">${escapeHtml(q
+      ? t('沒有符合「{0}」的常用指令。', q)
+      : t('還沒有常用指令。兩種存法：把說法打進輸入框存起來，'
+        + '或是先讓 AI 做一次，再用下面的「整理成常用指令」把流程存下來。'))}</div>`);
+  } else {
+    for (const tpl of templates) {
+      parts.push(`
+        <div class="tpl-row cmd-mine">
+          <button type="button" class="tpl-use" data-id="${escapeHtml(tpl.id)}"
+                  title="${escapeHtml(firstLine(tpl.content))}">
+            <span class="tpl-name">${escapeHtml(tpl.name)}</span>
+            <span class="tpl-peek">${escapeHtml(firstLine(tpl.content))}</span>
+          </button>
+          <button type="button" class="tpl-act" data-edit="${escapeHtml(tpl.id)}"
+                  title="${escapeHtml(t('改名'))}" aria-label="${escapeHtml(t('改名'))}">
+            <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-pencil"/></svg>
+          </button>
+          <button type="button" class="tpl-act danger" data-del="${escapeHtml(tpl.id)}"
+                  title="${escapeHtml(t('刪除'))}" aria-label="${escapeHtml(t('刪除'))}">
+            <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-trash"/></svg>
+          </button>
+        </div>`);
+    }
+  }
+  list.innerHTML = parts.join('');
+
+  const note = $('cmd-note');
   if (note) {
+    // Short on purpose. The full explanation of who may publish what belongs in
+    // the section labels, which are always visible; repeating it underneath
+    // every time turns a list into a document.
     note.textContent = state.templateError
       ? ''
-      : t('{0}/{1} 則 · 只有你看得到，不能分享或匯出。', state.templates.length, state.templateMax);
+      : t('{0}/{1} 則 · 只有你看得到', state.templates.length, state.templateMax);
   }
+  const cur = $('src-skill-cur');
+  const chosen = state.skills.find((sk) => sk.id === state.skill);
+  if (cur) cur.textContent = chosen ? chosen.name : '';
+
   const save = $('tpl-save');
-  if (save) save.disabled = !$('input').value.trim();
+  if (save) save.disabled = !$('input').value.trim() || inSlashMode();
   syncRecordButton();
+}
+
+/** One place for the three writes, so they report failure the same way. */
+async function templateRequest(method, suffix, body) {
+  try {
+    const res = await fetch(`${state.apiBase}/api/prompt-templates${suffix}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${state.token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) { logout(err.error || t('登入已過期，請重新登入。')); return; }
+      // The server's sentence is the useful one — it distinguishes "over the
+      // limit" from "not yours" from "blocked by the scanner", and those need
+      // different things from the person.
+      addNote(err.error || t('操作失敗（{0}）。', res.status), 'err');
+      return;
+    }
+  } catch (e) {
+    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
+    return;
+  }
+  await loadTemplates();
+}
+
+/**
+ * What the person is filtering by, read straight off the composer.
+ *
+ * ── Why there is no search box any more ──
+ * There was one, and it created two places to type. The menu could be opened
+ * with 「/」 — which leaves the caret in the composer — while the filtering
+ * happened in a field inside the menu, and that field only appeared once the
+ * list was long enough. With a short list the box was hidden, so pressing 「/」
+ * and typing put the text in the composer and left the menu showing everything.
+ * It looked like the filter was broken. It was not; there were simply two
+ * inputs and the keystrokes went to the wrong one.
+ *
+ * One input now. The menu is open exactly when the composer starts with 「/」,
+ * and everything after the slash is the query — the model every slash menu
+ * uses, and the one people already have in their fingers.
+ */
+function slashQuery() {
+  const v = $('input').value;
+  return v.startsWith('/') ? v.slice(1).trim().toLowerCase() : '';
+}
+
+/** Is the composer in slash mode? The menu's visibility follows this, not the reverse. */
+const inSlashMode = () => $('input').value.startsWith('/');
+
+function toggleCmdMenu(show) {
+  const menu = $('cmd-menu');
+  if (!menu) return;
+  menu.hidden = !show;
+  if (show) {
+    toggleSourceMenu(false);
+    // Opened from the ＋ menu rather than by typing: enter slash mode so the two
+    // routes behave alike — but ONLY when there is nothing to lose. Someone who
+    // has already written half a question and then goes looking for a saved
+    // prompt to attach must not have that question replaced by a slash. They get
+    // the list without the filter, which is browsing rather than searching, and
+    // clicking still works.
+    const input = $('input');
+    if (!input.value.trim()) {
+      input.value = '/';
+      autoGrow(input);
+      renderCharCount(input);
+    }
+    input.focus();
+    renderCmdMenu();
+    syncSendButton();
+  }
+}
+
+/** Leave slash mode, taking the 「/query」 out of the composer with it. */
+function closeSlash() {
+  const input = $('input');
+  if (input.value.startsWith('/')) {
+    input.value = '';
+    autoGrow(input);
+    renderCharCount(input);
+  }
+  toggleCmdMenu(false);
+  syncSendButton();
+}
+
+/**
+ * Attach a saved prompt to the next message, as a reference.
+ *
+ * ── Why a chip and not the text ──
+ * A worked-out procedure is a couple of thousand characters. Dropped into a
+ * 350px composer it fills the box, hides the one line the person wants to add
+ * this time, and turns 「use my月結比對 flow on the March file」 into scrolling.
+ * The chip keeps the composer for what changes.
+ *
+ * AC-42 asks for the content to be editable, and it is — clicking the chip
+ * expands it into the composer, which is the paste behaviour one step later and
+ * only when it is wanted. What gets SENT is identical either way: the saved text
+ * first, then whatever was typed.
+ */
+function attachTemplate(id) {
+  const tpl = state.templates.find((x) => x.id === id);
+  if (!tpl) return;
+  state.attachedTemplate = tpl;
+  state.appliedTemplateId = tpl.id;
+  closeSlash();
+  renderTemplateChip();
+  $('input').focus();
+  syncSendButton();
+}
+
+/** Put the attached prompt's full text in the composer, for editing. */
+function expandTemplate() {
+  const tpl = state.attachedTemplate;
+  if (!tpl) return;
+  const input = $('input');
+  const typed = input.value.trim();
+  input.value = typed ? `${tpl.content}\n\n${typed}` : tpl.content;
+  state.attachedTemplate = null;
+  renderTemplateChip();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  autoGrow(input);
+  renderCharCount(input);
+  syncSendButton();
+}
+
+function renderTemplateChip() {
+  const row = $('tpl-chip-row');
+  if (!row) return;
+  const tpl = state.attachedTemplate;
+  row.hidden = !tpl;
+  row.innerHTML = tpl
+    ? `<span class="tpl-chip">
+         <button type="button" class="tpl-chip-name" data-expand
+                 title="${escapeHtml(t('點一下展開成可編輯的文字'))}">${escapeHtml(tpl.name)}</button>
+         <button type="button" class="tpl-chip-drop" data-drop
+                 aria-label="${escapeHtml(t('移除這則常用指令'))}">×</button>
+       </span>`
+    : '';
 }
 
 /**
  * Strip markdown, for places that show a PREVIEW rather than the text itself.
  *
  * What gets saved is always the raw markdown — that is what the model reads best
- * and what has to come back unchanged when the template is applied. But the
- * one-line peek under a template's name, and the name suggested when saving,
- * are both read by a person. A procedure the agent wrote opens with 「## 流程」
- * or 「**先讀三張規則表**」, and offering 「## 流程」 as a name, or showing
- * 「**先讀三張規則表**」 as the summary line, is showing somebody the punctuation
- * instead of the sentence.
+ * and what has to come back unchanged when the prompt is used. But the one-line
+ * peek under a saved prompt's name, and the name suggested when saving, are both
+ * read by a person. A procedure the agent wrote opens with 「## 流程」 or
+ * 「**先讀三張規則表**」, and offering 「## 流程」 as a name is showing somebody
+ * the punctuation instead of the sentence.
  */
 function plainText(s) {
   return String(s || '')
@@ -2506,11 +2736,9 @@ function plainText(s) {
  * The first line that actually says something.
  *
  * Not simply the first non-empty one. A procedure the agent wrote opens with a
- * section label — 「## 流程」, 「## 步驟」 — and once the markdown is stripped that
- * becomes 「流程」, which is a heading doing its job and a summary doing none.
- * Four characters is the line between a label and a sentence; anything shorter
- * is skipped in favour of what comes after it. A heading that IS descriptive
- * （「月結比對流程」）clears the bar and gets used, which is the right answer too.
+ * section label — 「## 流程」 — and once the markdown is stripped that becomes
+ * 「流程」, which is a heading doing its job and a summary doing none. Four
+ * characters is the line between a label and a sentence.
  */
 const firstLine = (s) => {
   const lines = plainText(s).split('\n').map((l) => l.trim()).filter(Boolean);
@@ -2527,23 +2755,6 @@ function suggestName(content) {
   return (cut || line).slice(0, 20);
 }
 
-/** Apply one: the text lands in the composer, where it can still be changed. */
-function applyTemplate(id) {
-  const tpl = state.templates.find((x) => x.id === id);
-  if (!tpl) return;
-  const input = $('input');
-  input.value = tpl.content;
-  // Remembered so the turn can be attributed in the audit log even after the
-  // person edits the text — which is the normal case, not an edge one.
-  state.appliedTemplateId = tpl.id;
-  toggleTemplateMenu(false);
-  input.focus();
-  // Caret at the end: the usual next move is to append 「這次用三月的檔案」.
-  input.setSelectionRange(input.value.length, input.value.length);
-  autoGrow(input);
-  renderCharCount(input);
-  syncSendButton();
-}
 
 /**
  * Save some text as a template. Used by both ways in.
@@ -2698,7 +2909,8 @@ function recordToTemplate() {
     return;
   }
   const summary = pruneSummary(state.recorded, kept);
-  toggleTemplateMenu(false);
+  // closeSlash, so a 「/」 left in the composer does not survive into the run.
+  closeSlash();
   const dropped = summary.total - summary.kept;
   if (dropped > 0) {
     // Said out loud rather than silently shrinking the list: somebody who did
@@ -2745,7 +2957,7 @@ function syncRecordButton() {
 async function renameTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
   if (!tpl) return;
-  toggleTemplateMenu(false);
+  toggleCmdMenu(false);
   const name = await askName({ title: t('改成什麼名字？'), value: tpl.name });
   if (name === null) return;
   await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { name });
@@ -2754,126 +2966,12 @@ async function renameTemplate(id) {
 async function deleteTemplate(id) {
   const tpl = state.templates.find((x) => x.id === id);
   if (!tpl) return;
-  toggleTemplateMenu(false);
+  toggleCmdMenu(false);
   if (!await askYesNo(t('刪除常用指令「{0}」？這個動作沒辦法復原。', tpl.name), t('刪除'))) return;
   await templateRequest('DELETE', `/${encodeURIComponent(id)}`, null);
 }
 
-/** One place for the three writes, so they report failure the same way. */
-async function templateRequest(method, suffix, body) {
-  try {
-    const res = await fetch(`${state.apiBase}/api/prompt-templates${suffix}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${state.token}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      // The server's sentence is the useful one — it distinguishes "over the
-      // limit" from "not yours" from "empty", and those need different actions.
-      addNote(err.error || t('操作失敗（{0}）。', res.status), 'err');
-      return;
-    }
-  } catch (e) {
-    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
-    return;
-  }
-  await loadTemplates();
-}
 
-function toggleTemplateMenu(show) {
-  const menu = $('tpl-menu');
-  if (!menu) return;
-  menu.hidden = !show;
-  const find = $('tpl-find');
-  if (show) {
-    toggleSourceMenu(false);
-    if (find) find.value = '';
-    renderTemplateMenu();
-    // Straight into the search box when there is one: arriving here by typing
-    // 「/」 means the next keystroke is meant for it.
-    if (find && !find.hidden) find.focus();
-  }
-}
-
-/**
- * 使用技能 (PRD 3.1).
- *
- * ── Why the list is filtered by host ──
- * Every skill written before this one generates a NEW FILE — pptx-gen,
- * docx-gen, xlsx-gen — which is the opposite of what an add-in does. Offering
- * 「PowerPoint Generator」 inside Excel would not be untidy, it would be wrong:
- * somebody picks it and gets a download instead of a changed workbook. So the
- * server only returns skills that declare this surface, and a skill has to opt
- * in rather than out.
- *
- * ── Hidden when empty ──
- * A menu entry that opens an empty list reads as broken, not as "IT has not
- * published any yet". The model picker already works this way.
- */
-async function loadSkills() {
-  try {
-    const res = await fetch(
-      `${state.apiBase}/api/skills?host=${encodeURIComponent(host.meta.api)}`,
-      { headers: { Authorization: `Bearer ${state.token}` } },
-    );
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (sessionEnded(res, err)) { logout(err.error || t('登入已過期，請重新登入。')); return; }
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const body = await res.json();
-    state.skills = Array.isArray(body) ? body : [];
-  } catch {
-    // Silent: an older server predates the host filter, and a red note about a
-    // feature nobody asked for yet is noise. The row simply stays hidden.
-    state.skills = [];
-  }
-  // A skill chosen before a host switch or a server change may be gone now.
-  if (state.skill && !state.skills.some((s) => s.id === state.skill)) state.skill = '';
-  renderSkillMenu();
-}
-
-function renderSkillMenu() {
-  const row = $('src-skill');
-  if (row) row.hidden = !state.skills.length;
-  const cur = $('src-skill-cur');
-  const chosen = state.skills.find((s) => s.id === state.skill);
-  if (cur) cur.textContent = chosen ? chosen.name : '';
-
-  const list = $('skill-list');
-  if (!list) return;
-  // 留白＝AI 自動調度 is the first row and the default, because it is right far
-  // more often than any single specialist.
-  const rows = [{ id: '', name: t('自動調度'), description: t('讓 AI 自己判斷要用哪個做法。') }]
-    .concat(state.skills);
-  list.innerHTML = rows.map((s) => `
-    <button type="button" class="src-item" data-skill="${escapeHtml(s.id)}"
-            role="menuitemradio" aria-checked="${state.skill === s.id}">
-      <span class="src-name">
-        ${escapeHtml(s.name)}
-        ${s.description ? `<span class="skill-desc">${escapeHtml(s.description)}</span>` : ''}
-      </span>
-      <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
-    </button>`).join('');
-
-  const note = $('skill-note');
-  if (note) note.textContent = t('技能由 IT 發佈，內容不可修改。留白就讓 AI 自己判斷。');
-}
-
-function toggleSkillMenu(show) {
-  const menu = $('skill-menu');
-  if (!menu) return;
-  menu.hidden = !show;
-  if (show) {
-    toggleSourceMenu(false);
-    toggleTemplateMenu(false);
-    renderSkillMenu();
-  }
-}
 
 /** Ask the server which cross-source MCPs this user could actually mount. */
 async function loadDataSources() {
@@ -3008,11 +3106,20 @@ Office.onReady(async (info) => {
     // Same button, two jobs — while a run is in flight it stops it.
     if (state.streaming) { stopRun(); return; }
     const input = $('input');
-    const msg = input.value.trim();
+    // The chip is expanded here, not when it was picked: the composer stayed
+    // free for what the person wanted to add, and the full text only has to
+    // exist at the moment it is sent.
+    const typed = input.value.trim();
+    const tpl = state.attachedTemplate;
+    const msg = tpl ? (typed ? `${tpl.content}
+
+${typed}` : tpl.content) : typed;
     // An image on its own is a whole message — 「這個」 with a screenshot attached
     // is a perfectly clear request, and refusing it would make people type a word
     // they do not mean just to get the send button back.
     if (!msg && !state.attachments.length && !state.files.some(f => f.status === 'ready')) return;
+    state.attachedTemplate = null;
+    renderTemplateChip();
     input.value = '';
     input.style.height = 'auto';
     renderCharCount(input);
@@ -3058,8 +3165,7 @@ Office.onReady(async (info) => {
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
     if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
-    if (!$('skill-menu').hidden) { e.preventDefault(); toggleSkillMenu(false); return; }
-    if (!$('tpl-menu').hidden) { e.preventDefault(); toggleTemplateMenu(false); return; }
+    if (!$('cmd-menu').hidden) { e.preventDefault(); closeSlash(); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
   });
@@ -3082,22 +3188,22 @@ Office.onReady(async (info) => {
     autoGrow(e.target);
     renderCharCount(e.target);
     syncSendButton();
-    // 「/」 on an otherwise empty composer opens the saved prompts. The menu is
-    // two clicks away and this is the thing people reach for most often once
-    // they have a few saved — every chat tool trains this reflex, and a feature
-    // you have to go and find is a feature used once.
-    if (e.target.value === '/') {
-      e.target.value = '';
-      autoGrow(e.target);
-      renderCharCount(e.target);
-      syncSendButton();
-      toggleTemplateMenu(true);
+    // 「/」 at the start of the composer IS the menu being open, and what follows
+    // it is the filter. Checked on every keystroke rather than only on the first
+    // one, so deleting back past the slash closes the menu and typing more
+    // narrows it — the behaviour every slash menu has.
+    const menu = $('cmd-menu');
+    if (e.target.value.startsWith('/')) {
+      if (menu.hidden) { toggleSourceMenu(false); menu.hidden = false; }
+      renderCmdMenu();
       return;
     }
-    // Emptying the composer by hand means this is no longer that template's
-    // turn; leaving the id set would attribute a from-scratch question to it.
-    if (!e.target.value.trim()) state.appliedTemplateId = '';
-    if (!$('tpl-menu').hidden) renderTemplateMenu();
+    if (!menu.hidden) toggleCmdMenu(false);
+    // The chip owns the attribution now, so clearing the box no longer drops it
+    // — an empty composer with a chip attached is the normal way to re-run a
+    // saved procedure unchanged.
+    if (!e.target.value.trim() && !state.attachedTemplate) state.appliedTemplateId = '';
+    if (!$('cmd-menu').hidden) renderCmdMenu();
   });
 
   // Suggestion chips are real prompts: one click asks the question. Delegated so
@@ -3110,6 +3216,17 @@ Office.onReady(async (info) => {
 
   // Enter sends, Shift+Enter is a newline — the convention every chat UI uses.
   $('input').addEventListener('keydown', (e) => {
+    if (inSlashMode()) {
+      if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        // Only when it is unambiguous. Sending 「/和碩」 as a question would be
+        // absurd, but so would picking the first of six.
+        const rows = $('cmd-list').querySelectorAll('.tpl-use, [data-skill]');
+        if (rows.length === 1) rows[0].click();
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       $('composer').requestSubmit();
@@ -3173,8 +3290,7 @@ Office.onReady(async (info) => {
     // Not a toggle like the others — it opens the picker and closes the menu.
     if (key === 'file') { toggleSourceMenu(false); $('file-input').click(); return; }
     // Also not a toggle: it swaps this menu for the templates one.
-    if (key === 'tpl') { toggleSourceMenu(false); toggleTemplateMenu(true); return; }
-    if (key === 'skill') { toggleSourceMenu(false); toggleSkillMenu(true); return; }
+    if (key === 'cmd') { toggleSourceMenu(false); toggleCmdMenu(true); return; }
     state.sources = state.sources.includes(key)
       ? state.sources.filter(k => k !== key)
       : [...state.sources, key];
@@ -3195,32 +3311,20 @@ Office.onReady(async (info) => {
     if (bubble) void saveTemplateText(bubble.dataset.raw || '');
   });
 
-  $('skill-menu').addEventListener('click', (e) => {
-    const item = e.target.closest('[data-skill]');
-    if (!item) return;
-    state.skill = item.dataset.skill;
-    renderSkillMenu();
-    toggleSkillMenu(false);
-    // In the transcript as well as the menu: this changes how the next answer is
-    // produced, and someone scrolling back should see when it changed.
-    const chosen = state.skills.find((sk) => sk.id === state.skill);
-    addNote(chosen
-      ? t('之後的訊息交給「{0}」處理。', chosen.name)
-      : t('已改回由 AI 自動判斷要用哪個做法。'), 'note');
-  });
 
-  $('tpl-find').addEventListener('input', renderTemplateMenu);
-  $('tpl-find').addEventListener('keydown', (e) => {
-    // Enter on a single match applies it — the whole point of typing to filter.
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const only = $('tpl-list').querySelectorAll('.tpl-use');
-    if (only.length === 1) applyTemplate(only[0].dataset.id);
-  });
-
-  $('tpl-menu').addEventListener('click', (e) => {
+  $('cmd-menu').addEventListener('click', (e) => {
+    const skill = e.target.closest('[data-skill]');
+    if (skill) {
+      state.skill = skill.dataset.skill;
+      closeSlash();
+      const chosen = state.skills.find((sk) => sk.id === state.skill);
+      addNote(chosen
+        ? t('之後的訊息交給「{0}」處理。', chosen.name)
+        : t('已改回由 AI 自動判斷要用哪個做法。'), 'note');
+      return;
+    }
     const use = e.target.closest('.tpl-use');
-    if (use) { applyTemplate(use.dataset.id); return; }
+    if (use) { attachTemplate(use.dataset.id); return; }
     const edit = e.target.closest('[data-edit]');
     if (edit) { void renameTemplate(edit.dataset.edit); return; }
     const del = e.target.closest('[data-del]');
@@ -3246,15 +3350,12 @@ Office.onReady(async (info) => {
     if (!$('model-menu').hidden && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
       toggleModelMenu(false);
     }
-    if (!$('tpl-menu').hidden
-        && !e.target.closest('#tpl-menu') && !e.target.closest('#src-tpl')
+    if (!$('cmd-menu').hidden
+        && !e.target.closest('#cmd-menu') && !e.target.closest('#src-cmd')
         && !e.target.closest('#plus')) {
-      toggleTemplateMenu(false);
-    }
-    if (!$('skill-menu').hidden
-        && !e.target.closest('#skill-menu') && !e.target.closest('#src-skill')
-        && !e.target.closest('#plus')) {
-      toggleSkillMenu(false);
+      // closeSlash, not toggleCmdMenu: dismissing the menu has to take the
+      // 「/query」 with it, or the next Enter sends a slash and half a name.
+      closeSlash();
     }
     if ($('src-menu').hidden) return;
     if (e.target.closest('#src-menu') || e.target.closest('#plus')) return;

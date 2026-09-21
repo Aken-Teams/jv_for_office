@@ -1146,10 +1146,15 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   display: block; margin-top: 2px; font-size: 11px; color: var(--fg-subtle);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Icon, not a word. Two labels per row turned a list of saved prompts into a
+   list of buttons — and the names are the thing being read. Still hidden until
+   the row is hovered, which an icon can afford far better than text could: a
+   glyph appearing is a hint, a word appearing is a layout shift. */
 .tpl-act {
-  flex: none; padding: 4px 6px; border-radius: 6px;
-  font-size: 11px; color: var(--fg-subtle); opacity: 0;
-  transition: opacity var(--speed), color var(--speed);
+  display: flex; align-items: center; justify-content: center;
+  flex: none; width: 26px; height: 26px; padding: 0; border-radius: 6px;
+  color: var(--fg-subtle); opacity: 0;
+  transition: opacity var(--speed), color var(--speed), background var(--speed);
 }
 .tpl-row:hover .tpl-act, .tpl-act:focus-visible { opacity: 1; }
 .tpl-act:hover { color: var(--fg); background: var(--surface); }
@@ -1165,21 +1170,87 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   background: var(--surface); color: var(--fg); font-size: 12.5px;
 }
 .tpl-find:focus { outline: none; border-color: var(--accent); }
+
+/* ── The two halves of the 指令與技能 menu ──────────────────────────────────
+   Colour carries the distinction that prose used to. Each skill came with two
+   lines of description and the list read as a document rather than a menu —
+   and the thing a person actually needs at a glance is not what a skill does,
+   it is WHOSE it is: published by IT, or written by me. A dot and a rail say
+   that in no space at all, and the description moves to the row's tooltip
+   where it is available without being in the way. */
+/* The LIST scrolls, not the menu — same rule as .hist-list, and for a sharper
+   reason here: the search box is above it and the two save actions are below
+   it. Scrolling the whole panel would carry both off-screen, which is exactly
+   when a long list makes them worth reaching for. Fifty saved prompts is the
+   documented ceiling and a pane is ~700px tall; without this the composer gets
+   pushed out of the window. */
+#cmd-list { max-height: 44vh; overflow-y: auto; overscroll-behavior: contain; }
+#cmd-list::-webkit-scrollbar { width: 10px; }
+#cmd-list::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid var(--bg); border-radius: 5px; }
+#cmd-list::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
+
+.cmd-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 9px 4px; font-size: 10.5px; font-weight: 600;
+  color: var(--fg-subtle); letter-spacing: .04em;
+  /* Sticky so the answer to 「am I in the company half or mine?」 survives
+     scrolling. The whole point of the colour coding is lost the moment the
+     label it explains has scrolled away. */
+  position: sticky; top: 0; z-index: 1; background: var(--bg);
+}
+.cmd-head:first-child { padding-top: 2px; }
+.cmd-head::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; flex: none;
+}
+/* Excel's green is already the product's voice: the mark, the send button,
+   citations. Company-published skills belong to that voice. */
+.cmd-head.is-skill::before { background: var(--accent); }
+/* The person's own things get the neutral ink instead — deliberately NOT a
+   second brand colour, which would read as a second kind of official. */
+.cmd-head.is-mine::before { background: var(--fg-subtle); }
+
+/* A rail rather than a fill: visible while scanning, invisible while reading. */
+.src-item.cmd-skill { border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0; }
+.tpl-row.cmd-mine { border-left: 2px solid var(--line-strong); border-radius: 0 8px 8px 0; }
+
+/* The attached prompt, above the composer. Sized like a chip and not like a
+   message: it stands for text that is deliberately NOT taking up the box. */
+.tpl-chip-row { margin-bottom: 6px; }
+.tpl-chip {
+  display: inline-flex; align-items: center; gap: 2px; max-width: 100%;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--surface);
+}
+.tpl-chip-name {
+  min-width: 0; padding: 4px 4px 4px 11px;
+  font-size: 12px; color: var(--accent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tpl-chip-name::before { content: '/'; margin-right: 3px; opacity: .6; }
+.tpl-chip-drop {
+  flex: none; padding: 0 9px 1px 4px; font-size: 14px; line-height: 1;
+  color: var(--fg-subtle);
+}
+.tpl-chip-drop:hover { color: var(--fg); }
 /* Two buttons that are a pair — 儲存／取消, 刪除／取消 — sit side by side.
    Stacked full-width they read as two unrelated choices and eat half the pane;
    the list layout is for the agent's 「pick one of these answers」 cards, where
    the options really are a list and each one needs a whole row. */
-.choice-list.pair { display: flex; gap: 6px; }
-.choice-list.pair .choice-opt { flex: 1; text-align: center; }
+/* `flex-direction: row` is the whole fix and it is not redundant: .choice-list
+   above sets `column`, and a rule that only re-states `display: flex` inherits
+   the direction it was trying to change. The buttons stayed stacked and looked
+   like the CSS had not loaded. */
+.choice-list.pair { flex-direction: row; gap: 6px; }
+.choice-list.pair .choice-opt {
+  flex: 1 1 0; min-width: 0;
+  align-items: center; text-align: center;
+}
 .choice-list.pair .choice-label { font-weight: 500; }
 /* The chosen skill, shown on the ＋ menu row itself. A setting that persists
    across messages and is only visible once you open two menus is a trap. */
 .src-cur { flex: none; max-width: 40%; font-size: 11px; color: var(--accent);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.skill-desc {
-  display: block; margin-top: 2px; font-size: 11px; color: var(--fg-subtle);
-  line-height: 1.35; white-space: normal;
-}
+
 
 .send-btn {
   display: flex; align-items: center; justify-content: center;

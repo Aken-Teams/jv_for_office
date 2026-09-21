@@ -104,10 +104,15 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
 // ── 窗格：介面上沒有分享／匯出／上架按鈕 ───────────────────────────────────
 {
   const html = fs.readFileSync(new URL('../src/taskpane/taskpane.html', import.meta.url), 'utf8');
-  const menu = (html.match(/<div id="tpl-menu"[\s\S]*?<\/div>\s*<!--/) || [''])[0];
-  ok('常用指令選單在窗格裡', menu.length > 0);
+  const menu = (html.match(/<div id="cmd-menu"[\s\S]*?<div id="cmd-note"/) || [''])[0];
+  ok('指令與技能選單在窗格裡', menu.length > 0);
   ok('選單裡沒有分享、匯出或上架',
     menu.length > 0 && !/(分享|匯出|上架|share|export|publish)/i.test(menu));
+  // PRD 3.5 要求技能與常用指令在介面上分開命名：技能綁工具與權限，常用指令
+  // 只是文字。合併成一個入口沒問題，混成一區就有問題。
+  const app2 = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+  ok('兩者在同一個選單裡但分區標示',
+    app2.includes('公司技能') && app2.includes('我的常用指令'));
 }
 
 // ── 存檔前的注入掃描 ───────────────────────────────────────────────────────
@@ -188,8 +193,26 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
     /el\.innerHTML = renderMarkdown\(text \|\| ''\)/.test(app));
   ok('不再只對使用者訊息做 escape', !/role === 'user' \? escapeHtml\(text\)/.test(app));
 
-  ok('輸入框打 / 就叫得出常用指令', /e\.target\.value === '\/'/.test(app));
-  ok('清單長了才出現搜尋框', /find\.hidden = state\.templates\.length < 5/.test(app));
+  // ── 只能有一個輸入源 ──────────────────────────────────────────────────
+  //
+  // 原本選單裡另有一個搜尋框，而選單是用輸入框打「/」叫出來的——游標在輸入框，
+  // 篩選卻在另一個欄位，而且那個欄位清單短的時候還不出現。結果就是按了「/」
+  // 打字，字進了輸入框、選單原封不動，看起來像篩選壞掉。
+  // 現在：選單開著 ⟺ 輸入框以「/」開頭，「/」後面就是查詢字串。
+  ok('輸入框以 / 開頭就是選單開著', /e\.target\.value\.startsWith\('\/'\)/.test(app));
+  ok('查詢字串直接讀輸入框', /function slashQuery\(\)[\s\S]*?v\.slice\(1\)/.test(app));
+  ok('沒有第二個搜尋框了', !app.includes('cmd-find'));
+  ok('離開選單會把 /query 一起收掉', app.includes('function closeSlash('));
+  // 「/月結」是查詢不是問句——送出鍵亮著等於邀請使用者送出一段斜線加半個名字。
+  ok('slash 模式下送不出去', /const has = !inSlashMode\(\)/.test(app));
+  ok('slash 模式下也存不成常用指令', /save\.disabled = [^\n]*inSlashMode\(\)/.test(app));
+  // 整段貼進 350px 的輸入框，使用者連自己打的字都看不到。
+  ok('套用是掛一張引用晶片，不是整段貼進輸入框',
+    app.includes('function attachTemplate(') && /state\.attachedTemplate = tpl/.test(app));
+  // AC-42 要求可再修改——點晶片就展開成全文。
+  ok('晶片點得開，展開成可編輯的全文', app.includes('function expandTemplate('));
+  ok('送出時才把引用展開成文字',
+    /const msg = tpl \? \(typed \? `\$\{tpl\.content\}/.test(app));
 }
 
 // ── 選單裡的動作列不可以被當成資料來源停用 ─────────────────────────────────
@@ -204,15 +227,15 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
 
   const rows = [...html.matchAll(/<button[^>]*class="src-item"[^>]*>/g)].map(m => m[0]);
   const actions = rows.filter(r => /role="menuitem"/.test(r));
-  ok('＋ 選單裡有動作列（上傳檔案、常用指令）', actions.length >= 2);
-  ok('常用指令是動作列，不是資料來源',
-    actions.some(r => /data-src="tpl"/.test(r)));
+  ok('＋ 選單裡有動作列（上傳檔案、指令與技能）', actions.length >= 2);
+  ok('指令與技能是動作列，不是資料來源',
+    actions.some(r => /data-src="cmd"/.test(r)));
 
   const fn = (app.match(/function renderSourceMenu\(\)[\s\S]*?\n}/) || [''])[0];
   ok('render 會先依 role 放行動作列', fn.includes("!== 'menuitemcheckbox'"));
   // 動作列一旦回到這個清單裡，就等於又把兩個問題混在一起了。
   ok('動作列不是靠寫進 ALWAYS_AVAILABLE 才活著',
-    !/ALWAYS_AVAILABLE = new Set\(\[[^\]]*'(file|tpl)'/.test(app));
+    !/ALWAYS_AVAILABLE = new Set\(\[[^\]]*'(file|cmd)'/.test(app));
 }
 
 // ── 套用後要能再修改（AC-42）──────────────────────────────────────────────
@@ -221,10 +244,16 @@ ok('稽核用的 id 由伺服器驗證擁有者，不是照單全收',
 // to be perfectly general to be useful, and the specific ones are the useful ones.
 {
   const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
-  const fn = (app.match(/function applyTemplate\(id\)[\s\S]*?\n}/) || [''])[0];
-  ok('套用是填進輸入框', fn.includes("$('input')") && fn.includes('input.value = tpl.content'));
-  ok('套用不會直接送出', fn.length > 0 && !/\bsend\(/.test(fn));
-  ok('游標移到最後，方便接著補這次的條件', fn.includes('setSelectionRange'));
+  // 套用改成掛一張引用晶片（整段貼進 350px 的輸入框會把使用者自己要打的那句
+  // 埋掉），但 AC-42 的「可再修改」靠點開晶片展開成全文來滿足。
+  const att = (app.match(/function attachTemplate\(id\)[\s\S]*?\n}/) || [''])[0];
+  ok('套用不會直接送出', att.length > 0 && !/\bsend\(/.test(att));
+  ok('套用會記下是哪一則，供稽核', att.includes('state.appliedTemplateId = tpl.id'));
+
+  const exp = (app.match(/function expandTemplate\(\)[\s\S]*?\n}/) || [''])[0];
+  ok('展開會把全文放進輸入框', exp.includes("$('input')") && exp.includes('tpl.content'));
+  ok('展開後游標在最後，方便接著補這次的條件', exp.includes('setSelectionRange'));
+  ok('展開會保留使用者已經打的字，不是蓋掉', exp.includes('typed'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
