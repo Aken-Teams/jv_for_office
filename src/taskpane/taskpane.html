@@ -381,7 +381,28 @@
           <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-book"/></svg>
           <span class="src-name" data-t="上傳檔案">上傳檔案</span>
         </button>
+        <!-- Not a data source, so it carries no tick: it opens a second menu.
+             Sits in the ＋ menu because that is already where "bring something
+             into this message" lives, and a seventh icon in the top bar would
+             not fit a 350px pane. -->
+        <button type="button" class="src-item" data-src="tpl" id="src-tpl" role="menuitem">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-ask"/></svg>
+          <span class="src-name" data-t="常用指令">常用指令</span>
+        </button>
         <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
+      </div>
+
+      <!-- 個人常用指令 (PRD 3.5). Opens upward from the composer like the ＋ menu,
+           and for the same reason. Applying one fills the composer rather than
+           sending it, because AC-42 requires the text to arrive somewhere it can
+           still be edited — a saved procedure is a starting point, not a macro. -->
+      <div id="tpl-menu" class="src-menu" hidden role="menu" aria-labelledby="src-tpl">
+        <div id="tpl-list"></div>
+        <button type="button" id="tpl-save" class="src-item tpl-add">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-plus"/></svg>
+          <span class="src-name" data-t="把輸入框的內容存成常用指令">把輸入框的內容存成常用指令</span>
+        </button>
+        <div id="tpl-note" class="src-note"></div>
       </div>
 
       <!-- Thumbnails of images pasted into the composer, and chips for uploaded

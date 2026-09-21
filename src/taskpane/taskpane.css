@@ -670,6 +670,18 @@ header .actions { display: flex; gap: 2px; flex: none; }
 /* ── Messages ───────────────────────────────────────────────────────────── */
 
 .bubble { margin-bottom: 18px; overflow-wrap: anywhere; animation: rise 180ms ease-out; }
+/* Hidden until the bubble is under the pointer. A transcript with a button on
+   every message reads as a toolbar; this is an occasional action, and the
+   common case is reading, not saving. */
+.bubble-acts { margin-top: 6px; height: 0; overflow: hidden; }
+.bubble:hover .bubble-acts, .bubble:focus-within .bubble-acts { height: auto; }
+.bubble-act {
+  padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg);
+  font-size: 11px; color: var(--fg-subtle);
+  transition: color var(--speed), border-color var(--speed);
+}
+.bubble-act:hover { color: var(--fg); border-color: var(--line-strong); }
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(4px); }
@@ -1116,6 +1128,37 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .src-note {
   padding: 4px 9px 3px; font-size: 11px; color: var(--fg-subtle); line-height: 1.4;
 }
+
+/* One saved prompt. The name is the control; edit and delete stay out of the
+   way until the row is under the pointer, because the common action by far is
+   "use this one" and two buttons per row would make a list of ten look like a
+   settings screen. */
+.tpl-row { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+.tpl-row:hover { background: var(--surface-hover); }
+.tpl-use {
+  flex: 1; min-width: 0; padding: 8px 9px; border-radius: 8px;
+  font-size: 12.5px; color: var(--fg); text-align: left;
+}
+.tpl-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The first line of the prompt, so two templates with similar names are still
+   telling apart without opening either. */
+.tpl-peek {
+  display: block; margin-top: 2px; font-size: 11px; color: var(--fg-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tpl-act {
+  flex: none; padding: 4px 6px; border-radius: 6px;
+  font-size: 11px; color: var(--fg-subtle); opacity: 0;
+  transition: opacity var(--speed), color var(--speed);
+}
+.tpl-row:hover .tpl-act, .tpl-act:focus-visible { opacity: 1; }
+.tpl-act:hover { color: var(--fg); background: var(--surface); }
+.tpl-act.danger:hover { color: var(--danger, #c0392b); }
+/* Separated from the list: it creates rather than applies, and a row that looks
+   like the others invites clicking it by mistake. */
+.tpl-add { border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; margin-top: 4px; }
+.tpl-add .ic-sm { color: var(--fg-subtle); }
+.tpl-empty { padding: 10px 9px; font-size: 12px; color: var(--fg-subtle); line-height: 1.5; }
 
 .send-btn {
   display: flex; align-items: center; justify-content: center;

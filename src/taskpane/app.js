@@ -120,6 +120,21 @@ const state = {
   attachments: [],
   /** Held for the length of one run so a tool call can still reach them. */
   sentAttachments: [],
+  /** 個人常用指令 — the caller's own saved prompts. PRD 3.5. */
+  templates: [],
+  /** The applied template, parked for the length of one run. See sentAttachments. */
+  sentTemplateId: '',
+  templateMax: 50,
+  /** Set when the endpoint could not be read, so an empty list is not mistaken for "you have none". */
+  templateError: '',
+  /**
+   * Which template filled the composer, for the audit log.
+   *
+   * Survives editing on purpose: AC-42 hands the text over to be changed, and a
+   * turn that started from a template started from it whether or not a word was
+   * altered afterwards.
+   */
+  appliedTemplateId: '',
   /**
    * Files uploaded for the next message — `[{ id, name, status, note, serverId }]`.
    *
@@ -349,11 +364,32 @@ function clearEmptyState() {
   if (e) e.remove();
 }
 
+/**
+ * The row of actions under a bubble.
+ *
+ * Built fresh each time rather than kept: streaming replaces the bubble's whole
+ * innerHTML on every delta, which takes the previous one with it.
+ */
+function bubbleActions() {
+  const acts = document.createElement('div');
+  acts.className = 'bubble-acts';
+  acts.innerHTML = '<button type="button" class="bubble-act" data-save-tpl>'
+    + escapeHtml(t('存成常用指令')) + '</button>';
+  return acts;
+}
+
 function addBubble(role, text, images) {
   clearEmptyState();
   const el = document.createElement('div');
   el.className = `bubble ${role}`;
   el.innerHTML = role === 'user' ? escapeHtml(text) : renderMarkdown(text || '');
+  // The source text, kept beside the rendered HTML.
+  //
+  // 「存成常用指令」 has to save what was WRITTEN, not what was drawn. Reading it
+  // back out of the DOM would save markdown that has already become <strong> and
+  // <li>, so the saved prompt would arrive next month as a wall of stripped
+  // punctuation.
+  el.dataset.raw = text || '';
   // Attached images echo back inside the user's own bubble, so the transcript
   // still shows what the question was about after the composer has been cleared.
   if (role === 'user' && images && images.length) {
@@ -364,6 +400,10 @@ function addBubble(role, text, images) {
       .join('');
     el.appendChild(strip);
   }
+  // Both roles, because the procedure is rarely in one place: sometimes the
+  // useful text is the question somebody worked out, and sometimes it is the
+  // write-up the agent produced when asked to summarise what it just did.
+  el.appendChild(bubbleActions());
   $('log').appendChild(el);
   scrollDown();
   return el;
@@ -1436,6 +1476,11 @@ async function send(message) {
   // Only the ones that finished parsing; a failed chip is not silently sent.
   state.sentFiles = state.files.filter(f => f.status === 'ready').map(f => f.serverId);
   state.files = [];
+  // Handed over for the length of this run, exactly like sentAttachments: the
+  // request is built further down, and clearing the live field here without
+  // parking the value would send nothing every time.
+  state.sentTemplateId = state.appliedTemplateId;
+  state.appliedTemplateId = '';
   renderAttachments();
 
   backToLive();
@@ -1501,6 +1546,9 @@ async function send(message) {
         attachments: state.sentAttachments.length || undefined,
         // Ids only. The text was extracted server-side at upload time.
         fileIds: state.sentFiles.length ? state.sentFiles : undefined,
+        // Which 常用指令 this turn was started from, if any. The server checks it
+        // belongs to this user before recording it — see templateForAudit.
+        promptTemplateId: state.sentTemplateId || undefined,
       }),
     });
 
@@ -1576,6 +1624,8 @@ async function send(message) {
             text += ev.data;
             if (!bubble) bubble = addBubble('ai', '');
             bubble.innerHTML = renderMarkdown(text);
+            bubble.dataset.raw = text;
+            bubble.appendChild(bubbleActions());
             scrollDown();
           } else if (ev.type === 'thinking') {
             // Caption the running step with what the model is reasoning about.
@@ -1747,6 +1797,7 @@ function showChat() {
   renderModelMenu();
   renderSourceMenu();
   void loadDataSources();
+  void loadTemplates();
 }
 
 /**
@@ -1958,11 +2009,16 @@ function fillDomainOptions() {
 }
 
 const SOURCE_NAMES = () => ({ web: t('搜尋網路'), email: t('郵件'), km: 'KM' });
-/** Sources that need no account link, so the menu never greys them out. */
-// 'file' is in here because it is not a data source that needs linking — it is
-// a file picker. It would otherwise render disabled, since state.available has
-// no entry for it.
-const ALWAYS_AVAILABLE = new Set(['web', 'file']);
+/**
+ * Sources that need no account link, so the menu never greys them out.
+ *
+ * Only real sources belong here. The action rows — 上傳檔案, 常用指令 — used to
+ * be kept enabled by adding them to this set, which made "is this available"
+ * and "is this even a source" the same question and meant a new action row was
+ * disabled until somebody remembered to come back here. renderSourceMenu now
+ * tells them apart by their ARIA role instead.
+ */
+const ALWAYS_AVAILABLE = new Set(['web']);
 const sourceLabel = (keys) => keys.map(k => SOURCE_NAMES()[k] || k).join('、');
 
 /**
@@ -2171,6 +2227,17 @@ function updateApproveToggle() {
  */
 function renderSourceMenu() {
   for (const item of document.querySelectorAll('.src-item')) {
+    // Two kinds of row share this class. A menuitemcheckbox TOGGLES a data
+    // source and can be unavailable because the account is not linked; a plain
+    // menuitem DOES something — opens the file picker, opens the templates menu
+    // — and is always available. Reading the role rather than keeping a list of
+    // exceptions means adding a row cannot silently grey it out, which is
+    // exactly what happened to 常用指令: it had no entry in state.available, so
+    // it rendered disabled with the title 「undefined 尚未連結」.
+    if (item.getAttribute('role') !== 'menuitemcheckbox') {
+      item.disabled = false;
+      continue;
+    }
     const key = item.dataset.src;
     const usable = ALWAYS_AVAILABLE.has(key) || !!state.available[key];
     item.disabled = !usable;
@@ -2245,6 +2312,208 @@ function toggleSourceMenu(show) {
   if (open) renderSourceMenu();
 }
 
+/**
+ * 個人常用指令 (PRD 3.5).
+ *
+ * ── What these are for ──
+ * Working out a good instruction is the expensive part. Somebody spends twenty
+ * minutes getting a cross-file comparison to say exactly what they want — which
+ * sheets, which key columns, what to call the output — and then has to rebuild
+ * it from memory next month. Saving that text turns it into one sentence.
+ *
+ * ── Why applying one FILLS the composer instead of sending it ──
+ * AC-42 requires it, and the requirement is right: a saved procedure is a
+ * starting point, not a macro. The month changes, the file changes, the sheet is
+ * called something else this time. Sending it straight through would make every
+ * template either perfectly general or wrong, and people would stop saving the
+ * specific ones — which are the useful ones.
+ *
+ * ── Why there is no share button ──
+ * Not because it is hidden. A template is this person's text and the server has
+ * no column it could be shared through (AC-43). See routes/promptTemplates.ts.
+ */
+/**
+ * Did this response mean the session is over?
+ *
+ * ── The bug this exists for ──
+ * A token lasts seven days. Someone who has not opened the pane in a fortnight
+ * used to get the full chat interface, a composer, suggestion chips — everything
+ * except a working session — and found out only when they sent a message and
+ * the send path signed them out. The startup fetches all swallowed their 401s
+ * into a hint nobody hovers over, so the pane looked ready and was not.
+ *
+ * Sending a message already handles this correctly; this brings the two fetches
+ * that run BEFORE anyone types into line with it. 403 is only terminal for the
+ * two codes that mean the account itself is finished — hitting a usage cap is
+ * also a 403, and signing someone out over a quota would be absurd.
+ */
+function sessionEnded(res, body) {
+  return res.status === 401
+    || (res.status === 403 && (body?.code === 'SUSPENDED' || body?.code === 'ACCOUNT_GONE'));
+}
+
+async function loadTemplates() {
+  try {
+    const res = await fetch(`${state.apiBase}/api/prompt-templates`, {
+      headers: { Authorization: `Bearer ${state.token}` },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) {
+        logout(err.error || t('登入已過期，請重新登入。'));
+        return;
+      }
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const body = await res.json();
+    state.templates = Array.isArray(body.templates) ? body.templates : [];
+    state.templateMax = Number(body.max) || 50;
+    state.templateError = '';
+  } catch (e) {
+    // An older server predates this endpoint. Say so once, in the menu, rather
+    // than letting the list look empty — "you have none" and "this build cannot
+    // see them" need different things from the person.
+    state.templates = [];
+    state.templateError = t('讀不到常用指令（{0}）。', e.message);
+  }
+  renderTemplateMenu();
+}
+
+function renderTemplateMenu() {
+  const list = $('tpl-list');
+  if (!list) return;
+
+  if (state.templateError) {
+    list.innerHTML = `<div class="tpl-empty">${escapeHtml(state.templateError)}</div>`;
+  } else if (!state.templates.length) {
+    list.innerHTML = `<div class="tpl-empty">${escapeHtml(
+      t('還沒有常用指令。把一段你常用的說法打進輸入框，再用下面那個按鈕存起來。'))}</div>`;
+  } else {
+    list.innerHTML = state.templates.map((tpl) => `
+      <div class="tpl-row">
+        <button type="button" class="tpl-use" data-id="${escapeHtml(tpl.id)}">
+          <span class="tpl-name">${escapeHtml(tpl.name)}</span>
+          <span class="tpl-peek">${escapeHtml(firstLine(tpl.content))}</span>
+        </button>
+        <button type="button" class="tpl-act" data-edit="${escapeHtml(tpl.id)}"
+                title="${escapeHtml(t('改名'))}">${escapeHtml(t('改名'))}</button>
+        <button type="button" class="tpl-act danger" data-del="${escapeHtml(tpl.id)}"
+                title="${escapeHtml(t('刪除'))}">${escapeHtml(t('刪除'))}</button>
+      </div>`).join('');
+  }
+
+  const note = $('tpl-note');
+  if (note) {
+    note.textContent = state.templateError
+      ? ''
+      : t('{0}/{1} 則 · 只有你看得到，不能分享或匯出。', state.templates.length, state.templateMax);
+  }
+  const save = $('tpl-save');
+  if (save) save.disabled = !$('input').value.trim();
+}
+
+const firstLine = (s) => {
+  const line = String(s || '').split('\n').find((l) => l.trim()) || '';
+  return line.trim().slice(0, 60);
+};
+
+/** Apply one: the text lands in the composer, where it can still be changed. */
+function applyTemplate(id) {
+  const tpl = state.templates.find((x) => x.id === id);
+  if (!tpl) return;
+  const input = $('input');
+  input.value = tpl.content;
+  // Remembered so the turn can be attributed in the audit log even after the
+  // person edits the text — which is the normal case, not an edge one.
+  state.appliedTemplateId = tpl.id;
+  toggleTemplateMenu(false);
+  input.focus();
+  // Caret at the end: the usual next move is to append 「這次用三月的檔案」.
+  input.setSelectionRange(input.value.length, input.value.length);
+  autoGrow(input);
+  renderCharCount(input);
+  syncSendButton();
+}
+
+/**
+ * Save some text as a template. Used by both ways in.
+ *
+ * ── Why there are two ways in ──
+ * The composer button covers 「I know what I want to save, I will type it」. It
+ * does NOT cover the case this feature exists for: somebody works a procedure
+ * out over six turns — which sheets, which key columns, what to do about the
+ * blank rows — and only then realises it is worth keeping. That text is in the
+ * transcript, not the composer, so every bubble carries a save action too.
+ *
+ * The move that makes the second one work is asking the agent to write the
+ * procedure down first （「把我們剛剛的流程整理成一段之後可以重複使用的指令」）
+ * and saving ITS reply: it has just done the work and can state the steps in the
+ * order they actually happened.
+ */
+async function saveTemplateText(content) {
+  const body = String(content || '').trim();
+  if (!body) { addNote(t('沒有內容可以存。'), 'err'); return; }
+  const name = window.prompt(t('這則常用指令要叫什麼名字？'), firstLine(body).slice(0, 20));
+  if (name === null) return;
+  if (!name.trim()) { addNote(t('名稱不能是空的。'), 'err'); return; }
+  await templateRequest('POST', '', { name: name.trim(), content: body });
+  addNote(t('已存成常用指令「{0}」。之後從 ＋ → 常用指令 叫出來。', name.trim()), 'note');
+}
+
+async function saveTemplate() {
+  await saveTemplateText($('input').value);
+}
+
+async function renameTemplate(id) {
+  const tpl = state.templates.find((x) => x.id === id);
+  if (!tpl) return;
+  const name = window.prompt(t('改成什麼名字？'), tpl.name);
+  if (name === null || !name.trim()) return;
+  await templateRequest('PATCH', `/${encodeURIComponent(id)}`, { name: name.trim() });
+}
+
+async function deleteTemplate(id) {
+  const tpl = state.templates.find((x) => x.id === id);
+  if (!tpl) return;
+  if (!window.confirm(t('刪除常用指令「{0}」？這個動作沒辦法復原。', tpl.name))) return;
+  await templateRequest('DELETE', `/${encodeURIComponent(id)}`, null);
+}
+
+/** One place for the three writes, so they report failure the same way. */
+async function templateRequest(method, suffix, body) {
+  try {
+    const res = await fetch(`${state.apiBase}/api/prompt-templates${suffix}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${state.token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      // The server's sentence is the useful one — it distinguishes "over the
+      // limit" from "not yours" from "empty", and those need different actions.
+      addNote(err.error || t('操作失敗（{0}）。', res.status), 'err');
+      return;
+    }
+  } catch (e) {
+    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
+    return;
+  }
+  await loadTemplates();
+}
+
+function toggleTemplateMenu(show) {
+  const menu = $('tpl-menu');
+  if (!menu) return;
+  menu.hidden = !show;
+  if (show) {
+    toggleSourceMenu(false);
+    renderTemplateMenu();
+  }
+}
+
 /** Ask the server which cross-source MCPs this user could actually mount. */
 async function loadDataSources() {
   try {
@@ -2252,6 +2521,11 @@ async function loadDataSources() {
       headers: { Authorization: `Bearer ${state.token}` },
     });
     if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (sessionEnded(res, err)) {
+        logout(err.error || t('登入已過期，請重新登入。'));
+        return;
+      }
       state.sourceHint = t('無法向伺服器確認資料來源（HTTP {0}）。', res.status);
     } else {
       const body = await res.json();
@@ -2423,6 +2697,7 @@ Office.onReady(async (info) => {
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
     if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
+    if (!$('tpl-menu').hidden) { e.preventDefault(); toggleTemplateMenu(false); return; }
     if (!$('src-menu').hidden) { e.preventDefault(); toggleSourceMenu(false); return; }
     if (state.streaming) { e.preventDefault(); stopRun(); }
   });
@@ -2445,6 +2720,10 @@ Office.onReady(async (info) => {
     autoGrow(e.target);
     renderCharCount(e.target);
     syncSendButton();
+    // Emptying the composer by hand means this is no longer that template's
+    // turn; leaving the id set would attribute a from-scratch question to it.
+    if (!e.target.value.trim()) state.appliedTemplateId = '';
+    if (!$('tpl-menu').hidden) renderTemplateMenu();
   });
 
   // Suggestion chips are real prompts: one click asks the question. Delegated so
@@ -2519,6 +2798,8 @@ Office.onReady(async (info) => {
     const key = item.dataset.src;
     // Not a toggle like the others — it opens the picker and closes the menu.
     if (key === 'file') { toggleSourceMenu(false); $('file-input').click(); return; }
+    // Also not a toggle: it swaps this menu for the templates one.
+    if (key === 'tpl') { toggleSourceMenu(false); toggleTemplateMenu(true); return; }
     state.sources = state.sources.includes(key)
       ? state.sources.filter(k => k !== key)
       : [...state.sources, key];
@@ -2528,6 +2809,25 @@ Office.onReady(async (info) => {
     addNote(state.sources.includes(key)
       ? t('已開啟{0}，這個對話可以讀取它（唯讀）。', SOURCE_NAMES()[key])
       : t('已關閉{0}。', SOURCE_NAMES()[key]), 'note');
+  });
+
+  // Delegated on the log so bubbles added later are covered without rebinding —
+  // and so a bubble whose innerHTML was just replaced mid-stream still works.
+  $('log').addEventListener('click', (e) => {
+    const save = e.target.closest('[data-save-tpl]');
+    if (!save) return;
+    const bubble = save.closest('.bubble');
+    if (bubble) void saveTemplateText(bubble.dataset.raw || '');
+  });
+
+  $('tpl-menu').addEventListener('click', (e) => {
+    const use = e.target.closest('.tpl-use');
+    if (use) { applyTemplate(use.dataset.id); return; }
+    const edit = e.target.closest('[data-edit]');
+    if (edit) { void renameTemplate(edit.dataset.edit); return; }
+    const del = e.target.closest('[data-del]');
+    if (del) { void deleteTemplate(del.dataset.del); return; }
+    if (e.target.closest('#tpl-save')) void saveTemplate();
   });
 
   // Click-away closes it. A menu that can only be dismissed by the button that
@@ -2544,6 +2844,11 @@ Office.onReady(async (info) => {
     }
     if (!$('model-menu').hidden && !e.target.closest('#model-menu') && !e.target.closest('#model-btn')) {
       toggleModelMenu(false);
+    }
+    if (!$('tpl-menu').hidden
+        && !e.target.closest('#tpl-menu') && !e.target.closest('#src-tpl')
+        && !e.target.closest('#plus')) {
+      toggleTemplateMenu(false);
     }
     if ($('src-menu').hidden) return;
     if (e.target.closest('#src-menu') || e.target.closest('#plus')) return;
