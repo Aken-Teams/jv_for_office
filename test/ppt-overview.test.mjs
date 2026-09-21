@@ -78,7 +78,11 @@ ok('有母片但沒有版面配置，一樣不出聲',
   ok('每個版面配置的 id 都有', text.includes('layout_id=l1') && text.includes('layout_id=l2'));
   ok('名稱原樣列出，模型才挑得到', text.includes('標題及內容'));
   ok('明說要成對給', text.includes('成對'));
-  ok('明說不要用預設', text.includes('不要用預設'));
+  // 只給 id 而不說什麼時候該用，等於推薦一條更差的路：模型會拿原生版面配置
+  // 配預留位置，繞過所有版型，做出 PowerPoint 的預設長相。
+  ok('說清楚什麼時候才用這些 id', text.includes('原本就有設計好的版面'));
+  ok('其他情況要用 ppt_build_slide', text.includes('其他情況一律用 ppt_build_slide'));
+  ok('說明原生版面配置給的是預設長相不是設計', text.includes('那不是設計，只是沒有設計'));
 }
 
 ok('沒有名字的版面配置不會變成空白列',

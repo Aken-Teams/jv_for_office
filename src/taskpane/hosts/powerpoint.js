@@ -387,9 +387,24 @@ function describeLayouts(masters) {
     }
   }
   if (!lines.length) return '';
-  return '\n可用的版面配置（ppt_add_slide 的 layout_id 與 master_id 要成對給，'
-    + '沿用簡報既有的版面就從這裡挑，不要用預設）：\n'
-    + lines.join('\n') + '\n';
+  // ── The boundary, and why it is stated here ──
+  // The first version of this block said 「沿用簡報既有的版面就從這裡挑」 and
+  // nothing else. The model read that as a general preference, started every
+  // deck with ppt_add_slide + a native layout, and typed into the placeholders
+  // — which bypasses every recipe in this module. The covers came out as plain
+  // PowerPoint defaults: white ground, default font, no rule, orphaned words.
+  // Nothing failed, and the output looked like the model had chosen it.
+  //
+  // Native layouts are for INHERITING a deck somebody else designed. The recipes
+  // are for MAKING slides look designed. Offering the ids without saying which
+  // situation they are for was offering a worse route and recommending it.
+  return '\n可用的版面配置（layout_id 與 master_id 要成對給，只給一個會失敗）：\n' + lines.join('\n')
+    + '\n【什麼時候用這些 id】只有在**這份簡報原本就有設計好的版面**、'
+    + '而使用者要你「照現有格式繼續加」的時候。那種情況用 ppt_add_slide 帶上'
+    + ' master_id + layout_id，新頁面才會跟原有的頁面一致。\n'
+    + '【其他情況一律用 ppt_build_slide】空白簡報、從頭做一份、或使用者沒有'
+    + '特別要求沿用格式——都用版型。原生版面配置給的是 PowerPoint 的預設長相'
+    + '（白底、預設字型、空的預留位置），那不是設計，只是沒有設計。\n';
 }
 
 /** The palette block of the overview, or '' when the deck gave nothing away. */
@@ -1230,8 +1245,33 @@ async function buildSlide(args) {
         // Seven or more points is a slide that should have been two, but the
         // model has already decided. Cards at that count are 40pt tall and read
         // worse than a plain list, so the plain list is the honest fallback.
-        text(bullet(items), { left: CL, top: CT, width: CW, height: 348 },
-          { size: TYPE.body, color: th.ink });
+        //
+        // ── Centred, not top-aligned ──
+        // This path was the one the card layout above was built to escape, and
+        // it kept the original defect: eight short lines pinned to the top of a
+        // 348pt band leave the bottom HALF of the slide empty, which reads as an
+        // unfinished draft. Nothing is missing — the content simply sits in the
+        // wrong place. The prompt tells the model 「稀疏內容先收攏再置中」 and
+        // this is the same rule applied where the geometry is actually decided,
+        // because a rule the renderer contradicts is a rule nobody follows.
+        //
+        // Two columns once the list is long: eight lines down one side of a
+        // 16:9 slide wastes half its width, and the eye has further to travel
+        // than a column break would cost.
+        const wide = items.length >= 8;
+        if (wide) {
+          const half = Math.ceil(items.length / 2);
+          const colW = (CW - GRID.gutter) / 2;
+          text(bullet(items.slice(0, half)),
+            { left: CL, top: CT, width: colW, height: 348 },
+            { size: TYPE.body, color: th.ink, valign: 'middle' });
+          text(bullet(items.slice(half)),
+            { left: CL + colW + GRID.gutter, top: CT, width: colW, height: 348 },
+            { size: TYPE.body, color: th.ink, valign: 'middle' });
+        } else {
+          text(bullet(items), { left: CL, top: CT, width: CW, height: 348 },
+            { size: TYPE.body, color: th.ink, valign: 'middle' });
+        }
       }
     }
 

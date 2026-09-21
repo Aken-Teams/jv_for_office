@@ -50,7 +50,12 @@ function fakeShape(kind, opts = {}) {
           font: s._font,
           paragraphFormat: { horizontalAlignment: undefined },
         },
-        verticalAlignment: undefined, wordWrap: undefined, autoSizeSetting: undefined,
+        // Written back onto the shape, not onto this object: the getter builds a
+        // fresh textFrame每次被讀取, so anything set on it would be thrown away
+        // the moment the test looked for it.
+        get verticalAlignment() { return s._valign; },
+        set verticalAlignment(v) { s._valign = v; },
+        wordWrap: undefined, autoSizeSetting: undefined,
         leftMargin: 0, rightMargin: 0, topMargin: 0, bottomMargin: 0,
         load() {},
       };
@@ -114,6 +119,8 @@ const ok = (name, cond, detail) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  → ' + (detail || '')}`);
 };
 const build = (args) => host.executeTool('ppt_build_slide', args);
+/** CHROME.contentTop in the host — where the body band starts. */
+const CHROME_CONTENT_TOP = 124;
 const alive = () => slide.shapes.items;
 const texts = () => alive().filter((s) => s._text).map((s) => s._text);
 
@@ -182,6 +189,20 @@ await build({ kind: 'bullets', title: 'T', body: ['沒有冒號的一句話', '�
 ok('沒有冒號也照樣做成卡片', texts().includes('沒有冒號的一句話') && texts().includes('01'));
 
 // Seven points is a slide that should have been two; cards that small read worse.
+slide = fakeSlide();
+await build({ kind: 'bullets', title: 'T', body: Array.from({ length: 7 }, (_, i) => `第 ${i + 1} 點`) });
+// 稀疏內容靠上排，下半頁整片空白——那不是內容少，是內容放錯位置。這條跟
+// 提示詞裡「稀疏內容先收攏再置中」是同一條規則，只是在渲染這一側。渲染如果
+// 跟提示詞唱反調，那條規則就不會有人遵守。
+ok('七點的純條列會垂直置中，不是貼著上緣',
+  alive().some((s) => s._valign === 'Middle' && s.top >= CHROME_CONTENT_TOP));
+
+// 九點排成一長條，等於浪費 16:9 的半個寬度，眼睛要走的距離比換欄還遠。
+slide = fakeSlide();
+await build({ kind: 'bullets', title: 'T', body: Array.from({ length: 9 }, (_, i) => `第 ${i + 1} 點`) });
+ok('九點以上拆成兩欄',
+  alive().filter((s) => s.kind === 'text' && s.top >= CHROME_CONTENT_TOP && s.width < 500).length >= 2);
+
 slide = fakeSlide();
 await build({ kind: 'bullets', title: 'T', body: Array.from({ length: 7 }, (_, i) => `第 ${i + 1} 點`) });
 ok('七點以上退回純條列', texts().some((t) => t.includes('▪') && t.includes('第 1 點')),
