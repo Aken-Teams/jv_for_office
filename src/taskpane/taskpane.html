@@ -419,6 +419,34 @@
           <span class="src-name" data-t="指令與技能">指令與技能</span>
           <span id="src-skill-cur" class="src-cur"></span>
         </button>
+        <!--
+          寫實照片 — a capability, not a source, which is why it sits below a rule
+          and carries its own note.
+
+          ── Why it is here and why it is off ──
+          Backgrounds and illustrations make no claim: nobody reads a gradient as
+          evidence, and an illustration is visibly drawn. A photograph does make a
+          claim — a generated factory floor on a company deck reads as THIS
+          factory floor. That is the only kind of generated picture that can be
+          mistaken for a record, so it is the only one behind a switch.
+
+          Hidden outside PowerPoint: the other two hosts have no picture tools to
+          govern, and a dead setting is worse than no setting.
+
+          No caption under it. A paragraph explaining the risk sat here at first
+          and made the menu look like a settings page — and it was in the wrong
+          place anyway: nobody reads the small print under a switch they are not
+          touching. The warning fires in the transcript at the moment the switch
+          goes ON, which is the moment it means something.
+        -->
+        <div id="src-cap" class="src-cap" hidden>
+          <button type="button" class="src-item" data-cap="photo" id="src-photo"
+                  role="menuitemcheckbox" aria-checked="false">
+            <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-image"/></svg>
+            <span class="src-name" data-t="生成寫實照片">生成寫實照片</span>
+            <svg class="ic ic-sm src-tick" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-check"/></svg>
+          </button>
+        </div>
         <div id="src-note" class="src-note" data-t="開啟後，這個對話可以讀取這些來源（唯讀）。">開啟後，這個對話可以讀取這些來源（唯讀）。</div>
       </div>
 

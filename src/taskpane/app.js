@@ -43,6 +43,23 @@ const LS_API_OVERRIDE = 'jv_api_override';
  * a warning whenever it is on, and why irreversible operations still ask.
  */
 const LS_AUTO_APPROVE = 'jv_auto_approve';
+/**
+ * Whether the agent may generate photo-realistic pictures.
+ *
+ * ── Why this one is a switch when backgrounds and illustrations are not ──
+ * A gradient behind a title makes no claim, and an illustration is visibly
+ * drawn — nobody reads either as a record of anything. A photograph does make a
+ * claim: a generated factory floor on a company deck reads as THIS factory
+ * floor. That is the only kind of generated picture someone can mistake for
+ * evidence, so it is the only one that has to be a decision.
+ *
+ * Default OFF, and persisted like 自動允許 rather than held for the session:
+ * whether your company is comfortable with generated photography is a standing
+ * position, not something to re-answer every time PowerPoint restarts. Off by
+ * default because the safe answer should be the one you get without knowing the
+ * setting exists.
+ */
+const LS_PHOTO_GEN = 'jv_photo_gen';
 /** Chosen model. A working preference, so it survives restarts. */
 const LS_MODEL = 'jv_model';
 /**
@@ -194,6 +211,8 @@ const state = {
   sources: [],
   /** true = destructive tools run without a click. See LS_AUTO_APPROVE. */
   autoApprove: localStorage.getItem(LS_AUTO_APPROVE) === '1',
+  /** true = the agent may generate photo-realistic pictures. See LS_PHOTO_GEN. */
+  photoGen: localStorage.getItem(LS_PHOTO_GEN) === '1',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1715,6 +1734,12 @@ async function send(message, opts = {}) {
         locale: state.locale || undefined,
         clientTools: host.supportedTools(),
         dataSources: state.sources,
+        // Only the narrowing direction is worth sending: the server's own policy
+        // decides whether photography is available at all, and this can take it
+        // away but never grant it. Omitted when off so an older server that does
+        // not know the field behaves as though it were off, which is the safe
+        // reading of a missing value.
+        allowPhoto: state.photoGen || undefined,
         // The COUNT, not the images. The server turns this into a line telling the
         // model that pictures are attached and which tool fetches them; the bytes
         // stay here until it actually asks.
@@ -2482,12 +2507,24 @@ function renderSourceMenu() {
       item.disabled = false;
       continue;
     }
+    // A capability row ticks the same way but governs what the agent may MAKE
+    // rather than what it may read, so it is never gated on a linked account and
+    // never counts toward 「這個對話可以讀取」.
+    if (item.dataset.cap) {
+      item.disabled = false;
+      item.setAttribute('aria-checked', String(state.photoGen));
+      continue;
+    }
     const key = item.dataset.src;
     const usable = ALWAYS_AVAILABLE.has(key) || !!state.available[key];
     item.disabled = !usable;
     item.setAttribute('aria-checked', String(usable && state.sources.includes(key)));
     item.title = usable ? '' : (state.sourceHint || t('{0} 尚未連結', SOURCE_NAMES()[key]));
   }
+  // PowerPoint is the only host with picture tools to govern, and a setting that
+  // controls nothing is worse than no setting — 「我在 ppt 這裡看得到 excel 的常用
+  // 指令，超怪」 was the same complaint about a different menu.
+  $('src-cap').hidden = !(host && host.meta.id === 'powerpoint');
   const on = state.sources.length > 0;
   $('plus').classList.toggle('has-src', on);
   $('src-note').textContent = on
@@ -3762,6 +3799,17 @@ ${typed}` : `/${tpl.name}`) : '';
     if (key === 'file') { toggleSourceMenu(false); $('file-input').click(); return; }
     // Also not a toggle: it swaps this menu for the templates one.
     if (key === 'cmd') { toggleSourceMenu(false); toggleCmdMenu(true); return; }
+    if (item.dataset.cap === 'photo') {
+      state.photoGen = !state.photoGen;
+      localStorage.setItem(LS_PHOTO_GEN, state.photoGen ? '1' : '0');
+      renderSourceMenu();
+      // In the transcript for the same reason 自動允許 is: someone scrolling back
+      // through a deck full of pictures should be able to see when this changed.
+      addNote(state.photoGen
+        ? t('已開啟寫實照片生成。AI 產生的照片看起來像實拍，用之前請自己確認。')
+        : t('已關閉寫實照片生成。AI 只會生成背景與插畫。'), 'note');
+      return;
+    }
     state.sources = state.sources.includes(key)
       ? state.sources.filter(k => k !== key)
       : [...state.sources, key];

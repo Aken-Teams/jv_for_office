@@ -485,5 +485,30 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('一維陣列會被擋下並說清楚格式', bad.includes('[[...]'), bad);
 }
 
+/**
+ * 圖例不能把地圖擠掉。
+ *
+ * 「地圖有點小，反而圖例太大」——固定 150pt 在半頁寬的圖上就是三分之一，而那塊
+ * 地理是用地圖的唯一理由。改成跟著畫布寬度走，下限留在放得下一個截短的地名。
+ */
+{
+  const mapOf = (w, h) => {
+    const s = chartSvg({ type: 'map', map: 'taiwan', title: '縣市', width: w, height: h,
+      categories: ['新北', '高雄', '台中', '台北'], values: [397, 278, 275, 246] }, TH);
+    const pts = [...s.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+    return {
+      svg: s,
+      w: Math.max(...pts.map((p) => p[0])) - Math.min(...pts.map((p) => p[0])),
+      lowest: Math.max(...[...s.matchAll(/<text x="[\d.]+" y="([\d.]+)"/g)].map((m) => +m[1])),
+    };
+  };
+  const small = mapOf(430, 300);
+  const big = mapOf(900, 460);
+  ok('窄畫布的圖例會縮', /font-size="10.5"/.test(small.svg));
+  ok('寬畫布的圖例不縮', /font-size="12"/.test(big.svg));
+  ok('圖例沒有掉出畫布', small.lowest <= 300, `${small.lowest}`);
+  ok('地圖拿到的寬度比圖例多', small.w > 430 * 0.3, `${small.w.toFixed(0)}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

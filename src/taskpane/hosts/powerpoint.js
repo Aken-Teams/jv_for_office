@@ -2155,9 +2155,20 @@ async function buildSlide(args) {
          * does not.
          */
         const onRight = form === 'imageright';
-        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
-        // A tinted field behind the type, so the half without the picture is a
-        // surface rather than a blank. Faint enough that black text still reads.
+        /**
+         * Only the text half gets painted.
+         *
+         * ── The bug ──
+         * This used to lay a full-bleed `bg` rectangle down first, the way the
+         * other covers do. But the picture is inserted BEFORE the shape batch —
+         * it has to be, so it sits underneath — and a full-bleed rectangle drawn
+         * afterwards covers it completely. 「圖有出來，但被另一個白色的區塊蓋住了」
+         * was exactly that: the image was there, under a sheet of white.
+         *
+         * So the ground stops at the picture's edge. The tint is doing real work
+         * too — it makes the half without the picture a surface rather than a
+         * blank — but it must not cross the seam.
+         */
         band({ left: onRight ? 0 : 392, top: 0, width: GRID.W - 392, height: GRID.H }, th.ground);
         // A thin bar of colour against the picture's edge, so the two halves are
         // joined rather than merely adjacent.
@@ -2186,7 +2197,9 @@ async function buildSlide(args) {
          * surface. The colour bar under it is what stops the join looking like a
          * crop.
          */
-        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        // Below the picture only — see imageLeft for what a full-bleed ground
+        // does to an image that was inserted before the shapes.
+        band({ left: 0, top: 216, width: GRID.W, height: GRID.H - 216 }, th.bg);
         band({ left: 0, top: 208, width: GRID.W, height: 8 }, th.accent);
         if (args.eyebrow) {
           text(String(args.eyebrow).toUpperCase(), { left: 80, top: 252, width: 800, height: 24 },

@@ -744,7 +744,26 @@ function mapChart(spec, theme) {
       }
     }
   }
-  const legendW = (values.size || marked.size) ? 150 : 0;
+  /**
+   * How much of the canvas the legend may take.
+   *
+   * ── Why a constant was wrong ──
+   * 150 points is a quarter of a full-width chart and more than a third of a
+   * half-width one — and a map on half a slide is already small. 「地圖有點小，
+   * 反而圖例太大」 is what that ratio looks like: the list wins the page and the
+   * geography, which is the only reason to use a map at all, loses it.
+   *
+   * Proportional, with a floor that still fits 「United Sta…  1.4k」 and a
+   * ceiling so a very wide chart does not grow a very wide list.
+   */
+  const legendW = (values.size || marked.size)
+    ? Math.max(104, Math.min(150, Math.round(f.w * 0.24)))
+    : 0;
+  // Type shrinks with the column, or a narrow legend clips every name.
+  const legendSize = legendW < 128 ? 10.5 : 12;
+  const rowH = legendW < 128 ? 19 : 22;
+  // Room for the rows plus the two footnotes that may follow them.
+  const maxRows = Math.max(3, Math.min(8, Math.floor((f.h - 44) / rowH)));
   const plotW = f.w - legendW;
   const scale = Math.min(plotW / ((x1 - x0) || 1), f.h / ((y1 - y0) || 1));
   const offX = f.x + (plotW - (x1 - x0) * scale) / 2;
@@ -789,12 +808,12 @@ function mapChart(spec, theme) {
       // Highlight mode: the list is the names, in the order they were given —
       // that order is usually chronological or narrative, and re-sorting it
       // would throw away the only ordering the caller had.
-      ? [...marked].slice(0, 8).map((n) => [n, null])
-      : [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      ? [...marked].slice(0, maxRows).map((n) => [n, null])
+      : [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxRows);
     const lx = f.x + plotW + 16;
     let ly = f.y + 8;
     for (const [name, v] of rows) {
-      out += rect(lx, ly, 12, 12, shade(v, name), ' rx="2"');
+      out += rect(lx, ly + (rowH - 12) / 2 - 5, 11, 11, shade(v, name), ' rx="2"');
       /**
        * The name column has a fixed width and 「United States of America」 does
        * not fit in it — it ran straight under the number on its right. SVG has
@@ -804,35 +823,36 @@ function mapChart(spec, theme) {
        * is tall, latin is roughly half that, so 「广东」 and 「Bangladesh」 both
        * get as many characters as actually fit.
        */
-      const room = (f.W - 16) - (lx + 19) - (v === null ? 4 : 44);
+      const room = (f.W - 16) - (lx + 17) - (v === null ? 4 : legendSize * 3.4);
       let shown = name;
       let used = 0;
       for (let i = 0; i < name.length; i++) {
-        used += /[　-鿿＀-￯]/.test(name[i]) ? 12 : 6.6;
+        used += /[　-鿿＀-￯]/.test(name[i]) ? legendSize : legendSize * 0.55;
         if (used > room) { shown = `${name.slice(0, Math.max(1, i - 1))}…`; break; }
       }
-      out += text(lx + 19, ly + 6, shown,
-        { size: 12, color: theme.ink || '#3D3D3D', baseline: 'middle' });
+      out += text(lx + 17, ly + 6, shown,
+        { size: legendSize, color: theme.ink || '#3D3D3D', baseline: 'middle' });
       if (v !== null) {
-        out += text(f.W - 16, ly + 6, short(v),
-          { size: 12, bold: true, color: theme.strong || SERIES[0], anchor: 'end', baseline: 'middle' });
+        out += text(f.W - 14, ly + 6, short(v),
+          { size: legendSize, bold: true, color: theme.strong || SERIES[0],
+            anchor: 'end', baseline: 'middle' });
       }
-      ly += 22;
+      ly += rowH;
     }
     const total = marked.size || values.size;
     if (total > rows.length) {
       out += text(lx, ly + 6, `（另有 ${total - rows.length} 個未列出）`,
-        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
-      ly += 20;
+        { size: legendSize - 1.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+      ly += rowH - 2;
     }
     if (swapped) {
       out += text(lx, ly + 6, `（已改用${which}地圖）`,
-        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
-      ly += 18;
+        { size: legendSize - 1.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+      ly += rowH - 4;
     }
     if (unknown.length) {
       out += text(lx, ly + 6, `找不到：${unknown.slice(0, 3).join('、')}`,
-        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+        { size: legendSize - 1.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
     }
   }
   return out;

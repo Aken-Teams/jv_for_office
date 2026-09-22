@@ -259,5 +259,66 @@ ok('進度字串講出大概要等多久',
   /秒/.test(host.meta.toolLabels().ppt_generate_image),
   '等十幾秒沒有任何訊息，使用者會以為當掉了');
 
+// ── 寫實照片開關 ──────────────────────────────────────────────────────────────
+/**
+ * 這個開關必須同時切掉兩件事：模型「問得出口」和伺服器「答得出來」。
+ *
+ * 只切一邊都不夠。只改 schema，一個舊版窗格或設定中途改變的 run 就繞過去了；
+ * 只擋伺服器，模型會一直重試一個它以為存在的選項，燒掉回合數。所以兩邊都測。
+ *
+ * 背景和插畫不在開關後面，而且必須確認沒被波及——會被誤認成「記錄」的只有照片，
+ * 把整個生圖能力一起關掉是另一回事，不是使用者按那顆按鈕的意思。
+ */
+const toolSpec = await import(new URL('services/pptToolSpec.ts', serverDir).href).catch(() => null);
+if (toolSpec) {
+  const styleOf = (tools) => tools.find((x) => x.name === 'ppt_generate_image')
+    .inputSchema.properties.style;
+  const onTools = toolSpec.pptToolsFor({ allowPhoto: true });
+  const offTools = toolSpec.pptToolsFor({ allowPhoto: false });
+
+  ok('預設（沒給參數）不動原本的規格', toolSpec.pptToolsFor() === toolSpec.PPT_TOOLS);
+  ok('開著的時候 photo 還在', styleOf(onTools).enum.includes('photo'));
+  ok('關掉以後 photo 不在 enum 裡', !styleOf(offTools).enum.includes('photo'));
+  // 這才是重點：擋的是「說明」還是「schema」。說明是建議，enum 是牆。
+  ok('關掉以後說明裡也不再介紹 photo',
+    !/- photo /.test(styleOf(offTools).description), styleOf(offTools).description);
+  ok('關掉以後有講替代做法',
+    /abstract|背景|插畫/.test(offTools.find((x) => x.name === 'ppt_generate_image').description));
+
+  for (const style of ['abstract', 'flat', 'handdrawn', 'isometric', 'gradient', 'texture']) {
+    ok(`關掉照片不影響 ${style}`, styleOf(offTools).enum.includes(style));
+  }
+  ok('其他工具一個都沒少', offTools.length === toolSpec.PPT_TOOLS.length);
+  ok('沒有動到原本的常數', styleOf(toolSpec.PPT_TOOLS).enum.includes('photo'));
+
+  // 伺服器端的那道牆。excelBridge 匯入不進來（Node 的型別剝離不會把 './x.js'
+  // 轉回 .ts），但真正在判斷的是這個純函式——bridge 只是呼叫它，所以測它就是
+  // 測那道牆。
+  const off = toolSpec.imageStyleRefusal('photo', false);
+  ok('關掉時伺服器擋下寫實照片', typeof off === 'string' && off.length > 0);
+  // 「不行」會被重試，「改用這個」不會。
+  ok('而且講了要改用什麼', /abstract|flat|插畫/.test(off || ''), off);
+  ok('也講了在哪裡開', /選單|開啟/.test(off || ''), off);
+  ok('說的替代畫法在 enum 裡真的存在',
+    ['abstract', 'gradient', 'flat', 'handdrawn']
+      .every((v) => styleOf(offTools).enum.includes(v)));
+
+  ok('關掉照片不影響背景', toolSpec.imageStyleRefusal('abstract', false) === null);
+  ok('關掉照片不影響插畫', toolSpec.imageStyleRefusal('flat', false) === null);
+  ok('沒寫 style 不會被擋', toolSpec.imageStyleRefusal(undefined, false) === null);
+  ok('大小寫不能繞過', toolSpec.imageStyleRefusal('Photo', false) !== null);
+  ok('開著的時候放行', toolSpec.imageStyleRefusal('photo', true) === null);
+}
+
+// ── 窗格那顆按鈕 ──────────────────────────────────────────────────────────────
+const app = fs.readFileSync(new URL('../src/taskpane/app.js', import.meta.url), 'utf8');
+const html = fs.readFileSync(new URL('../src/taskpane/taskpane.html', import.meta.url), 'utf8');
+ok('選單裡有這顆開關', /data-cap="photo"/.test(html));
+ok('預設是關的', /localStorage.getItem\(LS_PHOTO_GEN\) === '1'/.test(app));
+ok('會記住使用者的選擇', /localStorage.setItem\(LS_PHOTO_GEN/.test(app));
+ok('會送給伺服器', /allowPhoto: state.photoGen/.test(app));
+// 只在 PowerPoint 出現——另外兩個 host 沒有圖片工具可管。
+ok('只在 PowerPoint 顯示', /src-cap'\).hidden = !\(host && host.meta.id === 'powerpoint'\)/.test(app));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

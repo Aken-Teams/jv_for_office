@@ -1396,5 +1396,30 @@ for (const [look, bar] of [['business', 'top'], ['soft', 'top'], ['business', 'l
   ok('三段文字都在', ['研發', '製造', '業務'].every((t) => texts().includes(t)));
 }
 
+/**
+ * 圖片版型不能自己把圖蓋掉。
+ *
+ * 圖片是在形狀批次「之前」插入的——必須如此，setSelectedDataAsync 是附加到最上
+ * 層，先插入才會在下層。那之後任何一個滿版矩形都會整張罩住它：「圖有出來，但
+ * 被另一個白色的區塊蓋住了」就是這個。
+ *
+ * 所以這裡檢查的不是「有沒有畫底色」，而是「有沒有任何形狀完整罩住圖片的框」。
+ * 之後新增的圖片版型會自動被這條規則接住。
+ */
+for (const cover of ['imageleft', 'imageright', 'imagetop']) {
+  slide = fakeSlide();
+  INSERTS.length = 0;
+  await build({ kind: 'title', cover, title: '標題', body: ['副標'],
+    image: 'https://example.com/a.svg' });
+  const img = INSERTS[INSERTS.length - 1];
+  const covering = alive().filter((s) => s.kind === 'geo'
+    && s.left <= img.imageLeft + 1 && s.top <= img.imageTop + 1
+    && s.left + s.width >= img.imageLeft + img.imageWidth - 1
+    && s.top + s.height >= img.imageTop + img.imageHeight - 1);
+  ok(`${cover} 的圖沒有被形狀蓋住`, covering.length === 0,
+    covering.map((s) => `${s.left},${s.top} ${s.width}x${s.height}`).join(' / '));
+  ok(`${cover} 文字那半邊還是有底`, alive().some((s) => s.kind === 'geo' && s._fill));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

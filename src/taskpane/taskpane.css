@@ -1153,6 +1153,12 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .src-note {
   padding: 4px 9px 3px; font-size: 11px; color: var(--fg-subtle); line-height: 1.4;
 }
+/* Capabilities, ruled off from the sources above them. The rows look identical
+   because they behave identically — a tick that means "on" — but what they
+   govern is different: the sources are what this conversation may READ, this is
+   what it may MAKE. The rule is the whole explanation, so it is a rule and not a
+   heading nobody would read. */
+.src-cap { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
 
 /* One saved prompt. The name is the control; edit and delete stay out of the
    way until the row is under the pointer, because the common action by far is
