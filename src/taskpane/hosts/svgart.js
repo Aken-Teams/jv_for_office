@@ -163,6 +163,139 @@ export function dotGrid(fill, dot, opts = {}) {
 }
 
 /**
+ * Motifs — the quiet geometry that runs across every page of a deck.
+ *
+ * ── What this is for, in the words that produced it ──
+ * 「我每頁都可以有類似白底加波浪、菱形幾何的背景圖，但它不會喧賓奪主，就很像 PPT
+ * 模板那樣每頁都有這個背景，而我們的圖表、文字放在這背景上。」
+ *
+ * That is exactly what a bought template gives people, and exactly what was
+ * missing here. Note what it is NOT: it is not a picture of the subject. A
+ * template's background is abstract on purpose, which is why the same one works
+ * on page 2 and page 14 and never looks irrelevant.
+ *
+ * ── Why this beats generating a background image, on every axis ──
+ *   consistency  the same marks in the same places on every page, which is the
+ *                entire source of the 「模板感」 — a different generated image per
+ *                page reads as a collage, not a deck
+ *   cost         arithmetic, so it is free and instant; a generated background
+ *                is fifteen to sixty seconds a page against one GPU
+ *   relevance    abstract geometry is never off-topic, so it cannot produce the
+ *                「這張圖跟內容有什麼關係」 reaction
+ *   editable     right-click → 轉換為圖形 and every wave is a real shape
+ *
+ * ── The one rule they all obey ──
+ * Nothing crosses the content band at full strength. The marks live in the
+ * margins, the corners and the bottom, at an opacity where you notice the page
+ * has been designed without noticing what is on it. A motif you can read is a
+ * motif that is competing with the slide.
+ */
+const MOTIF_ALPHA = 0.1;
+
+/** Soft bands along the foot of the page. The friendliest of the set. */
+function mWaves(tone, accent) {
+  const out = [];
+  for (let i = 0; i < 3; i++) {
+    const y = H - 40 + i * 26;
+    const amp = 26 - i * 5;
+    const d = `M -20 ${n2(y)} `
+      + `C ${n2(W * 0.2)} ${n2(y - amp)}, ${n2(W * 0.32)} ${n2(y + amp)}, ${n2(W * 0.5)} ${n2(y)} `
+      + `S ${n2(W * 0.82)} ${n2(y - amp)}, ${n2(W + 20)} ${n2(y - amp * 0.4)} `
+      + `L ${n2(W + 20)} ${n2(H + 40)} L -20 ${n2(H + 40)} Z`;
+    out.push(`<path d="${d}" fill="${esc(i === 1 ? accent : tone)}"`
+      + ` opacity="${n2(MOTIF_ALPHA * (i === 1 ? 0.7 : 1))}"/>`);
+  }
+  return out.join('');
+}
+
+/** Outlined diamonds, clustered where the content is not. */
+function mDiamonds(tone, accent) {
+  const rand = rng(31);
+  const out = [];
+  // Two clusters, top-right and bottom-left: the two corners a slide layout
+  // leaves empty most often.
+  for (const [cx, cy, n] of [[W - 120, 92, 7], [96, H - 96, 5]]) {
+    for (let i = 0; i < n; i++) {
+      const size = 16 + rand() * 46;
+      const x = cx + (rand() - 0.5) * 300;
+      const y = cy + (rand() - 0.5) * 170;
+      const pts = [[x, y - size], [x + size, y], [x, y + size], [x - size, y]]
+        .map((q) => q.map(n2).join(',')).join(' ');
+      const solid = i % 3 === 0;
+      out.push(`<polygon points="${pts}" fill="${solid ? esc(accent) : 'none'}"`
+        + ` stroke="${esc(tone)}" stroke-width="1.2"`
+        + ` opacity="${n2(MOTIF_ALPHA * (solid ? 0.8 : 1.3))}"/>`);
+    }
+  }
+  return out.join('');
+}
+
+/** Concentric arcs sweeping out of one corner. */
+function mArcs(tone, accent) {
+  const out = [];
+  for (let i = 0; i < 6; i++) {
+    const r = 150 + i * 78;
+    out.push(`<circle cx="${n2(W + 60)}" cy="${n2(-40)}" r="${n2(r)}" fill="none"`
+      + ` stroke="${esc(i === 2 ? accent : tone)}" stroke-width="${i === 2 ? 2.4 : 1.2}"`
+      + ` opacity="${n2(MOTIF_ALPHA * 1.4)}"/>`);
+  }
+  return out.join('');
+}
+
+/** A faint ruled grid. The most neutral motif, and the one for data-heavy decks. */
+function mGrid(tone) {
+  return `<defs><pattern id="mg" width="48" height="48" patternUnits="userSpaceOnUse">`
+    + `<path d="M48 0 L0 0 0 48" fill="none" stroke="${esc(tone)}" stroke-width="0.8"/>`
+    + `</pattern></defs>`
+    + `<rect width="${W}" height="${H}" fill="url(#mg)" opacity="${n2(MOTIF_ALPHA * 0.9)}"/>`;
+}
+
+/** Contour lines, like a map. Quietly technical without being a grid. */
+function mTopo(tone, accent) {
+  const rand = rng(77);
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    const y = 110 + i * 62;
+    const pts = [];
+    for (let x = -20; x <= W + 20; x += 60) {
+      pts.push(`${n2(x)},${n2(y + Math.sin((x / W) * Math.PI * 2 + i) * (22 + rand() * 10))}`);
+    }
+    out.push(`<polyline points="${pts.join(' ')}" fill="none"`
+      + ` stroke="${esc(i === 3 ? accent : tone)}" stroke-width="1.1"`
+      + ` opacity="${n2(MOTIF_ALPHA * 1.2)}"/>`);
+  }
+  return out.join('');
+}
+
+/** A diagonal band across one corner. The most graphic of the set. */
+function mRibbon(tone, accent) {
+  return `<polygon points="${W - 300},0 ${W},0 ${W},${H} ${W - 120},${H}"`
+    + ` fill="${esc(tone)}" opacity="${n2(MOTIF_ALPHA)}"/>`
+    + `<polygon points="${W - 150},0 ${W - 60},0 ${W},${H} ${W - 90},${H}"`
+    + ` fill="${esc(accent)}" opacity="${n2(MOTIF_ALPHA * 0.8)}"/>`;
+}
+
+/** A single wedge in one corner. Almost nothing, which is sometimes right. */
+function mCorner(tone, accent) {
+  return `<polygon points="0,${H} 0,${H - 220} 300,${H}"`
+    + ` fill="${esc(tone)}" opacity="${n2(MOTIF_ALPHA)}"/>`
+    + `<polygon points="0,${H} 0,${H - 96} 130,${H}"`
+    + ` fill="${esc(accent)}" opacity="${n2(MOTIF_ALPHA * 0.9)}"/>`;
+}
+
+const MOTIF = {
+  waves: mWaves,
+  diamonds: mDiamonds,
+  arcs: mArcs,
+  grid: (t) => mGrid(t),
+  topo: mTopo,
+  ribbon: mRibbon,
+  corner: mCorner,
+};
+
+export const MOTIF_NAMES = Object.keys(MOTIF);
+
+/**
  * The whole decorative layer for one slide, or null when the look wants none.
  *
  * `spec` carries only what changes the ornament: the look's texture and stroke
@@ -171,7 +304,8 @@ export function dotGrid(fill, dot, opts = {}) {
  */
 export function ornamentSvg(spec = {}) {
   const { texture, strokes } = spec;
-  if (!texture && strokes !== 'hand') return null;
+  const motif = MOTIF[String(spec.motif || '').toLowerCase()];
+  if (!texture && strokes !== 'hand' && !motif) return null;
 
   const th = spec.theme || {};
   const parts = [];
@@ -179,7 +313,19 @@ export function ornamentSvg(spec = {}) {
   if (texture === 'paper') parts.push(paper(spec.ground || th.ground || '#FFFFFF', { id: 'a' }));
   else if (texture === 'wash') parts.push(wash(spec.ground || th.ground || '#FFFFFF', th.tint || '#F2F2F2', { id: 'a' }));
   else if (texture === 'dots') parts.push(dotGrid(spec.ground || th.ground || '#FFFFFF', th.line || '#DDDDDD', { id: 'a' }));
+  // No texture, but the ornament still owns the page: the flat ground has to be
+  // painted here or the motif lands on whatever PowerPoint's layout provides.
   else parts.push(`<rect width="${W}" height="${H}" fill="${esc(spec.ground || '#FFFFFF')}"/>`);
+
+  /**
+   * Under the frame and the rules, over the ground.
+   *
+   * The order matters: a motif drawn after a hand-drawn frame would sit on top
+   * of it, and the frame is content in a way the motif is not.
+   */
+  if (motif) {
+    parts.push(motif(spec.tone || th.strong || '#888888', spec.accent || th.accent || '#888888'));
+  }
 
   if (strokes === 'hand') {
     const ink = spec.ink || th.strong || '#333333';

@@ -20,7 +20,9 @@
  *      every time it is rebuilt — which nobody reads as 「手繪風」, they read it
  *      as a tool that cannot be trusted.
  */
-import { ornamentSvg, handLine, handFrame, paper } from '../src/taskpane/hosts/svgart.js';
+import {
+  ornamentSvg, handLine, handFrame, paper, MOTIF_NAMES,
+} from '../src/taskpane/hosts/svgart.js';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
@@ -108,6 +110,65 @@ for (const spec of [
   // 值是直接寫進屬性的，沒有轉義的話一個引號就能把 SVG 弄壞。
   const svg = paper('"><script>alert(1)</script>');
   ok('顏色值有轉義', !svg.includes('<script>'), svg.slice(0, 120));
+}
+
+// ── 母題：整份簡報共用的那層背景 ─────────────────────────────────────────────
+//
+// 使用者要的是一份模板：「每頁都有白底加波浪、菱形幾何的背景，但不會喧賓奪主」。
+// 這比每頁生一張圖好在四件事——一致（模板感的來源就是一致）、免費、永遠不會
+// 跟主題無關、而且轉換為圖形之後每一筆都能編輯。
+{
+  ok('母題清單不是空的', MOTIF_NAMES.length >= 6, MOTIF_NAMES.join(' '));
+  const shots = new Map();
+  for (const m of MOTIF_NAMES) {
+    const svg = ornamentSvg({ motif: m, theme: TH, ground: '#FFFFFF' });
+    ok(`${m}：畫得出來且是合法的 SVG`,
+      svg && svg.endsWith('</svg>')
+        && (svg.match(/</g) || []).length === (svg.match(/>/g) || []).length
+        && !/NaN|undefined|Infinity/.test(svg),
+      (svg || '').slice(0, 100));
+    shots.set(m, svg.replace(/^<svg[^>]*>/, ''));
+
+    // 喧賓奪主就失去意義了。整份簡報每一頁都有它，所以它必須是「注意到頁面
+    // 被設計過」而不是「注意到上面有什麼」。
+    const alphas = [...svg.matchAll(/opacity="([\d.]+)"/g)].map((x) => Number(x[1]));
+    ok(`${m}：夠淡，不會蓋過內容`,
+      alphas.length > 0 && Math.max(...alphas) <= 0.2,
+      `最濃 ${Math.max(...alphas)}`);
+  }
+  ok('每個母題長得都不一樣', new Set(shots.values()).size === MOTIF_NAMES.length);
+
+  // 一致才有模板感。同樣的母題畫兩次必須完全一樣。
+  const a = ornamentSvg({ motif: 'diamonds', theme: TH, ground: '#FFFFFF' });
+  const b = ornamentSvg({ motif: 'diamonds', theme: TH, ground: '#FFFFFF' });
+  ok('同一個母題每次都一模一樣', a === b,
+    '每頁長得不一樣就不是模板，是拼貼');
+
+  ok('none 不會產生裝飾層',
+    ornamentSvg({ motif: 'none', theme: TH, ground: '#FFFFFF' }) === null);
+  ok('沒見過的母題也不會產生', ornamentSvg({ motif: 'zzz', theme: TH }) === null);
+
+  // 母題用的是這份簡報的顏色，不是自己一套——不然它就是一張剛好貼在旁邊的圖。
+  const tinted = ornamentSvg({ motif: 'waves', theme: TH, ground: '#FFFFFF',
+    tone: '#AA1122', accent: '#22AA11' });
+  ok('母題吃簡報的配色', tinted.includes('#AA1122') || tinted.includes('#22AA11'), tinted.slice(0, 200));
+
+  // 沒有紋理的時候，底色也得由裝飾層鋪——不然母題會落在 PowerPoint 的預設版面上。
+  ok('只有母題的時候仍然會鋪底色',
+    /<rect width="960" height="540" fill="#FAFAFA"/.test(
+      ornamentSvg({ motif: 'grid', theme: TH, ground: '#FAFAFA' })));
+}
+
+// 骨架那一側：母題由版式決定，可以整份覆寫，但不是逐頁換。
+{
+  const fs2 = await import('fs');
+  const src = fs2.readFileSync(
+    new URL('../src/taskpane/hosts/powerpoint.js', import.meta.url), 'utf8');
+  ok('每個版式都指定了母題',
+    (src.match(/motif: '/g) || []).length >= 13,
+    `${(src.match(/motif: '/g) || []).length} 個`);
+  ok('可以整份覆寫', src.includes('args.motif === undefined'));
+  ok('而且說明了為什麼不該逐頁換', src.includes('never per slide'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

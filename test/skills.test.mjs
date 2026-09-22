@@ -122,6 +122,10 @@ for (const [name, file, reader] of [
   ok(`${name}：看完要先講一句看到什麼`, src.includes('講一句你看到什麼'));
   // 例外要寫出來，不然「做一份全新的」也會先去讀一個空檔案。
   ok(`${name}：從零開始是例外`, src.includes('唯一的例外'));
+  // 開工前那句「我先去查一下資料」最容易寫成英文——那時候還在規劃，還沒開始
+  // 寫中文內容，但使用者看到的第一行就是它。
+  ok(`${name}：第一句話就要用對語言`, src.includes('第一句話就要是'));
+  ok(`${name}：但工具參數是例外`, src.includes('不是講給使用者聽的'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

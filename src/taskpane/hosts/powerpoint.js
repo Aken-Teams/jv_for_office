@@ -303,7 +303,7 @@ const THEMES = {
 const LOOKS = {
   business: {
     label: '企業', desc: '雙色頂條、短底線、方角卡片。給客戶、主管、對外提案。',
-    theme: 'corporate',
+    theme: 'corporate', motif: 'waves',
     masthead: 'double', rule: 'short', ground: 'tint',
     titleSize: 25, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
     shape: 'Rectangle', card: 'tint', cover: 'panel', topPad: 0,
@@ -311,7 +311,7 @@ const LOOKS = {
   editorial: {
     label: '雜誌', desc: '沒有色條，標題大而不粗，下面一條細細的滿版線。像一篇報導的開頭。',
     font: '微軟正黑體 Light',
-    theme: 'mono',
+    theme: 'mono', motif: 'corner',
     masthead: 'none', rule: 'full', ground: 'white',
     titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'Rectangle', card: 'outline', cover: 'split', topPad: 10,
@@ -319,28 +319,28 @@ const LOOKS = {
   minimal: {
     label: '極簡', desc: '什麼裝飾都沒有，只有字和留白。內容本身夠強的時候最好看。',
     font: '微軟正黑體 Light',
-    theme: 'mono',
+    theme: 'mono', motif: 'none',
     masthead: 'none', rule: 'none', ground: 'white',
     titleSize: 22, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'Rectangle', card: 'plain', cover: 'plain', topPad: 18,
   },
   soft: {
     label: '柔和', desc: '圓角、粗一點的色條、標題置中。給內部分享、教學、比較輕鬆的場合。',
-    theme: 'muted',
+    theme: 'muted', motif: 'arcs',
     masthead: 'round', rule: 'none', ground: 'tint',
     titleSize: 26, titleBold: true, titleAlign: 'center', eyebrowCase: 'keep',
     shape: 'RoundRectangle', card: 'tint', cover: 'stack', topPad: 4,
   },
   bold: {
     label: '大字', desc: '標題佔掉上面一大塊，色塊當底。給只有一個重點、要講得很用力的場合。',
-    theme: 'corporate',
+    theme: 'corporate', motif: 'ribbon',
     masthead: 'block', rule: 'none', ground: 'white',
     titleSize: 34, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
     shape: 'Rectangle', card: 'tint', cover: 'bleed', topPad: 6,
   },
   tech: {
     label: '科技', desc: '細線、單色、深色底走向。給技術簡報、資料儀表板。',
-    theme: 'night',
+    theme: 'night', motif: 'grid',
     masthead: 'hairline', rule: 'none', ground: 'strong',
     titleSize: 24, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
     shape: 'Rectangle', card: 'outline', cover: 'triptych', topPad: 0,
@@ -354,21 +354,21 @@ const LOOKS = {
     // PowerPoint substitutes silently — the slide still reads, it just loses the
     // mood. That is the failure mode we can live with.
     font: '微軟正黑體', titleFont: '新細明體',
-    theme: 'linen',
+    theme: 'linen', motif: 'none',
     masthead: 'frame', rule: 'none', ground: 'tint',
     titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'Rectangle', card: 'plain', cover: 'paper', topPad: 14,
   },
   academic: {
     label: '學術', desc: '整頁細框、密集分欄、編號分明。論文口試、技術審查、內部評審。',
-    theme: 'corporate',
+    theme: 'corporate', motif: 'grid',
     masthead: 'frame', rule: 'short', ground: 'white',
     titleSize: 22, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'Rectangle', card: 'outline', cover: 'band', topPad: 0,
   },
   dashboard: {
     label: '儀表板', desc: '左側色柱、點陣底、方格面板。給數據回顧、月結報告。',
-    theme: 'slate',
+    theme: 'slate', motif: 'topo',
     // The rail is the whole skeleton: a full-height column down the left edge
     // with everything indented past it. No other look moves the content area,
     // which is exactly why this one does not read as a recolour of any of them.
@@ -379,14 +379,14 @@ const LOOKS = {
   },
   courseware: {
     label: '教材', desc: '大字、圓角、步驟分明、留白大方。教學、內訓、說明會。',
-    theme: 'fresh',
+    theme: 'fresh', motif: 'waves',
     masthead: 'round', rule: 'short', ground: 'tint',
     titleSize: 28, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
     shape: 'RoundRectangle', card: 'tint', cover: 'band', topPad: 6,
   },
   handmade: {
     label: '手作', desc: '紙紋底、手繪框線。暖色、鬆一點的場合——提案、分享、對外簡介。',
-    theme: 'linen',
+    theme: 'linen', motif: 'none',
     masthead: 'none', rule: 'none', ground: 'tint',
     texture: 'paper', strokes: 'hand',
     titleSize: 28, titleBold: true, titleAlign: 'left', eyebrowCase: 'keep',
@@ -394,7 +394,7 @@ const LOOKS = {
   },
   whiteboard: {
     label: '白板', desc: '接近全白、手繪線條、沒有色塊。講解、拆解、邊講邊畫的內容。',
-    theme: 'mono',
+    theme: 'mono', motif: 'none',
     masthead: 'none', rule: 'none', ground: 'white',
     strokes: 'hand',
     titleSize: 26, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
@@ -403,7 +403,7 @@ const LOOKS = {
   eink: {
     label: '電子紙', desc: '紙紋、明體、純灰階、細線。長文、報告、需要被讀而不是被看的內容。',
     font: '微軟正黑體', titleFont: '新細明體',
-    theme: 'mono',
+    theme: 'mono', motif: 'none',
     masthead: 'none', rule: 'full', ground: 'tint',
     texture: 'paper',
     titleSize: 30, titleBold: false, titleAlign: 'left', eyebrowCase: 'keep',
@@ -482,8 +482,30 @@ function mix(a, b, t) {
   return `#${to(r1, r2)}${to(g1, g2)}${to(b1, b2)}`.toUpperCase();
 }
 
+/**
+ * Shape names Office actually accepts.
+ *
+ * ── Why this list exists ──
+ * `addGeometricShape('Oval', …)` looks right, reads right, and is not a member
+ * of `PowerPoint.GeometricShapeType`. The circle is called **Ellipse**; "Oval"
+ * appears only in the enum's own description text. An invalid name does not
+ * throw where it is written — it throws at `ctx.sync()`, which carries the whole
+ * slide, so two decorative circles took an entire cover down and the agent
+ * reported the composition as unsupported on that machine.
+ *
+ * The enum has about 180 members and we use six. Listing the six and falling
+ * back to a rectangle turns a guess that destroys a slide into a shape that is
+ * merely the wrong shape.
+ */
+const SHAPES_OK = new Set([
+  'Rectangle', 'RoundRectangle', 'Ellipse', 'Chevron', 'RightArrow', 'Triangle',
+  'Diamond', 'Donut', 'Frame', 'Plus', 'Star5', 'Hexagon', 'Pentagon', 'Trapezoid',
+  'HomePlate', 'Wave', 'Arc', 'Pie', 'Teardrop', 'Cloud', 'Heart', 'Moon',
+]);
+const geoType = (name) => (SHAPES_OK.has(String(name)) ? String(name) : 'Rectangle');
+
 /** RoundRectangle if the look asks for it, otherwise whatever the caller wanted. */
-const boxOf = (lk, base) => (lk.shape === 'RoundRectangle' ? 'RoundRectangle' : base);
+const boxOf = (lk, base) => geoType(lk.shape === 'RoundRectangle' ? 'RoundRectangle' : base);
 
 /** Text colour that survives whatever groundOf just chose. */
 const onGround = (th, lk, role) =>
@@ -1128,7 +1150,15 @@ async function addText(args) {
 
 async function addShape(args) {
   if (!hasApi('1.4')) throw new Error('新增圖形需要 PowerPointApi 1.4，這個 Office 版本太舊。');
-  const kind = String(args.shape || 'Rectangle');
+  /**
+   * The model picks this name, so it is the likeliest place to be handed one
+   * Office does not have. A bad name throws at sync and takes everything queued
+   * with it, so an unknown name becomes a rectangle plus a sentence rather than
+   * a failed call.
+   */
+  const asked = String(args.shape || 'Rectangle');
+  const kind = geoType(asked);
+  const swapped = kind !== asked;
   const th = theme(args.theme);
 
   return PowerPoint.run(async (ctx) => {
@@ -1151,7 +1181,12 @@ async function addShape(args) {
     shape.load('id');
     await ctx.sync();
     remember(slide.id, shape.id);
-    return `已在投影片 ${index} 加上 ${kind}（${Math.round(geo.left)},${Math.round(geo.top)}）。`;
+    return `已在投影片 ${index} 加上 ${kind}（${Math.round(geo.left)},${Math.round(geo.top)}）。`
+      + (swapped
+        ? `
+（PowerPoint 沒有「${asked}」這個形狀，改用了矩形。`
+          + '圓形要用 Ellipse，箭頭是 RightArrow、Chevron。）'
+        : '');
   });
 }
 
@@ -1441,7 +1476,29 @@ const CHROME = {
  * case — which is most cases — becomes one call against the shared GRID, and
  * every slide built this way lines up with every other one.
  */
-const RECIPES = new Set(['title', 'section', 'bullets', 'two_column', 'compare', 'statement', 'quote']);
+/**
+ * The layouts a deck is built from.
+ *
+ * ── Why `section` and `statement` are no longer offered ──
+ * They stayed in the tool's enum for weeks while the prompt told the model to
+ * use them sparingly, and the model kept reaching for them anyway. That is not
+ * the model being disobedient; it is what a prompt rule IS — advisory. When a
+ * thing has to stop happening, the reliable lever is the schema, not the
+ * paragraph: they are gone from the enum in pptToolSpec, so the model cannot
+ * pick them.
+ *
+ * The code stays because the capability is not wrong, only the default. Putting
+ * either back is one word in that enum.
+ *
+ * What replaces them, and honestly does the job better:
+ *   · chapters → the `eyebrow` on every content slide. 「01 資本與成本」 sits on
+ *     each page of the section rather than on one page before it, so somebody
+ *     who joins halfway still knows where they are.
+ *   · a big number → `kpi`, next to the content it came from, where it has a
+ *     context instead of a whole slide to itself.
+ */
+const RECIPES = new Set(['title', 'section', 'bullets', 'two_column', 'compare',
+  'statement', 'quote', 'timeline', 'quadrant', 'zigzag']);
 
 async function buildSlide(args) {
   if (!hasApi('1.4')) throw new Error('組版需要 PowerPointApi 1.4，這個 Office 版本太舊。');
@@ -1467,10 +1524,24 @@ async function buildSlide(args) {
    * is its own round trip, and a slide wanting paper plus a frame plus a rule
    * would otherwise pay for three.
    */
-  const ornament = (lk.texture || lk.strokes === 'hand') && hasImageCoercion('1.2')
+  let imageNote = '';
+  /**
+   * Which motif runs under this slide.
+   *
+   * A deck's background is a decision made once, so the look supplies it and the
+   * model may override it per DECK — never per slide. The same marks in the same
+   * places on every page is the entire source of the 「模板感」; varying it turns a
+   * template back into a collage.
+   */
+  const motif = args.motif === undefined ? (lk.motif || 'none') : String(args.motif);
+  const wantsArt = lk.texture || lk.strokes === 'hand' || (motif && motif !== 'none');
+  const ornament = wantsArt && hasImageCoercion('1.2')
     ? ornamentSvg({
       texture: lk.texture,
       strokes: lk.strokes,
+      motif,
+      tone: th.strong,
+      accent: th.accent,
       theme: th,
       ground: groundOf(th, lk),
       ink: th.strong,
@@ -1480,6 +1551,28 @@ async function buildSlide(args) {
       topPad: lk.topPad,
     })
     : null;
+
+  /**
+   * A picture that is part of the composition rather than the whole of it.
+   *
+   * ── The complaint this answers ──
+   * 「首頁都是產圖的版型…我寧願是多版型」, and behind it a sharper point: a
+   * full-bleed photograph with a title on top is the LEAST striking thing a
+   * cover can be unless the photograph is extraordinary. A picture holding a
+   * quarter of the page, with type and colour doing the rest, is a composition;
+   * a picture holding all of it is a background.
+   *
+   * So the image goes in as a band or a column and the recipe lays out around
+   * it. It shares the ornament's path for the same reason — setSelectedDataAsync
+   * appends, so anything that must sit UNDER the shapes has to go first.
+   */
+  const IMAGE_BOX = {
+    imageleft: { left: 0, top: 0, width: 384, height: GRID.H },
+    imageright: { left: GRID.W - 384, top: 0, width: 384, height: GRID.H },
+    imagetop: { left: 0, top: 0, width: GRID.W, height: 208 },
+  };
+  const wantsImage = String(args.image || '').trim()
+    && IMAGE_BOX[String(args.cover || '').toLowerCase()];
 
   if (ornament) {
     // The slide has to exist and be selected before anything can be inserted
@@ -1496,10 +1589,30 @@ async function buildSlide(args) {
       { left: 0, top: 0, width: GRID.W, height: GRID.H });
   }
 
+  if (wantsImage && !ornament) {
+    await PowerPoint.run(async (ctx) => {
+      if (args.slide === undefined && args.append !== false && hasApi('1.3')) {
+        ctx.presentation.slides.add();
+        await ctx.sync();
+      }
+    });
+    await focusSlideFor(args.slide === undefined ? {} : args);
+    try {
+      const got = await fetchPhoto(String(args.image),
+        wantsImage.width > wantsImage.height ? 'block' : 'side');
+      await insertImageData(got.svg || got.data,
+        got.svg ? Office.CoercionType.XmlSvg : Office.CoercionType.Image, wantsImage);
+    } catch (e) {
+      // A cover that arrives without its picture is a cover. One that refuses to
+      // be built because a CDN was slow is a broken tool, so the slide goes on.
+      imageNote = `\n（圖片沒抓到：${e.message} 這一頁的版面照做，圖請稍後再補。）`;
+    }
+  }
+
   return PowerPoint.run(async (ctx) => {
     // A recipe fills a slide, so it defaults to making a new one rather than
     // piling a second layout on top of whatever is already there.
-    if (!ornament && args.slide === undefined && args.append !== false && hasApi('1.3')) {
+    if (!ornament && !wantsImage && args.slide === undefined && args.append !== false && hasApi('1.3')) {
       ctx.presentation.slides.add();
       await ctx.sync();
     }
@@ -1772,8 +1885,62 @@ async function buildSlide(args) {
        * outright, and the prompt encourages it to: 「上下、左右、滿版、三欄」 are
        * different answers to the same page, not different levels of quality.
        */
+      /**
+       * Circles on a flat colour block, cut off by its edges.
+       *
+       * ── Why every plain panel gets them ──
+       * A rectangle of one colour is not a design decision; it is the absence of
+       * one, and it is what made the first covers read as 「黑黑一塊」. Two circles
+       * in the same hue a step lighter cost two shapes and change the block from
+       * a fill into a surface — and because they are cut off by the panel's own
+       * edges, they imply the block continues past what you can see.
+       *
+       * Same hue rather than a second colour, deliberately: a contrasting circle
+       * is an element the reader has to account for. This one is texture.
+       */
+      const orbs = (box, base) => {
+        const halo = mix(base, th.onCover, 0.12);
+        const draw = (geo) => {
+          /**
+           * Never a negative coordinate.
+           *
+           * ── What this cost before the clamp ──
+           * The circles were positioned at `box.left - r * 0.34` to bleed off the
+           * left edge, which is negative whenever the block starts at 0. Office
+           * rejects that, and it rejects it at `ctx.sync()` — so the failure took
+           * the ENTIRE cover with it, not just the circle. The agent's own note
+           * to the user said it: 「封面原本想用左色塊＋圓形那種構圖，這台的該種構圖
+           * 會失敗」. Nothing was wrong with the composition; two numbers were out
+           * of range.
+           *
+           * The bleed still happens — it just happens off the BOTTOM, where the
+           * coordinate stays positive and the overflow is in the width and
+           * height instead.
+           */
+          const safe = {
+            left: Math.max(0, geo.left), top: Math.max(0, geo.top),
+            width: Math.max(1, geo.width), height: Math.max(1, geo.height),
+          };
+          const sh = slide.shapes.addGeometricShape(geoType('Ellipse'), safe);
+          sh.name = stamp('orb');
+          sh.fill.setSolidColor(halo);
+          sh.lineFormat.visible = false;
+          put.shape.push(sh);
+        };
+        const r = Math.min(box.width, box.height) * 0.82;
+        // The large one sits in the block's bottom-left and runs off the bottom
+        // of the page — the boundary is still crossed, with every coordinate
+        // positive. The small one stays inside the block's right edge, because
+        // on a 400pt panel anything past it would land on the white where the
+        // title goes.
+        draw({ left: box.left, top: box.top + box.height - r * 0.45, width: r, height: r });
+        const r2 = r * 0.34;
+        draw({ left: box.left + box.width - r2 * 1.25, top: box.top + box.height * 0.16,
+          width: r2, height: r2 });
+      };
+
       const FORMS = new Set(['bleed', 'split', 'band', 'plain', 'paper', 'panel',
-        'stack', 'triptych']);
+        'stack', 'triptych', 'imageleft', 'imageright', 'imagetop']);
       const form = FORMS.has(String(args.cover || '').toLowerCase())
         ? String(args.cover).toLowerCase()
         : lk.cover;
@@ -1841,18 +2008,7 @@ async function buildSlide(args) {
         band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
         band({ left: 0, top: 0, width: 400, height: GRID.H }, th.cover);
 
-        // Same hue as the panel, a step lighter — part of it, not on it.
-        const halo = mix(th.cover, th.onCover, 0.12);
-        const orb = (geo) => {
-          const sh = slide.shapes.addGeometricShape('Oval', geo);
-          sh.name = stamp('orb');
-          sh.fill.setSolidColor(halo);
-          sh.lineFormat.visible = false;
-          put.shape.push(sh);
-        };
-        // Negative coordinates are the point: both run off the page.
-        orb({ left: -110, top: 300, width: 330, height: 330 });
-        orb({ left: 212, top: 176, width: 118, height: 118 });
+        orbs({ left: 0, top: 0, width: 400, height: GRID.H }, th.cover);
 
         band({ left: 400, top: 0, width: 9, height: GRID.H }, th.accent);
 
@@ -1878,6 +2034,67 @@ async function buildSlide(args) {
           text(String(args.page), { left: 470, top: 456, width: 430, height: 22 },
             { size: TYPE.caption, color: th.muted });
         }
+      } else if (form === 'imageleft' || form === 'imageright') {
+        /**
+         * 左右 — a picture down one side, everything else on the other.
+         *
+         * The picture is 40% of the page, so it has to be doing a job rather
+         * than filling space, and the type sits on a plain ground where it is
+         * unambiguously readable. This is the composition to reach for when the
+         * subject HAS a picture; the fully abstract ones below are for when it
+         * does not.
+         */
+        const onRight = form === 'imageright';
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        // A tinted field behind the type, so the half without the picture is a
+        // surface rather than a blank. Faint enough that black text still reads.
+        band({ left: onRight ? 0 : 392, top: 0, width: GRID.W - 392, height: GRID.H }, th.ground);
+        // A thin bar of colour against the picture's edge, so the two halves are
+        // joined rather than merely adjacent.
+        band({ left: onRight ? GRID.W - 392 : 384, top: 0, width: 8, height: GRID.H }, th.accent);
+        const tx = onRight ? 72 : 456;
+        const tw = 432;
+        if (args.eyebrow) {
+          text(String(args.eyebrow).toUpperCase(), { left: tx, top: 128, width: tw, height: 24 },
+            { size: TYPE.small, color: th.accent });
+        }
+        text(title, { left: tx, top: 162, width: tw, height: 132 },
+          { font: display, size: 34, bold: true, color: th.strong, valign: 'middle' });
+        band({ left: tx, top: 306, width: 120, height: 5 }, th.accent);
+        if (sub) {
+          text(sub, { left: tx, top: 328, width: tw, height: 84 },
+            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: tx, top: 452, width: tw, height: 24 },
+            { size: TYPE.caption, color: th.muted });
+        }
+      } else if (form === 'imagetop') {
+        /**
+         * 上下 — a strip of picture across the top, the page below it.
+         *
+         * A band rather than a background: 208 points of 540, so it reads as a
+         * window onto the subject and the rest of the slide is still a designed
+         * surface. The colour bar under it is what stops the join looking like a
+         * crop.
+         */
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        band({ left: 0, top: 208, width: GRID.W, height: 8 }, th.accent);
+        if (args.eyebrow) {
+          text(String(args.eyebrow).toUpperCase(), { left: 80, top: 252, width: 800, height: 24 },
+            { size: TYPE.small, color: th.accent });
+        }
+        text(title, { left: 80, top: 286, width: 800, height: 104 },
+          { font: display, size: 38, bold: true, color: th.strong, valign: 'middle' });
+        band({ left: 80, top: 398, width: 130, height: 5 }, th.accent);
+        if (sub) {
+          text(sub, { left: 80, top: 418, width: 800, height: 52 },
+            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 80, top: 492, width: 800, height: 22 },
+            { size: TYPE.caption, color: th.muted });
+        }
       } else if (form === 'stack') {
         /**
          * 上下 — a colour band across the top two thirds, type below it.
@@ -1889,6 +2106,7 @@ async function buildSlide(args) {
          */
         band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
         band({ left: 0, top: 0, width: GRID.W, height: 330 }, th.cover);
+        orbs({ left: 0, top: 0, width: GRID.W, height: 330 }, th.cover);
         if (args.eyebrow) {
           text(String(args.eyebrow).toUpperCase(), { left: 80, top: 74, width: 700, height: 24 },
             { size: TYPE.small, color: mix(th.cover, th.onCover, 0.7) });
@@ -1993,6 +2211,7 @@ async function buildSlide(args) {
         // the top and a rule at the foot, the same words occupy the whole page —
         // the type has not grown, it has been given somewhere to sit.
         band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
+        orbs({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.cover);
         band({ left: 0, top: 0, width: GRID.W, height: 6 }, th.accent);
         band({ left: 0, top: 6, width: 288, height: 2 }, th.onCover);
         if (args.eyebrow) {
@@ -2096,6 +2315,134 @@ async function buildSlide(args) {
         text(body.join('\n'), { left: 170, top: 304, width: GRID.W - 340, height: 96 },
           { size: TYPE.body, color: th.ink, align: 'center', lineSpacing: 1.45 });
       }
+    } else if (kind === 'timeline') {
+      /**
+       * A timeline as the page's主視覺, not as a chart dropped onto it.
+       *
+       * ── Why this is a layout and not just ppt_add_chart ──
+       * The chart version draws a timeline into a box. This IS the page: the
+       * axis runs the full width, the stops alternate above and below, and each
+       * one gets room for a real sentence rather than a label. A roadmap slide
+       * is the commonest thing a deck needs and the commonest thing to render as
+       * a bulleted list, which throws away the only information a roadmap has —
+       * that these things are in an order and some of them are further apart.
+       */
+      const stops = (Array.isArray(args.items) ? args.items : body.map((t) => ({ label: t })))
+        .filter(Boolean).slice(0, 6);
+      const midY = CT + BODY_H / 2;
+      band({ left: CL, top: midY - 2, width: CW, height: 4 }, th.line);
+      const step = stops.length > 1 ? CW / (stops.length - 1) : 0;
+      stops.forEach((raw, i) => {
+        const item = typeof raw === 'string' ? { label: raw } : (raw || {});
+        const cx = stops.length > 1 ? CL + step * i : CL + CW / 2;
+        const up = i % 2 === 0;
+        const tone = i === stops.length - 1 ? th.accent : th.strong;
+        // The dot sits ON the axis, so it is positioned by its centre.
+        const dot = item.highlight === true || i === stops.length - 1 ? 18 : 13;
+        band({ left: cx - dot / 2, top: midY - dot / 2, width: dot, height: dot }, tone);
+        const boxW = Math.min(step * 0.92 || 200, 210);
+        const boxH = 96;
+        const by = up ? midY - 34 - boxH : midY + 34;
+        // Clamped so the first and last cards stay on the page — a timeline's
+        // ends are exactly where an evenly divided width puts them off it.
+        const bx = clamp(cx - boxW / 2, CL, CL + CW - boxW);
+        if (item.at) {
+          text(String(item.at), { left: bx, top: up ? by + boxH - 26 : by, width: boxW, height: 24 },
+            { size: TYPE.small, bold: true, color: tone, align: 'center' });
+        }
+        text(String(item.label || ''),
+          { left: bx, top: up ? by + boxH - 60 : by + 26, width: boxW, height: 34 },
+          { size: 16, bold: true, color: th.ink, align: 'center', valign: 'middle' });
+        if (item.note) {
+          text(String(item.note),
+            { left: bx, top: up ? by : by + 60, width: boxW, height: 36 },
+            { size: 11.5, color: th.muted, align: 'center', lineSpacing: 1.25 });
+        }
+      });
+    } else if (kind === 'quadrant') {
+      /**
+       * Two axes, four boxes.
+       *
+       * The layout for 「這兩個維度交叉之後有四種情況」 — priority matrices, risk
+       * grids, build-vs-buy. Rendered as four bullets it loses the thing that
+       * makes it a matrix: WHERE each item sits relative to the other three.
+       *
+       * The axis labels are the half people forget. A quadrant chart with four
+       * captioned boxes and no axes is just four boxes.
+       */
+      const q = (Array.isArray(args.items) ? args.items : []).slice(0, 4);
+      const gx = CL + CW / 2;
+      const gy = CT + BODY_H / 2;
+      const cellW = CW / 2 - 14;
+      const cellH = BODY_H / 2 - 14;
+      const tones = [th.strong, th.second, th.accent, th.muted];
+      [[CL, CT], [gx + 14, CT], [CL, gy + 14], [gx + 14, gy + 14]].forEach((pos, i) => {
+        const item = q[i] || {};
+        const tone = colour(item.color, tones[i]);
+        band({ left: pos[0], top: pos[1], width: cellW, height: cellH }, th.tint);
+        band({ left: pos[0], top: pos[1], width: cellW, height: 4 }, tone);
+        text(String(item.title || ''),
+          { left: pos[0] + 18, top: pos[1] + 18, width: cellW - 36, height: 28 },
+          { size: TYPE.heading, bold: true, color: tone });
+        if (item.text) {
+          text(String(item.text),
+            { left: pos[0] + 18, top: pos[1] + 52, width: cellW - 36, height: cellH - 70 },
+            { size: 13, color: th.ink, valign: 'top', lineSpacing: 1.35 });
+        }
+      });
+      // The axes, drawn over the cells so the cross reads as one mark.
+      band({ left: gx - 1, top: CT, width: 2, height: BODY_H }, th.line);
+      band({ left: CL, top: gy - 1, width: CW, height: 2 }, th.line);
+      if (args.x_axis) {
+        text(String(args.x_axis), { left: CL, top: CT + BODY_H + 4, width: CW, height: 20 },
+          { size: TYPE.caption, color: th.muted, align: 'center' });
+      }
+      if (args.y_axis) {
+        // Office.js cannot rotate a text box, so the vertical axis is labelled
+        // along the top instead of down the side. Saying it in the wrong place
+        // beats not saying it.
+        text(String(args.y_axis), { left: CL, top: CT - 20, width: CW, height: 18 },
+          { size: TYPE.caption, color: th.muted });
+      }
+    } else if (kind === 'zigzag') {
+      /**
+       * 圖文交錯 — alternating blocks, each with its side flipped.
+       *
+       * Three points down a page all aligned left is a list wearing panels. The
+       * same three with the marker alternating left and right is a rhythm, and
+       * the eye tracks it without being told to. Costs nothing: the geometry is
+       * the same, mirrored on odd rows.
+       */
+      const rows = (Array.isArray(args.items) ? args.items : body.map((t) => ({ title: t })))
+        .filter(Boolean).slice(0, 4);
+      const gap = 14;
+      const rowH = (BODY_H - gap * (rows.length - 1)) / Math.max(1, rows.length);
+      const markW = Math.min(180, CW * 0.26);
+      rows.forEach((raw, i) => {
+        const item = typeof raw === 'string' ? { title: raw } : (raw || {});
+        const y = CT + (rowH + gap) * i;
+        const right = i % 2 === 1;
+        const tone = colour(item.color, [th.strong, th.second, th.accent, th.warn || th.second][i % 4]);
+        const markX = right ? CL + CW - markW : CL;
+        const textX = right ? CL : CL + markW + 26;
+        const textW = CW - markW - 26;
+
+        band({ left: markX, top: y, width: markW, height: rowH }, tone);
+        text(String(item.number || String(i + 1).padStart(2, '0')),
+          { left: markX, top: y + rowH / 2 - 26, width: markW, height: 52 },
+          { font: display, size: 38, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
+
+        text(String(item.title || ''),
+          { left: textX, top: y + (item.text ? 8 : rowH / 2 - 18), width: textW, height: 34 },
+          { size: TYPE.heading, bold: true, color: th.ink,
+            align: right ? 'right' : 'left', valign: 'middle' });
+        if (item.text) {
+          text(String(item.text),
+            { left: textX, top: y + 46, width: textW, height: rowH - 54 },
+            { size: 13.5, color: th.muted, lineSpacing: 1.35,
+              align: right ? 'right' : 'left', valign: 'top' });
+        }
+      });
     } else if (kind === 'quote') {
       band({ left: CL, top: 150, width: 4, height: 200 }, th.accent);
       text('“', { left: CL + 20, top: 132, width: 90, height: 90 },
@@ -2249,7 +2596,7 @@ async function buildSlide(args) {
     await ctx.sync();
     all.forEach((s) => remember(slide.id, s.id));
 
-    return `已用「${kind}」版型做好投影片 ${index}，${all.length} 個物件，套用「${th.label}」配色。\n`
+    return `已用「${kind}」版型做好投影片 ${index}，${all.length} 個物件，套用「${th.label}」配色。${imageNote}\n`
       + '每個物件都可以再用 ppt_format_shape 微調，或用 ppt_arrange 對齊。';
   });
 }
@@ -2314,7 +2661,7 @@ const STACK_GAP = 18;
 function penFor(slide, onShape, onText) {
   return {
     rect(geo, opts = {}) {
-      const sh = slide.shapes.addGeometricShape(opts.shape || 'Rectangle', geo);
+      const sh = slide.shapes.addGeometricShape(geoType(opts.shape || 'Rectangle'), geo);
       sh.name = stamp(opts.tag || 'box');
       if (opts.fill) sh.fill.setSolidColor(opts.fill); else sh.fill.clear();
       sh.lineFormat.visible = !!opts.line;
@@ -2516,6 +2863,21 @@ async function addCallout(args) {
   });
 }
 
+/**
+ * How wide one card will be, needed BEFORE the height can be estimated.
+ *
+ * The real width is computed further down from the same inputs; this repeats
+ * that arithmetic rather than reordering the function, because the alternative
+ * is a `let` that is assigned in two places and read in between.
+ */
+function cwEstimate(args, cards) {
+  const bar = String(args.bar || (cards.length > 3 ? 'top' : 'left')).toLowerCase();
+  const cols = clamp(num(args.columns, bar === 'top' ? cards.length : Math.min(2, cards.length)), 1, 8);
+  const gutter = num(args.gutter, 24);
+  const totalW = num(args.width, CHROME.contentWidth);
+  return (totalW - gutter * (cols - 1)) / cols;
+}
+
 async function addCards(args) {
   if (!hasApi('1.4')) throw new Error('卡片需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const cards = Array.isArray(args.cards) ? args.cards.filter(Boolean) : [];
@@ -2534,12 +2896,30 @@ async function addCards(args) {
   const top = num(args.top, CHROME.contentTop);
   const totalW = num(args.width, CHROME.contentWidth);
   const cw = (totalW - gutter * (cols - 1)) / cols;
-  // 92 was the height of a card carrying a heading. A process step carries a
-  // heading AND two or three lines under it, and at 92 those lines had nowhere
-  // to go — which is what made the four-step row look cramped rather than
-  // designed. Measured against the content rather than guessed once.
-  const hasBody = cards.some((c) => c && c.text);
-  const ch = num(args.height, bar === 'top' ? (hasBody ? 118 : 92) : 68);
+  /**
+   * How tall a card is, worked out from what goes in it.
+   *
+   * ── The two failures a constant produces, and it produces both ──
+   * Too short and the body has nowhere to go. Too tall and the text sits in the
+   * top third of a box with an empty lower half — which is what the five-step
+   * process row looked like, and it reads worse than crowding because it looks
+   * like something failed to load.
+   *
+   * So the height is estimated from the longest body: characters that fit per
+   * line at this width, rounded up to lines, plus the room the heading and the
+   * padding actually take. It is an estimate and it does not need to be better
+   * than one — the text is vertically centred inside whatever it produces, so
+   * being a line out costs a few points of air rather than a clipped sentence.
+   */
+  const longest = Math.max(0, ...cards.map((c) => String((c && c.text) || '').length));
+  const headLines = cards.some((c) => c && c.title) ? 1 : 0;
+  const ch = num(args.height, (() => {
+    if (bar !== 'top') return 68;
+    if (!longest) return 92;
+    const perLine = Math.max(6, Math.floor((cwEstimate(args, cards) - 28) / 12));
+    const lines = Math.ceil(longest / perLine);
+    return clamp(40 + headLines * 26 + lines * 19, 92, 210);
+  })());
   const pitchY = ch + num(args.row_gap, 18);
 
   const cycle = [th.strong, th.second, th.accent];
@@ -2598,14 +2978,27 @@ async function addCards(args) {
       // The number badge. Big, in the accent, set to the LEFT of the text rather
       // than above it — it is an index, not a heading.
       if (card.number) {
+        // A tinted disc behind the index. Two extra shapes for the row, and it
+        // is the difference between a numbered list and a set of steps — the
+        // number stops being a word at the start of the line and becomes a mark.
+        if (bar === 'top') {
+          const disc = add(slide.shapes.addGeometricShape(geoType('Ellipse'),
+            { left: tx - 3, top: ty - 2, width: 34, height: 34 }));
+          disc.name = stamp('numdot');
+          disc.fill.setSolidColor(mix(accent, th.bg, 0.86));
+          disc.lineFormat.visible = false;
+        }
         const badge = add(slide.shapes.addTextBox(String(card.number),
-          { left: tx, top: ty, width: 52, height: 40 }));
+          { left: tx - 3, top: ty - 2, width: 34, height: 34 }));
         badge.name = stamp('num');
-        styleText(badge, { font: face, size: 24, bold: true, color: accent, valign: 'top' });
+        styleText(badge, {
+          font: face, size: bar === 'top' ? 15 : 24, bold: true, color: accent,
+          align: bar === 'top' ? 'center' : 'left', valign: 'middle',
+        });
         badge.fill.clear();
         badge.lineFormat.visible = false;
-        tx += 56;
-        tw -= 56;
+        tx += bar === 'top' ? 42 : 56;
+        tw -= bar === 'top' ? 42 : 56;
       }
 
       if (card.title) {
@@ -2637,10 +3030,12 @@ async function addCards(args) {
          * needs to avoid it.
          */
         const body = add(slide.shapes.addTextBox(String(card.text),
-          { left: bodyX, top: ty, width: bodyW, height: y + ch - ty - 10 }));
+          { left: bodyX, top: ty, width: bodyW, height: y + ch - ty - 12 }));
         body.name = stamp('cb');
-        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted, valign: 'top',
-          lineSpacing: 1.3 });
+        // Centred in the space below the heading. Top-aligned was what produced
+        // 「內容擠在上面、下面一片空白」 whenever the estimate ran generous.
+        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted,
+          valign: 'middle', lineSpacing: 1.3 });
         body.fill.clear();
         body.lineFormat.visible = false;
       }
@@ -2664,10 +3059,14 @@ async function addCards(args) {
         // meant for gridlines under other things, and an arrow nobody can see
         // turns a process into four unrelated boxes. `muted` is the quietest
         // colour that still reads as a mark on the page.
-        const arrow = add(slide.shapes.addGeometricShape('RightArrow',
-          { left: ax, top: top + ch / 2 - 6, width: gutter - 10, height: 12 }));
+        // A chevron rather than a fat arrow, and sitting a third of the way down
+        // rather than halfway: at the vertical centre of a 180pt card the arrow
+        // floats in the middle of nothing, level with body text instead of with
+        // the step itself.
+        const arrow = add(slide.shapes.addGeometricShape('Chevron',
+          { left: ax, top: top + 24, width: gutter - 8, height: 18 }));
         arrow.name = stamp('arrow');
-        arrow.fill.setSolidColor(th.muted);
+        arrow.fill.setSolidColor(mix(th.muted, th.bg, 0.35));
         arrow.lineFormat.visible = false;
       }
     }
@@ -3111,6 +3510,12 @@ async function addChart(args) {
     categories: args.categories,
     values: args.values,
     series: args.series,
+    // timeline takes `events` and waterfall takes `total`; neither was being
+    // forwarded, so `ppt_add_chart({type:'timeline'})` died inside normalise()
+    // with 「values 是必要的」 every single time. The tool advertised a chart type
+    // it could not draw, and the agent — correctly — reported it as unsupported.
+    events: args.events,
+    total: args.total,
     colors: args.colors || [th.strong, th.second, th.accent],
     data_labels: args.data_labels,
     area: args.area,

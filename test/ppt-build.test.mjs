@@ -72,7 +72,36 @@ function fakeSlide(initial = []) {
     shapes: {
       get items() { return items.filter((s) => !s.deleted); },
       load() {},
-      addGeometricShape: (g, o) => { const s = fakeShape('geo', o); s.geo = g; items.push(s); return s; },
+      addGeometricShape: (g, o) => {
+        /**
+         * Office rejects a negative left or top, and it rejects it at
+         * `ctx.sync()` — so one out-of-range shape takes the whole slide with
+         * it. That is not a hypothetical: two circles positioned to bleed off
+         * the left edge made the entire cover fail, and the agent reported the
+         * composition as unsupported on this machine.
+         *
+         * The fake throws where the real API does, so the test suite cannot
+         * accept a coordinate Office would not.
+         */
+        if (o.left < 0 || o.top < 0) {
+          throw new Error(`InvalidArgument: 負座標 ${JSON.stringify(o)}`);
+        }
+        /**
+         * And the other way a shape kills a slide: a name that is not in
+         * `PowerPoint.GeometricShapeType`. 'Oval' is the one that caught us —
+         * the circle is called 'Ellipse', and 'Oval' appears only in the enum's
+         * description text. Invalid names throw at sync, same as bad
+         * coordinates, so the fake refuses them here.
+         */
+        const REAL = new Set(['Rectangle', 'RoundRectangle', 'Ellipse', 'Chevron',
+          'RightArrow', 'Triangle', 'Diamond', 'Donut', 'Frame', 'Plus', 'Star5',
+          'Hexagon', 'Pentagon', 'Trapezoid', 'HomePlate', 'Wave', 'Arc', 'Pie',
+          'Teardrop', 'Cloud', 'Heart', 'Moon']);
+        if (!REAL.has(g)) {
+          throw new Error(`InvalidArgument: GeometricShapeType 沒有 "${g}"`);
+        }
+        const s = fakeShape('geo', o); s.geo = g; items.push(s); return s;
+      },
       addTextBox: (t, o) => { const s = fakeShape('text', { ...o, text: t }); s.type = 'TextBox'; items.push(s); return s; },
       addLine: (c, o) => { const s = fakeShape('line', o); items.push(s); return s; },
       getItemAt: (i) => items.filter((s) => !s.deleted)[i],
@@ -136,6 +165,22 @@ const build = (args) => host.executeTool('ppt_build_slide', args);
 const CHROME_CONTENT_TOP = 124;
 const alive = () => slide.shapes.items;
 const texts = () => alive().filter((s) => s._text).map((s) => s._text);
+
+/**
+ * 這一頁的底色，不管它是誰畫的。
+ *
+ * 母題上線之後，有背景幾何的版式會把底色畫進那張裝飾 SVG 裡，骨架就不再鋪一塊
+ * ——鋪了會把母題蓋掉。所以「底色是一個 960×540 的形狀」這個假設不再成立，
+ * 但「底色一定有人負責」還是成立，而那才是測試真正在乎的事。
+ */
+const groundFill = () => {
+  const shape = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
+  if (shape) return shape._fill;
+  const art = INSERTS.length ? INSERTS[0].data : '';
+  const m = /<rect width="960" height="540" fill="(#[0-9A-Fa-f]{6})"/.exec(art);
+  return m ? m[1] : null;
+};
+
 
 // ── Placeholders ─────────────────────────────────────────────────────────────
 
@@ -313,12 +358,17 @@ await build({ kind: 'bullets', title: 'T', body: ['一', '二'], page: 'P.03', f
   footband: true });
 {
   const full = alive().filter((s) => s.kind === 'geo' && s.width === 960);
+  // 底色現在由裝飾層那張 SVG 帶著（母題也在裡面），所以骨架不再另外鋪一塊——
+  // 鋪了就會把母題蓋掉。這裡驗的是「底色有人負責」，不是「底色是某個形狀」。
+  const art = INSERTS.length ? INSERTS[INSERTS.length - 1].data : '';
   const ground = full.find((s) => s.height === 540);
-  // 純白的投影片沒有「頁面」，所以白色卡片也就沒有邊——整頁看起來像直接打字上去的。
-  ok('內容頁有淡色底，不是純白', !!ground && ground._fill !== '#FFFFFF',
-    ground ? ground._fill : '沒有底');
-  ok('底色是第一個畫的，蓋不到別人',
-    slide._all.indexOf(ground) === 0, `第 ${slide._all.indexOf(ground)} 個`);
+  ok('內容頁的底色有人負責，而且不是純白',
+    ground ? ground._fill !== '#FFFFFF' : /<rect width="960" height="540" fill="#(?!FFFFFF)/i.test(art),
+    ground ? ground._fill : art.slice(0, 120) || '兩邊都沒有');
+  // 一張投影片只插一張裝飾層，而且在所有形狀之前——這是它能當底的唯一條件。
+  ok('底色在最底下，蓋不到別人',
+    ground ? slide._all.indexOf(ground) === 0 : slide._all.length > 0,
+    ground ? `第 ${slide._all.indexOf(ground)} 個` : '裝飾層在形狀之前插入');
   ok('頂條是雙色的',
     full.some((s) => s.height === 5) && alive().some((s) => s.width === 288 && s.height === 2));
   const band = full.find((s) => s.height === 46 && s.top === 494);
@@ -400,11 +450,18 @@ const shot = (args) => { slide = fakeSlide(); return build(args).then(() => ({
     eb.top < 34 && eb._font.color === '#FFFFFF');
 }
 {
+  INSERTS = [];
   const v = await shot({ kind: 'bullets', title: 'T', eyebrow: '01 章節', page: 'P.02',
     body: ['一'], look: 'tech' });
-  const ground = v.geos.find((s) => s.width === 960 && s.height === 540);
   const lum = (c) => { const x = String(c).replace('#', '');
     return (parseInt(x.slice(0, 2), 16) + parseInt(x.slice(2, 4), 16) + parseInt(x.slice(4, 6), 16)) / 765; };
+  // 有母題的版式，底色由裝飾層那張 SVG 帶著，骨架不再鋪一塊——所以底色要從
+  // 兩個地方之一找。這是背景母題上線之後改變的合約。
+  const shapeGround = v.geos.find((s) => s.width === 960 && s.height === 540);
+  const artGround = INSERTS.length
+    && /<rect width="960" height="540" fill="(#[0-9A-Fa-f]{6})"/.exec(INSERTS[0].data);
+  const ground = { _fill: shapeGround ? shapeGround._fill : (artGround && artGround[1]) };
+  ok('底色有人負責', !!ground._fill, JSON.stringify({ shapeGround: !!shapeGround, inserts: INSERTS.length }));
   ok('科技是深色底', lum(ground._fill) < 0.35, ground._fill);
   // 深底配深字是這一版最容易出的 bug，而且只有在投影出來才看得到。
   ok('深色底的標題是淺色字',
@@ -445,18 +502,19 @@ const shot = (args) => { slide = fakeSlide(); return build(args).then(() => ({
 // 風格＝骨架＋顏色。只換骨架就是使用者說「文青一點」卻拿到企業藍配大紅的原因。
 {
   const ink = async (name) => {
-    const v = await shot({ kind: 'bullets', title: 'T', body: ['一'], look: name });
-    return (v.geos.find((s) => s.width === 960 && s.height === 540) || {})._fill;
+    INSERTS = [];
+    await shot({ kind: 'bullets', title: 'T', body: ['一'], look: name });
+    return groundFill();
   };
   const business = await ink('business');
   ok('文青不會用到企業風的底色', await ink('literary') !== business);
   ok('柔和也不會', await ink('soft') !== business);
   // 但兩個知識都要成立：明講 theme 的時候，使用者說了算。
   slide = fakeSlide();
+  INSERTS = [];
   await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'literary', theme: 'corporate' });
-  ok('明確指定 theme 的時候使用者說了算',
-    alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540)._fill
-      === business);
+  ok('明確指定 theme 的時候使用者說了算', groundFill() === business,
+    `${groundFill()} vs ${business}`);
 }
 
 // 文青的判準不是「有沒有比較好看」，是三件可以驗的事：暖紙滿版、明體標題、
@@ -600,20 +658,44 @@ for (const kind of ['section', 'statement']) {
   const panels = alive().filter((s) => s.kind === 'geo' && s.height > 100);
   ok('有內文的流程卡會加高', panels.length === 4, `${panels.length} 張`);
   const body = alive().find((s) => s._text.startsWith('選擇直接'));
-  const badge = alive().find((s) => s._text === '01');
   // 內文繼承了徽章的位移，四欄之下每段只剩約 119 點——大概八個字，所以每行都斷。
+  // 現在它從卡片本身的留白開始，跟編號徽章無關。
   ok('內文用整張卡的寬度，不是徽章旁邊剩下的',
-    body.left === badge.left && body.width > panels[0].width * 0.7,
-    `內文 left ${body.left} 寬 ${Math.round(body.width)}，卡片寬 ${Math.round(panels[0].width)}`);
+    body.left - panels[0].left <= 16 && body.width > panels[0].width * 0.7,
+    `內文 left ${body.left}（卡片 ${panels[0].left}）寬 ${Math.round(body.width)}，`
+      + `卡片寬 ${Math.round(panels[0].width)}`);
   ok('內文沒有超出卡片下緣',
     body.top + body.height <= panels[0].top + panels[0].height,
     `內文底 ${Math.round(body.top + body.height)}，卡片底 ${panels[0].top + panels[0].height}`);
-  const arrows = alive().filter((s) => s.geo === 'RightArrow');
+  const arrows = alive().filter((s) => s.geo === 'Chevron');
   ok('三個箭頭', arrows.length === 3, `${arrows.length} 個`);
   // 箭頭用 line 色等於看不見，四個步驟就變成四個不相干的方塊。
   ok('箭頭看得見，不是髮絲線的顏色', arrows[0]._fill !== '#D5DBE0', arrows[0]._fill);
   ok('箭頭落在卡片之間的空隙裡',
     arrows.every((a) => panels.some((pnl) => Math.abs(a.left - (pnl.left + pnl.width)) < 12)));
+  // 一張 180 點高的卡片，箭頭擺在正中間是跟內文齊高，不是跟步驟齊高。
+  ok('箭頭靠近卡片上緣，跟步驟齊高不是跟內文齊高',
+    arrows[0].top - panels[0].top < panels[0].height / 2,
+    `箭頭 ${arrows[0].top}，卡片 ${panels[0].top}..${panels[0].top + panels[0].height}`);
+  // 編號變成一個記號，而不是句子開頭的一個詞。
+  ok('編號有一個底圓襯著',
+    alive().filter((s) => s.geo === 'Ellipse' && s.width === 34).length === 4);
+}
+// 寫死的高度會用兩種方式出錯：太矮讓內文沒地方去，太高讓內文擠在上面三分之一、
+// 下面一片空白——後者看起來像有東西沒載入，比擠還糟。
+{
+  const heightFor = async (text) => {
+    slide = fakeSlide();
+    await host.executeTool('ppt_add_cards', {
+      bar: 'top', columns: 4,
+      cards: [1, 2, 3, 4].map((n) => ({ number: `0${n}`, title: `步驟 ${n}`, text })),
+    });
+    return alive().find((s) => s.kind === 'geo' && s.height > 60).height;
+  };
+  const short = await heightFor('很短');
+  const long = await heightFor('這一段話明顯長很多，會折成好幾行，卡片就必須跟著長高才放得下');
+  ok('卡片高度隨內容長短變，不是寫死的', long > short + 20, `短 ${short}，長 ${long}`);
+  ok('但有上限，不會長到爆出投影片', long <= 210, `${long}`);
 }
 {
   // 沒有內文的卡片不該無謂長高——那只會在下面留一條空白。
@@ -754,12 +836,22 @@ const BAND_BOTTOM = 480;
 }
 
 {
+  // 沒有紋理也沒有母題的版式，底色回到骨架自己鋪，而且不多插任何東西。
+  INSERTS = [];
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'minimal' });
+  ok('沒有紋理也沒有母題的版式不會多插一張圖', INSERTS.length === 0);
+  ok('而且照樣有平的底色',
+    alive().some((s) => s.kind === 'geo' && s.width === 960 && s.height === 540));
+
+  // 有母題的版式剛好相反：底色進裝飾層，骨架不再鋪，否則母題會被蓋掉。
   INSERTS = [];
   slide = fakeSlide();
   await build({ kind: 'bullets', title: 'T', body: ['一'], look: 'business' });
-  ok('沒有紋理的版式不會多插一張圖', INSERTS.length === 0);
-  ok('而且照樣有平的底色',
-    alive().some((s) => s.kind === 'geo' && s.width === 960 && s.height === 540));
+  ok('有母題的版式會插一張裝飾層', INSERTS.length === 1, `${INSERTS.length} 張`);
+  ok('而且骨架不再鋪一塊底把母題蓋掉',
+    !alive().some((s) => s.kind === 'geo' && s.width === 960 && s.height === 540));
+  ok('底色仍然有人負責', !!groundFill(), String(groundFill()));
 }
 
 {
@@ -834,7 +926,7 @@ const BAND_BOTTOM = 480;
   const stripe = geos.find((s) => s.height === 540 && s.width < 20);
   ok('色塊邊上有一條貫穿全高的強調色條', !!stripe && stripe.left >= panel.width - 1);
 
-  const orbs = geos.filter((s) => s.geo === 'Oval');
+  const orbs = geos.filter((s) => s.geo === 'Ellipse');
   ok('有裝飾圓形', orbs.length >= 2, `${orbs.length} 個`);
   // 這一條是整個修法的重點：東西要真的跑出頁面外。
   ok('至少一個圓跨出頁面邊界',
@@ -945,7 +1037,158 @@ const BAND_BOTTOM = 480;
 {
   slide = fakeSlide();
   const r = await build({ kind: 'title', title: 'T', body: ['s'], cover: 'zzz', look: 'business' });
-  ok('未知的構圖退回版式預設', r.ok && alive().some((s) => s.geo === 'Oval'), r.content);
+  ok('未知的構圖退回版式預設', r.ok && alive().some((s) => s.geo === 'Ellipse'), r.content);
+}
+
+// ── 兩個實測踩到的失敗 ──────────────────────────────────────────────────────
+//
+// 使用者跑出來的簡報裡，AI 自己留了一段話：「封面原本想用左色塊＋圓形那種構圖，
+// 這台的該種構圖會失敗；藍圖頁原本想用時間軸圖，這台也不支援。」兩個都不是
+// 「這台不支援」，是我剛加的東西有 bug。
+
+// 一、負座標會在 ctx.sync() 才炸，而那個 sync 帶著整張投影片——所以一顆圓
+// 放錯位置，整個封面就沒了。上面的 fakeSlide 現在會跟 Office 一樣擋下來。
+for (const c of ['panel', 'stack', 'bleed', 'triptych', 'split', 'imageleft', 'imagetop']) {
+  slide = fakeSlide();
+  const r = await build({ kind: 'title', title: 'T', eyebrow: 'E', body: ['s'],
+    footer: 'F', cover: c });
+  ok(`${c}：沒有任何負座標`, r.ok, r.content);
+}
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: 'T', body: ['s'], cover: 'panel' });
+  const orbs = alive().filter((s) => s.geo === 'Ellipse');
+  ok('裝飾圓還是跨出邊界，只是改成往下跨',
+    orbs.some((o) => o.top + o.height > 540), orbs.map((o) => o.top + o.height).join(' '));
+  ok('但沒有一顆超出左邊或上面', orbs.every((o) => o.left >= 0 && o.top >= 0));
+}
+
+// 二、timeline 用 events 而不是 values，但 addChart 根本沒把 events 傳下去，
+// 所以那個圖表類型從上線第一天就不可能成功。
+{
+  slide = fakeSlide();
+  const r = await host.executeTool('ppt_add_chart', {
+    type: 'timeline',
+    events: [{ at: 2024, label: '試點' }, { at: 2026, label: '全面上線' }],
+  });
+  ok('時間軸圖表畫得出來', r.ok, r.content);
+}
+{
+  slide = fakeSlide();
+  const r = await host.executeTool('ppt_add_chart', {
+    type: 'waterfall', categories: ['期初', '新增', '期末'],
+    values: [100, 28, 128], total: [0, 2],
+  });
+  ok('瀑布圖的 total 也傳得到', r.ok, r.content);
+}
+
+// ── 三種新的內文版型 ────────────────────────────────────────────────────────
+//
+// 原本只有左右／上下／三欄。這三種各自解決一個「做成條列就會把重點弄丟」的內容。
+
+{
+  // 時程做成條列，就把時程唯一的資訊——順序和疏密——丟掉了。
+  slide = fakeSlide();
+  await build({ kind: 'timeline', title: '導入時程', eyebrow: '03 藍圖', page: 'P.12',
+    items: [
+      { at: '2024 Q1', label: '試點', note: '兩條產線' },
+      { at: '2024 Q4', label: '擴大' },
+      { at: '2025 Q3', label: '治理上線' },
+      { at: '2026 Q1', label: '全面上線' },
+    ] });
+  const axis = alive().find((s) => s.kind === 'geo' && s.width === 884 && s.height === 4);
+  ok('時間軸有一條貫穿的軸線', !!axis);
+  const dots = alive().filter((s) => s.kind === 'geo' && s.width <= 18 && s.height === s.width);
+  ok('四個停靠點', dots.length === 4, `${dots.length} 個`);
+  ok('點都落在軸線上',
+    dots.every((d) => Math.abs((d.top + d.height / 2) - (axis.top + 2)) < 1),
+    dots.map((d) => d.top).join(' '));
+  // 四張卡片全排在同一邊會擠在一起；上下交錯等於把密度減半。
+  const cards = alive().filter((s) => s._text === '試點' || s._text === '擴大'
+    || s._text === '治理上線' || s._text === '全面上線');
+  ok('說明上下交錯', new Set(cards.map((c) => c.top > axis.top)).size === 2,
+    cards.map((c) => c.top).join(' '));
+  // 平均分寬會把第一張和最後一張推出頁面。
+  ok('頭尾兩張沒有掉出頁面',
+    cards.every((c) => c.left >= 38 && c.left + c.width <= 922),
+    cards.map((c) => `${Math.round(c.left)}+${Math.round(c.width)}`).join(' '));
+  ok('最後一站被標出來', dots.some((d) => d.width === 18));
+}
+
+{
+  // 象限的重點是「相對位置」，拆成四條就沒了。
+  slide = fakeSlide();
+  await build({ kind: 'quadrant', title: '先做什麼', eyebrow: '01',
+    x_axis: '規則明確度 →', y_axis: '↑ 發生頻率',
+    items: [
+      { title: '先做', text: '高頻又規則明確' }, { title: '再說', text: '資料沒準備好' },
+      { title: '外包', text: '低頻但規則清楚' }, { title: '不做', text: '低頻又難' },
+    ] });
+  const cells = alive().filter((s) => s.kind === 'geo' && s.width > 300 && s.height > 100);
+  ok('四個格子', cells.length === 4, `${cells.length} 個`);
+  ok('四格不重疊',
+    cells.every((a, i) => cells.every((b, j) => i === j
+      || a.left + a.width <= b.left + 1 || b.left + b.width <= a.left + 1
+      || a.top + a.height <= b.top + 1 || b.top + b.height <= a.top + 1)));
+  // 沒有軸就只是四個方塊，不是矩陣。
+  ok('有十字軸',
+    alive().some((s) => s.kind === 'geo' && s.width === 2)
+      && alive().some((s) => s.kind === 'geo' && s.height === 2));
+  ok('兩個軸名都畫出來', texts().includes('規則明確度 →') && texts().includes('↑ 發生頻率'));
+}
+
+{
+  // 三個並排的段落全部靠左，就是一份戴了面板的清單。
+  slide = fakeSlide();
+  await build({ kind: 'zigzag', title: '三步', eyebrow: '02',
+    items: [
+      { title: '盤點場景', text: '從量大、重複的作業找起' },
+      { title: '資料底座', text: '權限、留痕、可回溯' },
+      { title: '單一職能試點', text: '一個職能做到底' },
+    ] });
+  // 高度也要篩：標題底下那條 108×4 的短線寬度剛好落在同一個區間。
+  const marks = alive().filter((s) => s.kind === 'geo'
+    && s.width > 100 && s.width < 200 && s.height > 60);
+  ok('三個色塊', marks.length === 3, `${marks.length} 個`);
+  ok('左右交錯', new Set(marks.map((m) => m.left < 400)).size === 2,
+    marks.map((m) => m.left).join(' '));
+  const heads = ['盤點場景', '資料底座', '單一職能試點'].map((t) => alive().find((s) => s._text === t));
+  ok('文字永遠在色塊的另一邊',
+    heads.every((h, i) => (marks[i].left < 400 ? h.left > marks[i].left : h.left < marks[i].left)));
+  ok('三段沒有重疊',
+    marks.every((m, i) => i === 0 || m.top >= marks[i - 1].top + marks[i - 1].height));
+  ok('填滿內文區', Math.max(...marks.map((m) => m.top + m.height)) > 440);
+}
+
+// 新版型不能只對預設配色有效。
+for (const kind of ['timeline', 'quadrant', 'zigzag']) {
+  for (const look of ['literary', 'tech', 'soft']) {
+    slide = fakeSlide();
+    const r = await build({ kind, title: 'T', look,
+      items: [{ title: 'A', label: 'A', text: 'x' }, { title: 'B', label: 'B', text: 'y' }] });
+    ok(`${kind} × ${look} 畫得出來`, r.ok, r.content);
+  }
+}
+
+// ── 形狀名稱：叫錯一個就整張投影片沒了 ──────────────────────────────────────
+//
+// `addGeometricShape('Oval', …)` 看起來完全正確，而且不是 GeometricShapeType
+// 的成員——圓形叫 **Ellipse**，「Oval」只出現在那個列舉自己的說明文字裡。
+// 錯的名字不會在寫下去的地方丟例外，是在 ctx.sync() 才丟，而那個 sync 帶著
+// 整張投影片。所以兩顆裝飾圓可以讓一整個封面消失，而 AI 只能推測「這台不支援」。
+{
+  slide = fakeSlide();
+  const r = await host.executeTool('ppt_add_shape', { shape: 'Oval', text: '圓' });
+  ok('模型給了不存在的形狀名稱也不會整個失敗', r.ok, r.content);
+  ok('而且會告訴它正確的名字', /Ellipse/.test(r.content), r.content);
+  ok('退回矩形而不是丟掉這次呼叫',
+    alive().some((s) => s.geo === 'Rectangle'));
+}
+{
+  slide = fakeSlide();
+  const r = await host.executeTool('ppt_add_shape', { shape: 'Ellipse', text: '圓' });
+  ok('正確的名字照常畫', r.ok && alive().some((s) => s.geo === 'Ellipse'), r.content);
+  ok('沒有多餘的提示', !/沒有「/.test(r.content), r.content);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
