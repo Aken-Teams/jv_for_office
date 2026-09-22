@@ -321,5 +321,55 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('沒有資料也畫得出底圖', svg.includes('<path') && svgProblem(svg) === '');
 }
 
+// ── 配色要真的傳到 renderer ─────────────────────────────────────────────────
+//
+// chartSvg 原本只把 ink/strong/muted/line/bg 五個角色交給 renderer。新的圖表
+// 需要更多：瀑布用 accent 畫下降、時間軸用 accent 標重點、地圖用 tint 畫沒資料
+// 的地區。那些角色不在物件裡，於是各自退回這個模組自己的預設——在藍綠色的簡報上
+// 畫出一張深藍配大紅的圖，而且沒有任何地方會回報。
+{
+  const P = { ink: '#111111', strong: '#0F6E72', second: '#4AA7A5', accent: '#E0743A',
+    muted: '#7E9694', line: '#CFE3E1', tint: '#E8F4F3', bg: '#FFFFFF' };
+  const wf = chartSvg({ type: 'waterfall', categories: ['=初', '增', '減', '=末'],
+    values: [100, 30, -20, 110], total: [0, 3] }, P);
+  ok('瀑布圖的下降色來自簡報的 accent', wf.includes('#E0743A'));
+  ok('瀑布圖的合計色來自簡報的 second', wf.includes('#4AA7A5'));
+
+  const tl = chartSvg({ type: 'timeline',
+    events: [{ at: 2024, label: 'A' }, { at: 2026, label: 'B', highlight: true }] }, P);
+  ok('時間軸的重點站用簡報的 accent', tl.includes('#E0743A'));
+
+  const mp = chartSvg({ type: 'map', map: 'world', categories: ['Japan'], values: [5] }, P);
+  ok('地圖沒資料的地區用簡報的 tint', mp.includes('#E8F4F3'));
+
+  const fn = chartSvg({ type: 'funnel', categories: ['A', 'B'], values: [10, 5] }, P);
+  // mixHex 輸出是小寫，比對要不分大小寫。
+  ok('漏斗圖的漸層從簡報的 strong 出發', /#0f6e72/i.test(fn), fn.slice(0, 200));
+}
+
+// ── 地圖的第二種用法：標示，不是數值 ───────────────────────────────────────
+//
+// 歷史報告沒有「每個地區一個數字」，所以它永遠不會畫地圖——從外面看就像這個功能
+// 不存在。但「這幾個地方」才是投影片最常要地圖做的事。
+{
+  const P = { strong: '#0F6E72', accent: '#E0743A', tint: '#E8F4F3', ink: '#111', bg: '#FFF',
+    muted: '#7E9694', line: '#CFE3E1' };
+  const svg = chartSvg({ type: 'map', map: 'world', title: '四大古文明',
+    categories: ['Egypt', 'Iraq', 'India', 'China'] }, P);
+  ok('沒有數值也畫得出地圖', svg.startsWith('<svg') && svgProblem(svg) === '');
+  const fills = new Set([...svg.matchAll(/<path d="[^"]*" fill="(#[0-9A-Fa-f]{6})"/gi)]
+    .map((m) => m[1].toUpperCase()));
+  // 沒有刻度可以坐落，所以標示就是滿色——再淡一點只會讀成「有點被選到」。
+  ok('標示模式只有兩種顏色', fills.size === 2, [...fills].join(' '));
+  ok('標示用強調色', fills.has('#E0743A'));
+  ok('圖例列出名字', svg.includes('Egypt') && svg.includes('China'));
+  // 給的順序通常是時序或敘事順序，重排會把唯一的排序丟掉。
+  ok('圖例照給的順序，不重排',
+    svg.indexOf('Egypt') < svg.indexOf('China'));
+  const withValues = chartSvg({ type: 'map', map: 'world',
+    categories: ['Japan', 'China'], values: [5, 50] }, P);
+  ok('有數值就回到深淺模式', withValues.includes('50'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

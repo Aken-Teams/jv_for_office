@@ -501,7 +501,11 @@ function funnelChart(spec, theme) {
 /** Blend two hex colours — the funnel fades its stages through one hue. */
 function mixHex(a, b, t) {
   const hex = (c) => {
-    const v = String(c || '').replace('#', '');
+    let v = String(c || '').replace('#', '');
+    // 「#FFF」 is legal CSS and parsed to garbage by a naive slice: 'FF', 'F', ''
+    // gives NaN on the last two channels, and the blend comes out a muddy
+    // brown that looks like a deliberate colour choice.
+    if (v.length === 3) v = v.split('').map((ch) => ch + ch).join('');
     return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) || 0);
   };
   const [r1, g1, b1] = hex(a);
@@ -667,13 +671,26 @@ function mapChart(spec, theme) {
     throw new Error(`沒有「${spec.map}」這份地圖。可用的有：${Object.keys(MAPS).join('、')}。`);
   }
 
-  const values = new Map();
   const cats = Array.isArray(spec.categories) ? spec.categories.map(String) : [];
   const nums = Array.isArray(spec.values) ? spec.values : [];
+
+  /**
+   * Two ways to use a map, and the second one is why a history deck never got one.
+   *
+   * With numbers it is a choropleth: shade by value, legend carries the figures.
+   * Without them it is a REFERENCE map — 「這幾個地方」 — and that is most of what
+   * a slide actually wants a map for: where the trading ports were, which markets
+   * we sell into, which provinces the pilot covers. The first version required
+   * values, so a deck with regions but no statistics simply never drew one, and
+   * from the outside that looked like the feature was missing.
+   */
+  const highlight = cats.length > 0 && !nums.some((v) => Number.isFinite(Number(v)));
+  const values = new Map();
   cats.forEach((c, i) => {
     const v = Number(nums[i]);
     if (Number.isFinite(v)) values.set(c, v);
   });
+  const marked = new Set(highlight ? cats : []);
   // Named but unknown is worth saying out loud: a typo in a region name would
   // otherwise just be a country that never lights up.
   const unknown = cats.filter((c) => !geo[c]);
@@ -697,7 +714,7 @@ function mapChart(spec, theme) {
       }
     }
   }
-  const legendW = values.size ? 150 : 0;
+  const legendW = (values.size || marked.size) ? 150 : 0;
   const plotW = f.w - legendW;
   const scale = Math.min(plotW / ((x1 - x0) || 1), f.h / ((y1 - y0) || 1));
   const offX = f.x + (plotW - (x1 - x0) * scale) / 2;
@@ -711,7 +728,10 @@ function mapChart(spec, theme) {
   const hi = vals.length ? Math.max(...vals) : 1;
   const strong = (spec.colors || [])[0] || theme.strong || SERIES[0];
   const empty = theme.tint || '#EEF3F8';
-  const shade = (v) => {
+  const shade = (v, name) => {
+    // A highlighted region gets the full accent: there is no scale to sit on,
+    // so anything paler would read as 「a bit selected」, which is not a thing.
+    if (marked.has(name)) return (spec.colors || [])[0] || theme.accent || SERIES[2];
     if (v === undefined) return empty;
     // A floor of 0.18 so the lowest region is still visibly part of the data
     // rather than indistinguishable from one with no value at all.
@@ -720,7 +740,7 @@ function mapChart(spec, theme) {
   };
 
   for (const [name, rings] of Object.entries(geo)) {
-    const fill = shade(values.get(name));
+    const fill = shade(values.get(name), name);
     const d = rings.map((r) => `M${r.map(([lon, lat]) => `${n2(px(lon))},${n2(py(lat))}`).join('L')}Z`)
       .join('');
     out += `<path d="${d}" fill="${fill}" stroke="${theme.bg || '#FFFFFF'}"`
@@ -734,20 +754,28 @@ function mapChart(spec, theme) {
    * listed with it — largest first, because the question a map raises is always
    * 「誰最多」. Capped at eight: past that the list is the chart.
    */
-  if (values.size) {
-    const rows = [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (values.size || marked.size) {
+    const rows = marked.size
+      // Highlight mode: the list is the names, in the order they were given —
+      // that order is usually chronological or narrative, and re-sorting it
+      // would throw away the only ordering the caller had.
+      ? [...marked].slice(0, 8).map((n) => [n, null])
+      : [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
     const lx = f.x + plotW + 16;
     let ly = f.y + 8;
     for (const [name, v] of rows) {
-      out += rect(lx, ly, 12, 12, shade(v), ' rx="2"');
+      out += rect(lx, ly, 12, 12, shade(v, name), ' rx="2"');
       out += text(lx + 19, ly + 6, name,
         { size: 12, color: theme.ink || '#3D3D3D', baseline: 'middle' });
-      out += text(f.W - 16, ly + 6, short(v),
-        { size: 12, bold: true, color: theme.strong || SERIES[0], anchor: 'end', baseline: 'middle' });
+      if (v !== null) {
+        out += text(f.W - 16, ly + 6, short(v),
+          { size: 12, bold: true, color: theme.strong || SERIES[0], anchor: 'end', baseline: 'middle' });
+      }
       ly += 22;
     }
-    if (values.size > rows.length) {
-      out += text(lx, ly + 6, `（另有 ${values.size - rows.length} 個未列出）`,
+    const total = marked.size || values.size;
+    if (total > rows.length) {
+      out += text(lx, ly + 6, `（另有 ${total - rows.length} 個未列出）`,
         { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
       ly += 20;
     }
@@ -779,11 +807,29 @@ export function chartSvg(spec = {}, theme = {}) {
   const render = RENDER[type];
   if (!render) throw new Error(`不支援的圖表類型：${type}。可用的有 ${CHART_TYPES.join('、')}。`);
 
+  /**
+   * The palette the renderers actually get.
+   *
+   * ── Why this list grew ──
+   * It used to carry five roles, which was everything the bar and line charts
+   * needed. The newer ones need more: a waterfall colours its falls with the
+   * accent, a timeline marks its last stop with it, a map shades unset regions
+   * with the tint. Those roles were not in the object, so each of them silently
+   * fell back to this module's own defaults — producing a chart in navy and red
+   * on a teal deck, with nothing anywhere reporting a problem.
+   *
+   * Defaults are still filled in per role, so a caller that passes a partial
+   * palette gets a coherent chart rather than an undefined colour.
+   */
   const t = {
     ink: theme.ink || '#3D3D3D',
     strong: theme.strong || '#1A3A5C',
+    second: theme.second || '#2E6DA4',
+    accent: theme.accent || '#C0392B',
     muted: theme.muted || '#8A93A0',
     line: theme.line || '#D5DBE0',
+    tint: theme.tint || '#EEF3F8',
+    ground: theme.ground || '#F7F9FB',
     bg: theme.bg || '#FFFFFF',
   };
   const W = Number(spec.width) || 760;

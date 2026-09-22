@@ -192,6 +192,29 @@ export function dotGrid(fill, dot, opts = {}) {
  */
 const MOTIF_ALPHA = 0.1;
 
+/**
+ * The part of the page a motif must stay out of.
+ *
+ * ── Why a rule and not a judgement per motif ──
+ * 「不能這樣跑到中間，因為你看這樣文字就不清楚了」. Two of the motifs — the grid
+ * and the contour lines — ran edge to edge, so they passed straight under the
+ * body copy. At ten per cent opacity that is not loud, but it is texture behind
+ * text, and text needs a plain ground more than a page needs decoration.
+ *
+ * The margins are where a template's ornament lives for exactly this reason. So
+ * the keep-out box is stated once and every motif is built around it rather
+ * than each one being judged by eye: a new motif added later inherits the rule
+ * instead of reintroducing the bug.
+ *
+ * Matches the host's content band (CHROME.contentTop 124 down to the footer),
+ * opened out a little so a mark may touch the edge of the text without sitting
+ * under it.
+ */
+const KEEP_OUT = { top: 104, bottom: 486, left: 20, right: W - 20 };
+/** Above and below the text: where a full-width motif is allowed to run. */
+const BAND_TOP = KEEP_OUT.top;
+const BAND_BOTTOM = KEEP_OUT.bottom;
+
 /** Soft bands along the foot of the page. The friendliest of the set. */
 function mWaves(tone, accent) {
   const out = [];
@@ -208,17 +231,25 @@ function mWaves(tone, accent) {
   return out.join('');
 }
 
+/** Keep a mark's whole body inside the top or bottom band. */
+function clampTo(y, half) {
+  if (y < H / 2) return Math.min(y, BAND_TOP - half);
+  return Math.max(y, BAND_BOTTOM + half);
+}
+
 /** Outlined diamonds, clustered where the content is not. */
 function mDiamonds(tone, accent) {
   const rand = rng(31);
   const out = [];
   // Two clusters, top-right and bottom-left: the two corners a slide layout
   // leaves empty most often.
-  for (const [cx, cy, n] of [[W - 120, 92, 7], [96, H - 96, 5]]) {
+  for (const [cx, cy, n] of [[W - 120, 56, 7], [96, H - 56, 5]]) {
     for (let i = 0; i < n; i++) {
-      const size = 16 + rand() * 46;
+      const size = 16 + rand() * 40;
       const x = cx + (rand() - 0.5) * 300;
-      const y = cy + (rand() - 0.5) * 170;
+      // Clamped into the top and bottom bands: the scatter used to reach far
+      // enough inward to land a diamond behind a heading.
+      const y = clampTo(cy + (rand() - 0.5) * 110, size);
       const pts = [[x, y - size], [x + size, y], [x, y + size], [x - size, y]]
         .map((q) => q.map(n2).join(',')).join(' ');
       const solid = i % 3 === 0;
@@ -233,9 +264,14 @@ function mDiamonds(tone, accent) {
 /** Concentric arcs sweeping out of one corner. */
 function mArcs(tone, accent) {
   const out = [];
+  // Centred well outside the top-right corner with small radii, so the arcs
+  // only ever cut that corner. The first version used radii up to 540 and swept
+  // right across the page.
   for (let i = 0; i < 6; i++) {
-    const r = 150 + i * 78;
-    out.push(`<circle cx="${n2(W + 60)}" cy="${n2(-40)}" r="${n2(r)}" fill="none"`
+    // Max radius stays under the distance from the centre to the content band's
+    // nearest corner (about 250), so no arc can clip it.
+    const r = 96 + i * 24;
+    out.push(`<circle cx="${n2(W + 120)}" cy="${n2(-90)}" r="${n2(r)}" fill="none"`
       + ` stroke="${esc(i === 2 ? accent : tone)}" stroke-width="${i === 2 ? 2.4 : 1.2}"`
       + ` opacity="${n2(MOTIF_ALPHA * 1.4)}"/>`);
   }
@@ -244,26 +280,34 @@ function mArcs(tone, accent) {
 
 /** A faint ruled grid. The most neutral motif, and the one for data-heavy decks. */
 function mGrid(tone) {
-  return `<defs><pattern id="mg" width="48" height="48" patternUnits="userSpaceOnUse">`
+  // Two bands rather than the whole page: the grid used to run under the body
+  // copy, which is the one place a texture must not be. A pattern fill clipped
+  // by the rect it lives in needs no clipPath — PowerPoint's support for those
+  // is far patchier than its support for a plain rectangle.
+  const cell = `<defs><pattern id="mg" width="48" height="48" patternUnits="userSpaceOnUse">`
     + `<path d="M48 0 L0 0 0 48" fill="none" stroke="${esc(tone)}" stroke-width="0.8"/>`
-    + `</pattern></defs>`
-    + `<rect width="${W}" height="${H}" fill="url(#mg)" opacity="${n2(MOTIF_ALPHA * 0.9)}"/>`;
+    + `</pattern></defs>`;
+  const band = (y, h) => `<rect x="0" y="${n2(y)}" width="${W}" height="${n2(h)}"`
+    + ` fill="url(#mg)" opacity="${n2(MOTIF_ALPHA * 0.9)}"/>`;
+  return cell + band(0, BAND_TOP) + band(BAND_BOTTOM, H - BAND_BOTTOM);
 }
 
 /** Contour lines, like a map. Quietly technical without being a grid. */
 function mTopo(tone, accent) {
   const rand = rng(77);
   const out = [];
-  for (let i = 0; i < 7; i++) {
-    const y = 110 + i * 62;
+  // Three lines hugging the top edge and four along the foot. Contours reading
+  // across the middle of the page were the other half of 「跑到中間」.
+  const rows = [22, 52, 82, BAND_BOTTOM + 18, BAND_BOTTOM + 34, H - 8];
+  rows.forEach((y, i) => {
     const pts = [];
     for (let x = -20; x <= W + 20; x += 60) {
-      pts.push(`${n2(x)},${n2(y + Math.sin((x / W) * Math.PI * 2 + i) * (22 + rand() * 10))}`);
+      pts.push(`${n2(x)},${n2(y + Math.sin((x / W) * Math.PI * 2 + i) * (6 + rand() * 4))}`);
     }
     out.push(`<polyline points="${pts.join(' ')}" fill="none"`
-      + ` stroke="${esc(i === 3 ? accent : tone)}" stroke-width="1.1"`
+      + ` stroke="${esc(i === 4 ? accent : tone)}" stroke-width="1.1"`
       + ` opacity="${n2(MOTIF_ALPHA * 1.2)}"/>`);
-  }
+  });
   return out.join('');
 }
 
@@ -277,9 +321,12 @@ function mRibbon(tone, accent) {
 
 /** A single wedge in one corner. Almost nothing, which is sometimes right. */
 function mCorner(tone, accent) {
-  return `<polygon points="0,${H} 0,${H - 220} 300,${H}"`
+  // Both wedges sit entirely below the content band. The first version rose to
+  // y=320, which put a tinted triangle under the left of the body copy.
+  const top = BAND_BOTTOM + 6;
+  return `<polygon points="0,${H} 0,${n2(top)} ${n2((H - top) * 2.4)},${H}"`
     + ` fill="${esc(tone)}" opacity="${n2(MOTIF_ALPHA)}"/>`
-    + `<polygon points="0,${H} 0,${H - 96} 130,${H}"`
+    + `<polygon points="0,${H} 0,${n2(top + 20)} ${n2((H - top - 20) * 2.2)},${H}"`
     + ` fill="${esc(accent)}" opacity="${n2(MOTIF_ALPHA * 0.9)}"/>`;
 }
 

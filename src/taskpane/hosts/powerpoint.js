@@ -472,7 +472,11 @@ function skin(th, lk, accent, fallbackFill) {
  */
 function mix(a, b, t) {
   const hex = (c) => {
-    const v = String(c || '').replace('#', '');
+    let v = String(c || '').replace('#', '');
+    // 「#FFF」 is legal CSS and parsed to garbage by a naive slice: 'FF', 'F', ''
+    // gives NaN on the last two channels, and the blend comes out a muddy
+    // brown that looks like a deliberate colour choice.
+    if (v.length === 3) v = v.split('').map((ch) => ch + ch).join('');
     return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) || 0);
   };
   const [r1, g1, b1] = hex(a);

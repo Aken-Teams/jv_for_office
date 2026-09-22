@@ -138,6 +138,40 @@ for (const spec of [
   }
   ok('每個母題長得都不一樣', new Set(shots.values()).size === MOTIF_NAMES.length);
 
+  /**
+   * 沒有任何一個記號可以落在文字上。
+   *
+   * 「不能這樣跑到中間，因為你看這樣文字就不清楚了」——grid 和 topo 原本是整頁
+   * 鋪滿的，正好從內文底下穿過去。十趴的透明度不吵，但那是**文字底下的紋理**，
+   * 而文字需要乾淨的底，比頁面需要裝飾更優先。
+   *
+   * 這條用測試釘住而不是靠眼睛看，因為之後加的新母題會直接繼承這個規則，
+   * 而不是重新犯一次。
+   */
+  const TEXT_BAND = { x0: 38, x1: 922, y0: 104, y1: 486 };
+  const inText = (x, y) => x > TEXT_BAND.x0 && x < TEXT_BAND.x1
+    && y > TEXT_BAND.y0 && y < TEXT_BAND.y1;
+  for (const m of MOTIF_NAMES) {
+    const svg = ornamentSvg({ motif: m, theme: TH, ground: '#FFFFFF' });
+    // 滿版的底色本來就該蓋滿，它不是記號。
+    const marks = svg.replace(/<rect width="960" height="540"[^>]*\/>/g, '');
+    const pts = [...marks.matchAll(/[ML ](-?[\d.]+),(-?[\d.]+)/g)].map((q) => [+q[1], +q[2]]);
+    const rects = [...marks.matchAll(/rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)]
+      .flatMap((q) => [[+q[1], +q[2]], [+q[1] + +q[3], +q[2] + +q[4]]]);
+    const circles = [...marks.matchAll(/circle cx="(-?[\d.]+)" cy="(-?[\d.]+)" r="([\d.]+)"/g)]
+      .flatMap((q) => {
+        const out = [];
+        for (let a = 0; a < 360; a += 5) {
+          out.push([+q[1] + +q[3] * Math.cos(a * Math.PI / 180),
+            +q[2] + +q[3] * Math.sin(a * Math.PI / 180)]);
+        }
+        return out;
+      });
+    const hits = [...pts, ...rects, ...circles].filter(([x, y]) => inText(x, y));
+    ok(`${m}：沒有任何記號落在文字區裡`, hits.length === 0,
+      hits.slice(0, 3).map((q) => q.map((v) => Math.round(v)).join(',')).join(' '));
+  }
+
   // 一致才有模板感。同樣的母題畫兩次必須完全一樣。
   const a = ornamentSvg({ motif: 'diamonds', theme: TH, ground: '#FFFFFF' });
   const b = ornamentSvg({ motif: 'diamonds', theme: TH, ground: '#FFFFFF' });
