@@ -55,7 +55,9 @@ const SHAPES = [
  * contract they deliberately do not have. They get their own fixtures further
  * down, exercising the shapes that ARE awkward for them.
  */
-const SHAPE_FUZZ = CHART_TYPES.filter((t) => t !== 'timeline' && t !== 'radar');
+// `map` joins them: it takes region NAMES, so feeding it 「一月／二月」 would be
+// testing that it honours a contract it does not have.
+const SHAPE_FUZZ = CHART_TYPES.filter((t) => !['timeline', 'radar', 'map'].includes(t));
 
 for (const type of SHAPE_FUZZ) {
   let bad = 0;
@@ -255,6 +257,68 @@ const sane = (svg) => !/NaN|Infinity|undefined/.test(svg)
   let none = '';
   try { chartSvg({ type: 'timeline', events: [] }, TH); } catch (e) { none = e.message; }
   ok('沒有事件會被擋掉並說要什麼', none.includes('events'), none);
+}
+
+// ── 地圖 ────────────────────────────────────────────────────────────────────
+//
+// 地圖需要真的地理資料——沒有任何算術能生出一條海岸線。所以那份資料是下載一次、
+// 簡化過、放進 repo 的。這裡驗的是「它真的在裡面，而且畫得出來」。
+{
+  const { MAPS } = await import('../src/taskpane/hosts/mapdata.js');
+  ok('三份地圖都在', ['world', 'china', 'taiwan'].every((k) => MAPS[k]));
+  ok('世界有主要國家', ['China', 'Taiwan', 'Japan', 'United States of America']
+    .every((k) => MAPS.world[k]), Object.keys(MAPS.world).length + ' 國');
+  // 這兩份是這個產品實際要賣的市場，所以它們必須在。
+  ok('中國有省級', !!(MAPS.china['广东'] && MAPS.china['江苏']),
+    Object.keys(MAPS.china).length + ' 省');
+  ok('台灣有縣市級', !!(MAPS.taiwan['台北'] && MAPS.taiwan['高雄']),
+    Object.keys(MAPS.taiwan).length + ' 縣市');
+  // 簡化過頭會變成多邊形，簡化不夠檔案會太大。
+  const pts = (m) => Object.values(MAPS[m]).flat().reduce((a, r) => a + r.length, 0);
+  ok('點數壓在可用範圍內',
+    pts('world') < 6000 && pts('china') < 4000 && pts('taiwan') < 2000,
+    `world ${pts('world')} china ${pts('china')} taiwan ${pts('taiwan')}`);
+  ok('每個環都還是封閉的多邊形',
+    Object.values(MAPS.taiwan).flat().every((r) => r.length > 3));
+}
+
+for (const which of ['world', 'china', 'taiwan']) {
+  const cats = which === 'world' ? ['China', 'Taiwan', 'Japan']
+    : which === 'china' ? ['广东', '江苏', '北京'] : ['台北', '高雄', '台中'];
+  const svg = chartSvg({ type: 'map', map: which, title: which,
+    categories: cats, values: [30, 20, 10] }, TH);
+  ok(`${which}：畫得出乾淨的 SVG`, svg.startsWith('<svg') && svg.endsWith('</svg>')
+    && !/NaN|undefined|Infinity/.test(svg), svgProblem(svg));
+  // 每個地區都要落在畫布裡，不然就是投影或縮放算錯了。
+  const pts = [...svg.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  ok(`${which}：全部畫在畫布內`,
+    pts.every(([x, y]) => x >= -1 && x <= 761 && y >= -1 && y <= 381),
+    `x ${Math.min(...pts.map((q) => q[0])).toFixed(0)}..${Math.max(...pts.map((q) => q[0])).toFixed(0)}`);
+  // 給了值的地區要有不同深淺，不然這張圖沒有在表達任何東西。
+  const fills = new Set([...svg.matchAll(/<path d="[^"]*" fill="(#[0-9A-Fa-f]{6})"/g)]
+    .map((m) => m[1].toUpperCase()));
+  ok(`${which}：深淺有分`, fills.size >= 3, [...fills].join(' '));
+  ok(`${which}：圖例有地區名和數字`, svg.includes(cats[0]) && svg.includes('30'));
+}
+{
+  // 沒給值的地區畫成最淺色而不是消失——一個洞讀起來是壞掉，淺色讀起來是「沒資料」。
+  const svg = chartSvg({ type: 'map', map: 'taiwan', categories: ['台北'], values: [5] }, TH);
+  const paths = (svg.match(/<path /g) || []).length;
+  ok('沒給值的地區照樣畫出來', paths >= 18, `${paths} 個區`);
+}
+{
+  const svg = chartSvg({ type: 'map', map: 'world', categories: ['Narnia', 'Japan'], values: [1, 2] }, TH);
+  ok('名字對不上的地區會講出來', svg.includes('找不到') && svg.includes('Narnia'));
+}
+{
+  let msg = '';
+  try { chartSvg({ type: 'map', map: 'mars', categories: ['a'], values: [1] }, TH); } catch (e) { msg = e.message; }
+  ok('沒有的地圖會被擋下並列出可用的', msg.includes('world') && msg.includes('taiwan'), msg);
+}
+{
+  // 一個值都沒有也不該爆——底圖本身就是有意義的輸出。
+  const svg = chartSvg({ type: 'map', map: 'china' }, TH);
+  ok('沒有資料也畫得出底圖', svg.includes('<path') && svgProblem(svg) === '');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

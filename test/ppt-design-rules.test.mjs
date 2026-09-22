@@ -77,8 +77,12 @@ ok('版式整份只選一次', ctx.includes('一路用到底'));
 
 // ── 圖表不是只有長條圖 ──────────────────────────────────────────────────────
 ok('有圖表選型這一節', ctx.includes('### 圖表不是只有長條圖'));
-ok('四種新圖表都列出來',
-  ['waterfall', 'funnel', 'radar', 'timeline'].every((k) => ctx.includes(k)));
+ok('長條圖以外的圖表都列出來',
+  ['waterfall', 'funnel', 'radar', 'timeline', 'map'].every((k) => ctx.includes(k)));
+// 地圖最容易被拿來「讓簡報有國際感」，那正是不該放的理由。
+ok('地圖只回答哪裡多哪裡少', ctx.includes('地圖只回答'));
+ok('要比排名就用長條圖', ctx.includes('要比排名就用'));
+ok('不要為了國際感放地圖', ctx.includes('只是想讓簡報有國際感就不要'));
 ok('時程類內容要用時間軸', ctx.includes('時程、里程碑、導入階段'));
 // 「現況 vs 目標」本來就是要並排看的，拆成兩頁反而讓人對照不起來。
 ok('一頁可以放兩張圖表', ctx.includes('一頁可以放兩張圖表'));

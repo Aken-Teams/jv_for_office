@@ -30,6 +30,8 @@
  * way it is silently dropped by canvas.
  */
 
+import { MAPS } from './mapdata.js';
+
 const xmlEscape = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -635,11 +637,133 @@ function timelineChart(spec, theme) {
   return out;
 }
 
+/**
+ * A choropleth — regions shaded by a number.
+ *
+ * ── What a map is actually for on a slide, and what it is not ──
+ * It answers 「哪裡多、哪裡少」 in one glance, and it answers nothing else well.
+ * Reading a precise value off a shaded country is impossible, and comparing two
+ * similar shades across a page is worse than comparing two bars. So the legend
+ * carries the numbers and the map carries the pattern — and when the question is
+ * really 「排名」, a bar chart is the honest answer and the tool description says
+ * so.
+ *
+ * ── The projection ──
+ * Equirectangular, scaled to fit the box with the aspect ratio preserved. Not
+ * because it is a good projection — it stretches the poles badly — but because
+ * it is the one whose distortion everybody has already seen a thousand times,
+ * and a slide is not the place to explain why Greenland changed shape.
+ *
+ * ── Names ──
+ * The world data is keyed by English name, the two Chinese maps by Chinese name.
+ * A region nobody supplied a value for is drawn in the empty tone rather than
+ * skipped: a hole where Vietnam should be reads as a rendering fault, while a
+ * pale Vietnam reads as 「no data」, which is what it means.
+ */
+function mapChart(spec, theme) {
+  const which = String(spec.map || 'world').toLowerCase();
+  const geo = MAPS[which];
+  if (!geo) {
+    throw new Error(`沒有「${spec.map}」這份地圖。可用的有：${Object.keys(MAPS).join('、')}。`);
+  }
+
+  const values = new Map();
+  const cats = Array.isArray(spec.categories) ? spec.categories.map(String) : [];
+  const nums = Array.isArray(spec.values) ? spec.values : [];
+  cats.forEach((c, i) => {
+    const v = Number(nums[i]);
+    if (Number.isFinite(v)) values.set(c, v);
+  });
+  // Named but unknown is worth saying out loud: a typo in a region name would
+  // otherwise just be a country that never lights up.
+  const unknown = cats.filter((c) => !geo[c]);
+
+  const f = frame(spec, { axis: false, legend: false });
+  let out = chrome(spec, f, theme);
+
+  // The bounding box of everything being drawn, so a China map fills its box
+  // instead of sitting in the middle of a world-sized one.
+  let x0 = 180;
+  let y0 = 90;
+  let x1 = -180;
+  let y1 = -90;
+  for (const rings of Object.values(geo)) {
+    for (const r of rings) {
+      for (const [lon, lat] of r) {
+        if (lon < x0) x0 = lon;
+        if (lon > x1) x1 = lon;
+        if (lat < y0) y0 = lat;
+        if (lat > y1) y1 = lat;
+      }
+    }
+  }
+  const legendW = values.size ? 150 : 0;
+  const plotW = f.w - legendW;
+  const scale = Math.min(plotW / ((x1 - x0) || 1), f.h / ((y1 - y0) || 1));
+  const offX = f.x + (plotW - (x1 - x0) * scale) / 2;
+  const offY = f.y + (f.h - (y1 - y0) * scale) / 2;
+  // Latitude increases northward and SVG's y increases downward.
+  const px = (lon) => offX + (lon - x0) * scale;
+  const py = (lat) => offY + (y1 - lat) * scale;
+
+  const vals = [...values.values()];
+  const lo = vals.length ? Math.min(...vals) : 0;
+  const hi = vals.length ? Math.max(...vals) : 1;
+  const strong = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const empty = theme.tint || '#EEF3F8';
+  const shade = (v) => {
+    if (v === undefined) return empty;
+    // A floor of 0.18 so the lowest region is still visibly part of the data
+    // rather than indistinguishable from one with no value at all.
+    const t = hi === lo ? 1 : 0.18 + 0.82 * ((v - lo) / (hi - lo));
+    return mixHex(empty, strong, t);
+  };
+
+  for (const [name, rings] of Object.entries(geo)) {
+    const fill = shade(values.get(name));
+    const d = rings.map((r) => `M${r.map(([lon, lat]) => `${n2(px(lon))},${n2(py(lat))}`).join('L')}Z`)
+      .join('');
+    out += `<path d="${d}" fill="${fill}" stroke="${theme.bg || '#FFFFFF'}"`
+      + ` stroke-width="0.6" stroke-linejoin="round"/>`;
+  }
+
+  /**
+   * The legend is the numbers.
+   *
+   * Nobody reads a value off a shade, so the regions that were given one are
+   * listed with it — largest first, because the question a map raises is always
+   * 「誰最多」. Capped at eight: past that the list is the chart.
+   */
+  if (values.size) {
+    const rows = [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const lx = f.x + plotW + 16;
+    let ly = f.y + 8;
+    for (const [name, v] of rows) {
+      out += rect(lx, ly, 12, 12, shade(v), ' rx="2"');
+      out += text(lx + 19, ly + 6, name,
+        { size: 12, color: theme.ink || '#3D3D3D', baseline: 'middle' });
+      out += text(f.W - 16, ly + 6, short(v),
+        { size: 12, bold: true, color: theme.strong || SERIES[0], anchor: 'end', baseline: 'middle' });
+      ly += 22;
+    }
+    if (values.size > rows.length) {
+      out += text(lx, ly + 6, `（另有 ${values.size - rows.length} 個未列出）`,
+        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+      ly += 20;
+    }
+    if (unknown.length) {
+      out += text(lx, ly + 6, `找不到：${unknown.slice(0, 3).join('、')}`,
+        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+    }
+  }
+  return out;
+}
+
 const RENDER = {
   column: barChart, bar: barChart, line: lineChart, area: lineChart,
   pie: pieChart, donut: pieChart,
   waterfall: waterfallChart, funnel: funnelChart, radar: radarChart,
-  timeline: timelineChart,
+  timeline: timelineChart, map: mapChart,
 };
 export const CHART_TYPES = Object.keys(RENDER);
 
