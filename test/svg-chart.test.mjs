@@ -55,9 +55,22 @@ const SHAPES = [
  * contract they deliberately do not have. They get their own fixtures further
  * down, exercising the shapes that ARE awkward for them.
  */
-// `map` joins them: it takes region NAMES, so feeding it 「一月／二月」 would be
-// testing that it honours a contract it does not have.
-const SHAPE_FUZZ = CHART_TYPES.filter((t) => !['timeline', 'radar', 'map'].includes(t));
+/**
+ * Five types are excluded, all for one reason: they do not take
+ * `categories` + `values`.
+ *
+ *   timeline → `events`
+ *   scatter  → `points`
+ *   box      → arrays of raw observations per group, not one number each
+ *   map      → region NAMES
+ *   radar    → refuses fewer than three axes, on purpose
+ *
+ * Running them through this loop would be testing that they honour a contract
+ * they deliberately do not have. Each gets its own fixtures further down,
+ * covering the shapes that ARE awkward for it.
+ */
+const SHAPE_FUZZ = CHART_TYPES.filter(
+  (t) => !['timeline', 'radar', 'map', 'scatter', 'box'].includes(t));
 
 for (const type of SHAPE_FUZZ) {
   let bad = 0;
@@ -399,6 +412,77 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('過長的名字會截斷', names.some((m) => m[2].endsWith('…')),
     names.map((m) => m[2]).join(' | '));
   ok('短名字不會被動到', names.some((m) => m[2] === 'China'));
+}
+
+// ── 散佈圖、堆疊、箱型 ──────────────────────────────────────────────────────
+{
+  const P = { ink: '#111', strong: '#0F6E72', second: '#4AA7A5', accent: '#E0743A',
+    muted: '#7E9694', line: '#CFE3E1', tint: '#E8F4F3', bg: '#FFFFFF' };
+
+  // 散佈圖是唯一能講「相關性」的——其他每一種都在比大小。
+  const sc = chartSvg({ type: 'scatter', title: '規模 vs 成熟度',
+    x_axis: '員工數 →', y_axis: '↑ 成熟度',
+    points: [{ x: 120, y: 2.1, label: 'A' }, { x: 800, y: 3.4, label: 'B' },
+      { x: 2400, y: 4.2, label: 'C' }] }, P);
+  ok('散佈圖畫得出來', sc.startsWith('<svg') && svgProblem(sc) === '');
+  ok('三個點', (sc.match(/<circle/g) || []).length === 3);
+  // 沒有軸名的散佈圖就是兩個沒有名字的數字。
+  ok('兩個軸名都畫出來', sc.includes('員工數 →') && sc.includes('↑ 成熟度'));
+  ok('點少的時候會標名字', sc.includes('>A<'));
+  // 80 到 90 之間的資料從零畫起就是角落一團。
+  const tight = chartSvg({ type: 'scatter', x_axis: 'x', y_axis: 'y',
+    points: Array.from({ length: 6 }, (_, i) => ({ x: 80 + i, y: 80 + i })) }, P);
+  const cys = [...tight.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)"/g)].map((m) => +m[2]);
+  ok('資料離零很遠時軸不從零開始',
+    Math.max(...cys) - Math.min(...cys) > 100,
+    `垂直展開 ${(Math.max(...cys) - Math.min(...cys)).toFixed(0)}`);
+  // 點太多就不標名字，不然是一團字不是一張圖。
+  const many = chartSvg({ type: 'scatter', x_axis: 'x', y_axis: 'y',
+    points: Array.from({ length: 20 }, (_, i) => ({ x: i, y: i % 7, label: `P${i}` })) }, P);
+  ok('點很多就不標名字', !many.includes('>P0<'));
+  let bad = '';
+  try { chartSvg({ type: 'scatter', values: [1, 2] }, P); } catch (e) { bad = e.message; }
+  ok('沒有 points 會被擋下並說要什麼', bad.includes('points'), bad);
+
+  // 堆疊：總和是柱高、組成是分段。
+  const st = chartSvg({ type: 'stacked', categories: ['2023', '2024'],
+    values: [[10, 20], [5, 10]], series: ['硬體', '服務'] }, P);
+  ok('堆疊圖畫得出來', svgProblem(st) === '');
+  const segs = [...st.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)]
+    .map((m) => ({ x: +m[1], y: +m[2], w: +m[3], h: +m[4] })).filter((r) => r.w < 200 && r.h > 5);
+  const col1 = segs.filter((r) => Math.abs(r.x - segs[0].x) < 1).sort((a, b) => a.y - b.y);
+  ok('同一根的分段互相接續',
+    col1.length >= 2 && Math.abs(col1[0].y + col1[0].h - col1[1].y) < 1.5,
+    col1.map((r) => `${r.y.toFixed(0)}+${r.h.toFixed(0)}`).join(' '));
+  ok('兩個系列都有圖例', st.includes('硬體') && st.includes('服務'));
+
+  const pct = chartSvg({ type: 'stacked100', categories: ['A', 'B'],
+    values: [[10, 40], [90, 60]], series: ['x', 'y'] }, P);
+  const cols = {};
+  for (const m of pct.matchAll(/<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="([\d.]+)"/g)) {
+    if (+m[2] > 200) continue;
+    cols[(+m[1]).toFixed(0)] = (cols[(+m[1]).toFixed(0)] || 0) + +m[3];
+  }
+  const hs = Object.values(cols);
+  ok('百分比堆疊每根等高', hs.length >= 2 && Math.abs(hs[0] - hs[1]) < 2, hs.join(' '));
+  ok('百分比堆疊標的是百分比', /\d+%/.test(pct));
+
+  // 箱型圖：分布，不只是平均。
+  const bx = chartSvg({ type: 'box', title: '交期', categories: ['A 廠', 'B 廠'],
+    values: [[5, 6, 6, 7, 7, 8, 9], [2, 3, 5, 6, 9, 12, 30]] }, P);
+  ok('箱型圖畫得出來', svgProblem(bx) === '');
+  ok('兩個箱子', (bx.match(/fill-opacity="0.22"/g) || []).length === 2);
+  // 30 距離四分位距超過 1.5 倍，是離群值。
+  ok('離群值畫成空心圓', bx.includes('fill="none"'));
+  ok('兩組名稱都在', bx.includes('A 廠') && bx.includes('B 廠'));
+  // 中位數是唯一會被讀出來的數字，所以它是箱子上最重的一筆。
+  ok('中位數線最粗', bx.includes('stroke-width="2.6"'));
+  const explicit = chartSvg({ type: 'box', categories: ['X'],
+    boxes: [{ min: 1, q1: 3, median: 5, q3: 7, max: 9, outliers: [15] }] }, P);
+  ok('也吃現成的五數摘要', svgProblem(explicit) === '' && explicit.includes('<rect'));
+  bad = '';
+  try { chartSvg({ type: 'box', categories: ['A'], values: [1, 2, 3] }, P); } catch (e) { bad = e.message; }
+  ok('一維陣列會被擋下並說清楚格式', bad.includes('[[...]'), bad);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

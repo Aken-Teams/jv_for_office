@@ -838,11 +838,302 @@ function mapChart(spec, theme) {
   return out;
 }
 
+/**
+ * A scatter — do these two numbers move together?
+ *
+ * ── The argument nothing else here could make ──
+ * Every other chart in this module compares magnitudes across categories. None
+ * of them can say 「規模越大，成熟度越高」, which is a claim analysis decks make
+ * constantly and currently have to make in prose. A scatter says it in one
+ * glance, and says it honestly: if the cloud has no shape, there is no
+ * relationship, and the chart admits that where a sentence would not.
+ *
+ * Points may be labelled. Labels are drawn only when there are few enough for
+ * them not to collide — past a dozen the names are noise and the shape is the
+ * point.
+ */
+function scatterChart(spec, theme) {
+  const pts = (Array.isArray(spec.points) ? spec.points : []).filter(Boolean)
+    .map((p) => ({
+      x: Number(p.x), y: Number(p.y), label: String(p.label || ''),
+      group: String(p.group || ''),
+    }))
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (!pts.length) throw new Error('points 是必要的：[{ x, y, label }]。');
+
+  const f = frame(spec, { axis: true, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  // Axes start at zero unless the data sits far from it — a scatter of values
+  // between 80 and 90 plotted from zero is a single blob in one corner.
+  /**
+   * The axis range for one dimension.
+   *
+   * Zero-based when the data is anywhere near zero, because a scatter that
+   * floats above a cut axis exaggerates every difference. Hugged when it is
+   * not: six values between 80 and 85 plotted from zero are a single dot.
+   *
+   * The TOP has to follow the same decision as the bottom. Rounding it up to a
+   * nice number while the bottom hugs the data puts the gap straight back —
+   * 79.4 to 100 for data that only spans 80 to 85.
+   */
+  const range = (vals) => {
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    const spread = (hi - lo) || Math.abs(hi) || 1;
+    if (lo >= 0 && lo < spread * 0.6) return [0, niceMax(hi)];
+    return [lo - spread * 0.12, hi + spread * 0.12];
+  };
+  const [x0, x1] = range(xs);
+  const [y0, y1] = range(ys);
+  const px = (v) => f.x + ((v - x0) / ((x1 - x0) || 1)) * f.w;
+  const py = (v) => f.y + f.h - ((v - y0) / ((y1 - y0) || 1)) * f.h;
+
+  for (let i = 0; i <= 4; i++) {
+    const gy = f.y + (f.h / 4) * i;
+    out += line(f.x, gy, f.x + f.w, gy, theme.line);
+    out += text(f.x - 8, gy, short(y1 - ((y1 - y0) / 4) * i),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+    const gx = f.x + (f.w / 4) * i;
+    out += text(gx, f.y + f.h + 18, short(x0 + ((x1 - x0) / 4) * i),
+      { size: 11, color: theme.muted, anchor: 'middle' });
+  }
+
+  const groups = [...new Set(pts.map((p) => p.group))];
+  const tone = (g) => (spec.colors || [])[Math.max(0, groups.indexOf(g))]
+    || SERIES[Math.max(0, groups.indexOf(g)) % SERIES.length];
+  const showLabels = spec.labels !== false && pts.length <= 12;
+
+  for (const p of pts) {
+    out += `<circle cx="${n2(px(p.x))}" cy="${n2(py(p.y))}" r="6"`
+      + ` fill="${tone(p.group)}" fill-opacity="0.75"`
+      + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="1.5"/>`;
+    if (showLabels && p.label) {
+      out += text(px(p.x), py(p.y) - 12, p.label,
+        { size: 11, color: theme.ink, anchor: 'middle' });
+    }
+  }
+
+  // The axis names matter more here than on any other chart: a scatter without
+  // them is two unlabelled numbers and nobody can read the claim off it.
+  if (spec.x_axis) {
+    out += text(f.x + f.w, f.y + f.h + 32, String(spec.x_axis),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
+  }
+  if (spec.y_axis) {
+    out += text(f.x - 44, f.y - 6, String(spec.y_axis),
+      { size: 11.5, bold: true, color: theme.strong });
+  }
+  if (groups.length > 1) {
+    let lx = f.x;
+    for (const g of groups) {
+      out += rect(lx, f.H - 22, 11, 11, tone(g), ' rx="2"');
+      out += text(lx + 17, f.H - 16, g || '（未分組）',
+        { size: 11.5, color: theme.ink, baseline: 'middle' });
+      lx += 30 + String(g).length * 12;
+    }
+  }
+  return out;
+}
+
+/**
+ * Stacked bars — the total changed, and so did what it is made of.
+ *
+ * ── Why grouped bars cannot answer this ──
+ * Side-by-side bars show each series' own trend and hide the total; a reader
+ * asked 「整體有沒有成長」 has to add three bars in their head for every
+ * category. Stacking puts the total on the page as the height of the column and
+ * the mix as the divisions inside it, which is exactly the question revenue
+ * breakdowns and market-share slides are asking.
+ *
+ * `stacked100` normalises every column to full height, which drops the total
+ * entirely and shows only the mix. That is the right chart when the totals are
+ * not comparable — and the wrong one when they are, because it hides growth.
+ */
+function stackedChart(spec, theme) {
+  const { labels, series } = normalise(spec);
+  const pct = spec.type === 'stacked100';
+  const f = frame(spec, { axis: true, legend: series.length > 1 });
+
+  const totals = labels.map((_, i) => series.reduce((a, sr) => a + Math.max(0, sr.data[i]), 0));
+  const top = pct ? 100 : niceMax(Math.max(...totals, 0));
+  let out = chrome(spec, f, theme);
+
+  for (let i = 0; i <= 4; i++) {
+    const y = f.y + f.h - (f.h / 4) * i;
+    out += line(f.x, y, f.x + f.w, y, theme.line);
+    out += text(f.x - 8, y, pct ? `${i * 25}%` : short((top / 4) * i),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+  }
+
+  const band = f.w / labels.length;
+  const bw = Math.min(72, band * 0.56);
+  labels.forEach((label, i) => {
+    const cx = f.x + band * i + band / 2;
+    const total = totals[i] || 1;
+    let y = f.y + f.h;
+    series.forEach((sr) => {
+      const v = Math.max(0, sr.data[i]);
+      const h = (pct ? (v / total) * 100 : v) / (top || 1) * f.h;
+      if (h <= 0) return;
+      y -= h;
+      out += rect(cx - bw / 2, y, bw, h, sr.color);
+      // Only label a segment tall enough to hold the number. A 9pt slice with a
+      // number jammed into it is less readable than one without.
+      if (spec.data_labels !== false && h > 20) {
+        out += text(cx, y + h / 2, pct ? `${Math.round((v / total) * 100)}%` : short(v),
+          { size: 11, bold: true, color: '#FFFFFF', anchor: 'middle', baseline: 'middle' });
+      }
+    });
+    out += text(cx, f.y + f.h + 18, label,
+      { size: 11.5, color: theme.ink, anchor: 'middle' });
+  });
+
+  if (series.length > 1) {
+    let lx = f.x;
+    for (const sr of series) {
+      out += rect(lx, f.H - 22, 11, 11, sr.color, ' rx="2"');
+      out += text(lx + 17, f.H - 16, sr.name,
+        { size: 11.5, color: theme.ink, baseline: 'middle' });
+      lx += 30 + String(sr.name).length * 12;
+    }
+  }
+  return out;
+}
+
+/**
+ * A box plot — how spread out each group is, not just where its middle sits.
+ *
+ * ── The question only this answers ──
+ * Two factories with the same average lead time can be completely different
+ * businesses: one delivers in 5–7 days every time, the other averages the same
+ * number by mixing 2-day rushes with 20-day disasters. A column chart of means
+ * shows those as identical bars. The box is the variation, and variation is
+ * usually the thing the meeting is actually about.
+ *
+ * ── Stated plainly, because it matters for a slide ──
+ * Most audiences cannot read a box plot. It is the right chart when the room is
+ * technical or the spread IS the finding; it is the wrong one when somebody
+ * just wants to compare four numbers, and the tool description says so. Given a
+ * choice between a chart that is correct and a chart that is understood, a
+ * presentation wants the second.
+ *
+ * Takes raw observations per group and computes the summary, because raw
+ * numbers are what people have. An explicit five-number summary is accepted too
+ * for data that arrived pre-aggregated.
+ */
+function boxChart(spec, theme) {
+  const quartile = (sorted, q) => {
+    const pos = (sorted.length - 1) * q;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+  };
+
+  /** One group's five-number summary, plus whatever fell outside the whiskers. */
+  const summarise = (raw, label) => {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.median !== undefined) {
+      return {
+        label: String(raw.label || label || ''),
+        min: Number(raw.min), q1: Number(raw.q1), med: Number(raw.median),
+        q3: Number(raw.q3), max: Number(raw.max),
+        out: (Array.isArray(raw.outliers) ? raw.outliers : []).map(Number).filter(Number.isFinite),
+      };
+    }
+    const nums = (Array.isArray(raw) ? raw : []).map(Number).filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    if (!nums.length) return null;
+    const q1 = quartile(nums, 0.25);
+    const q3 = quartile(nums, 0.75);
+    // Tukey's 1.5×IQR: the convention, so a reader who knows box plots reads
+    // ours the way they read every other one.
+    const fence = (q3 - q1) * 1.5;
+    const inside = nums.filter((v) => v >= q1 - fence && v <= q3 + fence);
+    return {
+      label: String(label || ''),
+      min: inside.length ? inside[0] : nums[0],
+      q1,
+      med: quartile(nums, 0.5),
+      q3,
+      max: inside.length ? inside[inside.length - 1] : nums[nums.length - 1],
+      out: nums.filter((v) => v < q1 - fence || v > q3 + fence),
+    };
+  };
+
+  const cats = (Array.isArray(spec.categories) ? spec.categories : []).map(String);
+  const source = Array.isArray(spec.boxes) && spec.boxes.length ? spec.boxes
+    : (Array.isArray(spec.values) && Array.isArray(spec.values[0]) ? spec.values : null);
+  if (!source) {
+    throw new Error('箱型圖要每一組的原始數值：values: [[...], [...]]，'
+      + '或 boxes: [{ label, min, q1, median, q3, max }]。');
+  }
+  const boxes = source.map((raw, i) => summarise(raw, cats[i] || `第 ${i + 1} 組`)).filter(Boolean);
+  if (!boxes.length) throw new Error('箱型圖沒有拿到任何有效數值。');
+
+  const f = frame(spec, { axis: true, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const all = boxes.flatMap((b) => [b.min, b.max, ...b.out]);
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  // Padded rather than zero-based: a distribution between 4.8 and 5.2 plotted
+  // from zero is four identical lines.
+  const pad = (hi - lo) * 0.12 || 1;
+  const y0 = lo - pad;
+  const y1 = hi + pad;
+  const py = (v) => f.y + f.h - ((v - y0) / ((y1 - y0) || 1)) * f.h;
+
+  for (let i = 0; i <= 4; i++) {
+    const gy = f.y + (f.h / 4) * i;
+    out += line(f.x, gy, f.x + f.w, gy, theme.line);
+    out += text(f.x - 8, gy, short(y1 - ((y1 - y0) / 4) * i),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+  }
+
+  const band = f.w / boxes.length;
+  const bw = Math.min(56, band * 0.46);
+  boxes.forEach((b, i) => {
+    const cx = f.x + band * i + band / 2;
+    const tone = (spec.colors || [])[i] || theme.strong || SERIES[0];
+
+    // Whisker, then the box on top of it, so the line does not show through a
+    // translucent fill.
+    out += line(cx, py(b.max), cx, py(b.min), tone, 1.4);
+    out += line(cx - bw / 4, py(b.max), cx + bw / 4, py(b.max), tone, 1.4);
+    out += line(cx - bw / 4, py(b.min), cx + bw / 4, py(b.min), tone, 1.4);
+
+    const top = py(b.q3);
+    const h = Math.max(2, py(b.q1) - top);
+    out += rect(cx - bw / 2, top, bw, h, theme.bg || '#FFFFFF');
+    out += `<rect x="${n2(cx - bw / 2)}" y="${n2(top)}" width="${n2(bw)}" height="${n2(h)}"`
+      + ` fill="${tone}" fill-opacity="0.22" stroke="${tone}" stroke-width="1.4"/>`;
+    // The median is the one number people read off a box, so it is the heaviest
+    // mark on it.
+    out += line(cx - bw / 2, py(b.med), cx + bw / 2, py(b.med), tone, 2.6);
+
+    for (const v of b.out) {
+      out += `<circle cx="${n2(cx)}" cy="${n2(py(v))}" r="3" fill="none"`
+        + ` stroke="${theme.accent || SERIES[2]}" stroke-width="1.4"/>`;
+    }
+    out += text(cx, f.y + f.h + 18, b.label,
+      { size: 11.5, color: theme.ink, anchor: 'middle' });
+    if (spec.data_labels !== false) {
+      out += text(cx + bw / 2 + 6, py(b.med), short(b.med),
+        { size: 10.5, bold: true, color: tone, baseline: 'middle' });
+    }
+  });
+  return out;
+}
+
 const RENDER = {
   column: barChart, bar: barChart, line: lineChart, area: lineChart,
   pie: pieChart, donut: pieChart,
   waterfall: waterfallChart, funnel: funnelChart, radar: radarChart,
   timeline: timelineChart, map: mapChart,
+  scatter: scatterChart, stacked: stackedChart, stacked100: stackedChart,
+  box: boxChart,
 };
 export const CHART_TYPES = Object.keys(RENDER);
 

@@ -1551,7 +1551,7 @@ const CHROME = {
  *     context instead of a whole slide to itself.
  */
 const RECIPES = new Set(['title', 'section', 'bullets', 'two_column', 'compare',
-  'statement', 'quote', 'timeline', 'quadrant', 'zigzag']);
+  'statement', 'quote', 'timeline', 'quadrant', 'zigzag', 'feature', 'list_image']);
 
 async function buildSlide(args) {
   if (!hasApi('1.4')) throw new Error('組版需要 PowerPointApi 1.4，這個 Office 版本太舊。');
@@ -1578,6 +1578,7 @@ async function buildSlide(args) {
    * would otherwise pay for three.
    */
   let imageNote = '';
+  let slotNote = '';
   /**
    * Which motif runs under this slide.
    *
@@ -1624,13 +1625,33 @@ async function buildSlide(args) {
     imageright: { left: GRID.W - 384, top: 0, width: 384, height: GRID.H },
     imagetop: { left: 0, top: 0, width: GRID.W, height: 208 },
   };
+  /**
+   * Where a content slide's picture goes.
+   *
+   * Unlike the cover forms these sit INSIDE the content band, below the title —
+   * the page still has its heading, its eyebrow and its footer, and the picture
+   * is one element on it rather than the ground it stands on.
+   */
+  const BODY_IMAGE = {
+    feature: { left: CHROME.contentLeft, top: 132, width: 470, height: 306 },
+    list_image: null,
+  };
   const wantsImage = String(args.image || '').trim()
-    && IMAGE_BOX[String(args.cover || '').toLowerCase()];
+    && (IMAGE_BOX[String(args.cover || '').toLowerCase()]
+      || BODY_IMAGE[String(args.kind || '').toLowerCase()]);
 
-  if (ornament) {
-    // The slide has to exist and be selected before anything can be inserted
-    // into it, so the append that buildSlide normally does inside its own batch
-    // happens here instead — and is skipped below so it does not happen twice.
+  /**
+   * Everything that has to go UNDER the shapes, in the order it stacks.
+   *
+   * ── The bug this replaces ──
+   * The ornament and the picture were two independent blocks, the second
+   * guarded by `!ornament`. So on any look with a background motif — which is
+   * most of them — a slide that asked for a picture silently got none: no
+   * error, no note, just a cover with an empty column where the photograph was
+   * supposed to be. The two are not alternatives; one is the ground and the
+   * other sits on it.
+   */
+  if (ornament || wantsImage) {
     await PowerPoint.run(async (ctx) => {
       if (args.slide === undefined && args.append !== false && hasApi('1.3')) {
         ctx.presentation.slides.add();
@@ -1638,27 +1659,26 @@ async function buildSlide(args) {
       }
     });
     await focusSlideFor(args.slide === undefined ? {} : args);
-    await insertImageData(ornament, Office.CoercionType.XmlSvg,
-      { left: 0, top: 0, width: GRID.W, height: GRID.H });
-  }
 
-  if (wantsImage && !ornament) {
-    await PowerPoint.run(async (ctx) => {
-      if (args.slide === undefined && args.append !== false && hasApi('1.3')) {
-        ctx.presentation.slides.add();
-        await ctx.sync();
+    if (ornament) {
+      await insertImageData(ornament, Office.CoercionType.XmlSvg,
+        { left: 0, top: 0, width: GRID.W, height: GRID.H });
+    }
+    if (wantsImage) {
+      try {
+        const got = await fetchPhoto(String(args.image),
+          wantsImage.width > wantsImage.height ? 'block' : 'side');
+        await insertImageData(got.svg || got.data,
+          got.svg ? Office.CoercionType.XmlSvg : Office.CoercionType.Image,
+          // Illustrations and photographs alike keep their own proportions
+          // here: this slot is a frame in a layout, not a background to fill.
+          fitInside(wantsImage, naturalSize(got)));
+      } catch (e) {
+        // A slide that arrives without its picture is a slide. One that refuses
+        // to be built because a CDN was slow is a broken tool.
+        imageNote = `
+（圖片沒抓到：${e.message} 版面照做，圖請稍後再補。）`;
       }
-    });
-    await focusSlideFor(args.slide === undefined ? {} : args);
-    try {
-      const got = await fetchPhoto(String(args.image),
-        wantsImage.width > wantsImage.height ? 'block' : 'side');
-      await insertImageData(got.svg || got.data,
-        got.svg ? Office.CoercionType.XmlSvg : Office.CoercionType.Image, wantsImage);
-    } catch (e) {
-      // A cover that arrives without its picture is a cover. One that refuses to
-      // be built because a CDN was slow is a broken tool, so the slide goes on.
-      imageNote = `\n（圖片沒抓到：${e.message} 這一頁的版面照做，圖請稍後再補。）`;
     }
   }
 
@@ -2570,6 +2590,113 @@ async function buildSlide(args) {
               align: right ? 'right' : 'left', valign: 'top' });
         }
       });
+    } else if (kind === 'feature') {
+      /**
+       * 大圖配小卡 — one picture holding the left, a short stack of cards on the
+       * right.
+       *
+       * ── What this is for ──
+       * The page where one thing is the subject and everything else is what you
+       * need to know about it: a product, a site, a case. A bulleted list next
+       * to a caption cannot do it, because the picture has to be big enough to
+       * be looked AT rather than referred to.
+       *
+       * The picture is inserted before this batch (see wantsImage) and keeps its
+       * own proportions, so the panel below is a frame for whatever shape turns
+       * up — not a box the picture was stretched into.
+       */
+      const rows = (Array.isArray(args.items) ? args.items : body.map((t) => ({ title: t })))
+        .filter(Boolean).slice(0, 4);
+      const imgW = 470;
+      const gap = 26;
+      const rx = CL + imgW + gap;
+      const rw = CW - imgW - gap;
+
+      // A hairline frame around the picture's slot. With an image it reads as a
+      // mount; without one it is an honest empty frame rather than a hole.
+      const slot = slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+        { left: CL, top: CT + 8, width: imgW, height: Math.max(120, BODY_H - 16) });
+      slot.name = stamp('featslot');
+      slot.fill.clear();
+      slot.lineFormat.visible = true;
+      slot.lineFormat.color = th.line;
+      slot.lineFormat.weight = 1;
+      put.shape.push(slot);
+
+      const rowH = rows.length
+        ? (BODY_H - 8 - 12 * (rows.length - 1)) / rows.length
+        : BODY_H;
+      rows.forEach((raw, i) => {
+        const item = typeof raw === 'string' ? { title: raw } : (raw || {});
+        const y = CT + 8 + (rowH + 12) * i;
+        const tone = colour(item.color,
+          [th.strong, th.second, th.accent, th.warn || th.second][i % 4]);
+        band({ left: rx, top: y, width: rw, height: rowH }, th.tint);
+        band(capBox(boxOf(lk, 'Rectangle'),
+          { left: rx, top: y, width: 5, height: rowH }, true), tone);
+        text(String(item.title || ''),
+          { left: rx + 20, top: y + (item.text ? 12 : rowH / 2 - 16), width: rw - 36, height: 30 },
+          { size: TYPE.heading, bold: true, color: th.ink, valign: 'middle' });
+        if (item.text) {
+          text(String(item.text),
+            { left: rx + 20, top: y + 46, width: rw - 36, height: rowH - 56 },
+            { size: 13.5, color: th.muted, valign: 'top', lineSpacing: 1.3 });
+        }
+      });
+    } else if (kind === 'list_image') {
+      /**
+       * 圖文列表 — a row per item, each with its own small picture.
+       *
+       * ── Why the pictures are drawn as slots rather than fetched ──
+       * Four rows means four images, and four `setSelectedDataAsync` calls are
+       * four round trips plus four downloads before the slide exists. So this
+       * lays out the frames and returns their coordinates; the model fills them
+       * with `ppt_add_photo` afterwards, one at a time, and the page is readable
+       * the whole way through rather than blank until the last one lands.
+       */
+      const rows = (Array.isArray(args.items) ? args.items : body.map((t) => ({ title: t })))
+        .filter(Boolean).slice(0, 4);
+      const gap = 12;
+      const rowH = rows.length
+        ? (BODY_H - gap * (rows.length - 1)) / rows.length
+        : BODY_H;
+      const thumbW = Math.min(150, rowH * 1.5);
+      rows.forEach((raw, i) => {
+        const item = typeof raw === 'string' ? { title: raw } : (raw || {});
+        const y = CT + (rowH + gap) * i;
+        const tone = colour(item.color,
+          [th.strong, th.second, th.accent, th.warn || th.second][i % 4]);
+        band({ left: CL, top: y, width: CW, height: rowH }, th.tint);
+        band(capBox(boxOf(lk, 'Rectangle'),
+          { left: CL, top: y, width: 5, height: rowH }, true), tone);
+
+        const slot = slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+          { left: CL + 18, top: y + 10, width: thumbW, height: rowH - 20 });
+        slot.name = stamp('slot');
+        slot.fill.setSolidColor(th.bg);
+        slot.lineFormat.visible = true;
+        slot.lineFormat.color = th.line;
+        slot.lineFormat.weight = 1;
+        put.shape.push(slot);
+
+        const tx = CL + 18 + thumbW + 20;
+        const tw = CW - (thumbW + 56);
+        text(String(item.title || ''),
+          { left: tx, top: y + (item.text ? 12 : rowH / 2 - 16), width: tw, height: 30 },
+          { size: TYPE.heading, bold: true, color: th.ink, valign: 'middle' });
+        if (item.text) {
+          text(String(item.text),
+            { left: tx, top: y + 44, width: tw, height: rowH - 54 },
+            { size: 13.5, color: th.muted, valign: 'top', lineSpacing: 1.3 });
+        }
+      });
+      // The coordinates go back in the tool result so the next call can fill them.
+      slotNote = `\n圖片位置（用 ppt_add_photo，mode: "block"）：`
+        + rows.map((_, i) => {
+          const y = Math.round(CT + (rowH + gap) * i) + 10;
+          return `第 ${i + 1} 列 left ${CL + 18}, top ${y}, `
+            + `width ${Math.round(thumbW)}, height ${Math.round(rowH - 20)}`;
+        }).join('；');
     } else if (kind === 'quote') {
       // Pulled up and stretched now that the header no longer carries a title:
       // the quotation starts where the content band starts, so the page has no
@@ -2744,7 +2871,7 @@ async function buildSlide(args) {
     await ctx.sync();
     all.forEach((s) => remember(slide.id, s.id));
 
-    return `已用「${kind}」版型做好投影片 ${index}，${all.length} 個物件，套用「${th.label}」配色。${imageNote}\n`
+    return `已用「${kind}」版型做好投影片 ${index}，${all.length} 個物件，套用「${th.label}」配色。${imageNote}${slotNote}\n`
       + '每個物件都可以再用 ppt_format_shape 微調，或用 ppt_arrange 對齊。';
   });
 }

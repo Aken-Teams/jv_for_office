@@ -62,6 +62,67 @@ if (ip) {
   ok('換配色就換顏色描述', /terracotta|sage/.test(linen.prompt), linen.prompt);
   ok('換版式就換調性', linen.prompt !== hero.prompt.replace('a modern automated warehouse interior', 'x'));
 
+  // ── 插畫跟背景要的是相反的東西 ─────────────────────────────────────────
+  //
+  // 所有規則原本都是為**背景**寫的：空氣感、低對比、柔和均勻的光——因為 hero
+  // 上面還要壓深色遮罩和標題。同一套指令拿去畫一張扁平插畫，就產出一張淡到
+  // 縮圖看不見的圖。兩次抱怨（「有點可怕」和「這 2 張圖不行」）是同一個根因：
+  // 一套打光規則套在兩種不同的工作上。
+  {
+    const flat = ip.composeImagePrompt({ subject: 'an assembly line', style: 'flat',
+      theme: 'teal', mode: 'block' });
+    ok('插畫要求實心飽和', /solid saturated fills/.test(flat.prompt));
+    ok('插畫要求清楚的輪廓', /strong silhouette/.test(flat.prompt));
+    ok('插畫要求白底', /white background/.test(flat.prompt));
+    // 這幾句是背景用的，套在扁平向量上就是把它洗白。
+    ok('插畫不帶背景用的打光詞', !/soft even lighting|calm and welcoming/.test(flat.prompt));
+    ok('插畫的配色不帶亮度推力',
+      !/airy|plenty of light|gentle daylight|bright and even/.test(flat.prompt), flat.prompt);
+    // 主體不需要為標題留洞，那會把圖推到自己畫框的一角。
+    ok('插畫不留標題的空位', !/empty area/.test(flat.prompt));
+    ok('但仍然是這份簡報的色系', /teal|aqua/.test(flat.prompt));
+
+    const bg = ip.composeImagePrompt({ subject: 'an assembly line', style: 'abstract',
+      theme: 'teal', mode: 'hero' });
+    ok('背景維持原本的空氣感規則', /calm and welcoming/.test(bg.prompt));
+    ok('背景仍然留空位給標題', /empty area/.test(bg.prompt));
+
+    // 分流看的是「風格」和「位置」兩件事。一張照片放進 feature 版型是要被看的，
+    // 不是襯在標題底下——第一版只看風格，照片就跟著吃到背景那一套，一樣會偏淡。
+    const photoPanel = ip.composeImagePrompt({ subject: 'a product', style: 'photo',
+      theme: 'teal', mode: 'block' });
+    ok('面板裡的照片不吃亮度推力',
+      !/airy|plenty of light|gentle daylight|bright and even/.test(photoPanel.prompt),
+      photoPanel.prompt);
+    ok('面板裡的照片不留標題空位', !/empty area/.test(photoPanel.prompt));
+    ok('面板裡的照片要求看得清楚', /clearly readable/.test(photoPanel.prompt));
+    // 但它仍然是照片，所以打光語言要留著——「實心飽和」對照片沒有意義。
+    ok('面板裡的照片仍然有打光語言', /soft even lighting/.test(photoPanel.prompt));
+    ok('而且不會被當成插畫', !/solid saturated/.test(photoPanel.prompt));
+
+    const photoHero = ip.composeImagePrompt({ subject: 'a product', style: 'photo',
+      theme: 'teal', mode: 'hero' });
+    ok('滿版的照片還是背景', /empty area/.test(photoHero.prompt));
+
+    // 沒有人把扁平插畫擺在標題底下當底，所以它在哪個位置都是主體。
+    const drawHero = ip.composeImagePrompt({ subject: 'a factory', style: 'flat', mode: 'hero' });
+    ok('插畫在 hero 也還是主體', /solid saturated/.test(drawHero.prompt));
+  }
+
+  // 步數也跟著位置走：襯在遮罩底下的十步夠，面板裡的不夠。
+  ok('面板裡的照片步數比背景多',
+    ip.stepsFor('photo', false, 'block') > ip.stepsFor('photo', false, 'hero'),
+    `block ${ip.stepsFor('photo', false, 'block')} vs hero ${ip.stepsFor('photo', false, 'hero')}`);
+  ok('插畫仍然最高', ip.stepsFor('flat', false, 'hero') > ip.stepsFor('photo', false, 'block'));
+
+  // 步數：抽象背景十步就成形，扁平插畫十步還是一團糊。
+  ok('插畫用比較多步數',
+    ip.stepsFor('flat', false, 'hero') > ip.stepsFor('abstract', false, 'hero'),
+    `flat ${ip.stepsFor('flat', false, 'hero')} vs abstract ${ip.stepsFor('abstract', false, 'hero')}`);
+  // 「背景」現在要連位置一起看——abstract 放在面板裡也不是背景。
+  ok('滿版背景維持低步數（快）', ip.stepsFor('abstract', false, 'hero') <= 12);
+  ok('精細模式最高', ip.stepsFor('flat', true) > ip.stepsFor('flat'));
+
   // ── 「有點可怕，很像命案現場」 ───────────────────────────────────────────
   //
   // 第一版把配色裡的強調色也交給影像模型：「deep navy 加一點暖紅」。在向量
@@ -142,8 +203,8 @@ ok('而且說明了為什麼這條路不掛 auth', gw.includes('That is the trad
 
 const bridge = fs.readFileSync(new URL('services/excelBridge.ts', serverDir), 'utf8');
 ok('生圖由伺服器直接回答', /tool === 'ppt_generate_image'/.test(bridge));
-// 8 步 15 秒就很好看，24 步要四倍時間換背景用不到的細節。
-ok('預設走快的步數', /args\.quality === true \? 24 : 10/.test(bridge));
+// 步數改成看「在畫什麼」而不是一個常數——背景十步就成形，插畫十步還是一團糊。
+ok('步數交給 stepsFor 決定', /stepsFor\(String\(args\.style/.test(bridge));
 // 用設定裡的位址組網址，部署方式一換就默默失效。
 ok('回傳網址用連線當下的來源組出來', /run\.origin/.test(bridge));
 

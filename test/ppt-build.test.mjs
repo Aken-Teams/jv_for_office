@@ -153,6 +153,21 @@ globalThis.document = {
   head: { appendChild: () => {} },
 };
 
+/**
+ * A picture that always arrives, 4:3, as a vector.
+ *
+ * The layouts that take an image fetch it before they draw, so without this the
+ * fetch throws, the host notes 「圖片沒抓到」 and carries on — which is the right
+ * behaviour and makes it impossible to test the case where the image DOES land.
+ */
+globalThis.fetch = async () => ({
+  ok: true,
+  status: 200,
+  headers: { get: () => 'image/svg+xml' },
+  text: async () => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><circle r="4"/></svg>',
+  arrayBuffer: async () => new ArrayBuffer(8),
+});
+
 const host = await import('../src/taskpane/hosts/powerpoint.js');
 
 let pass = 0, fail = 0;
@@ -1350,6 +1365,35 @@ for (const [look, bar] of [['business', 'top'], ['soft', 'top'], ['business', 'l
     const span = bar === 'top' ? cap.width / panel.width : cap.height / panel.height;
     ok(`${look}/${bar}：色條仍然佔大部分寬度`, span > 0.8, span.toFixed(2));
   }
+}
+
+// ── 兩個吃圖的內文版型 ──────────────────────────────────────────────────────
+{
+  INSERTS = [];
+  slide = fakeSlide();
+  const r = await build({ kind: 'feature', title: '這條產線', eyebrow: '02 現場',
+    image: 'https://x/a.svg', look: 'business',
+    items: [{ title: '產能', text: '每小時 1,200 件' }, { title: '良率', text: '99.2%' }] });
+  ok('feature 畫得出來', r.ok, r.content);
+  // 底圖（母題）跟圖片不是二選一：一個是地，一個站在上面。
+  ok('母題和圖片都插入了', INSERTS.length === 2, `${INSERTS.length} 張`);
+  ok('母題是滿版的那張', INSERTS[0].data.includes('960'));
+  ok('圖片在左半邊、沒有滿版',
+    INSERTS[1].data && alive().some((s) => s.kind === 'geo' && s.width === 470));
+  ok('右邊的小卡都在', texts().includes('產能') && texts().includes('良率'));
+}
+{
+  slide = fakeSlide();
+  const r = await build({ kind: 'list_image', title: '四個部門',
+    items: [{ title: '研發', text: 'a' }, { title: '製造', text: 'b' }, { title: '業務', text: 'c' }] });
+  ok('list_image 畫得出來', r.ok, r.content);
+  const slots = alive().filter((s) => s.kind === 'geo' && s.width > 100 && s.width < 200
+    && s.height > 40);
+  ok('三個圖片框', slots.length === 3, `${slots.length} 個`);
+  // 四張圖是四趟來回，所以版型只排框、回座標，模型再一張一張填。
+  ok('回傳每一格的座標', /第 1 列 left \d+, top \d+/.test(r.content), r.content.slice(0, 200));
+  ok('座標數量跟列數一致', (r.content.match(/第 \d 列/g) || []).length === 3);
+  ok('三段文字都在', ['研發', '製造', '業務'].every((t) => texts().includes(t)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
