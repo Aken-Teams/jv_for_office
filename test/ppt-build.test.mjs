@@ -1191,5 +1191,49 @@ for (const kind of ['timeline', 'quadrant', 'zigzag']) {
   ok('沒有多餘的提示', !/沒有「/.test(r.content), r.content);
 }
 
+// ── 引言頁：同一個重複 bug 的第三個現場 ─────────────────────────────────────
+//
+// 骨架會畫 title，而引言頁的「那句話」本身就是 title——所以整句被印兩次，
+// 一次 25pt 在頁首、一次 32pt 在中間。使用者的說法是「標題跟大文字一樣」。
+// section 和 statement 前兩輪已經修過，quote 漏掉了。
+{
+  slide = fakeSlide();
+  const q = '難的從來不是讓模型變聰明，而是讓它安全地接上正在運作的系統。';
+  await build({ kind: 'quote', title: q, eyebrow: '01 現況與落差', page: 'P.05',
+    body: ['MIT 2026 年企業生成式 AI 研究'] });
+  ok('引言只出現一次', texts().filter((t) => t === q).length === 1,
+    `出現 ${texts().filter((t) => t === q).length} 次`);
+  // 但導覽標記要留著——不然讀者不知道這頁在哪一段。
+  ok('章節標記和頁碼還在',
+    texts().some((t) => /01 現況與落差/.test(t)) && texts().includes('P.05'));
+  ok('沒有標題底下那條短線',
+    !alive().some((s) => s.kind === 'geo' && s.width === 108 && s.height === 4));
+  // 原本從 150 開始，上面留一條空帶；現在貼著內文帶的頂端。
+  const spine = alive().find((s) => s.kind === 'geo' && s.width === 5 && s.height > 100);
+  ok('引言貼著內文帶頂端，上面沒有空帶', spine.top <= 126, `色帶從 ${spine.top} 開始`);
+  ok('而且往下填滿', spine.top + spine.height > 400,
+    `色帶到 ${spine.top + spine.height}`);
+}
+
+// ── 封面副標要有行距 ────────────────────────────────────────────────────────
+//
+// 兩行 22pt 的中文單行間距會黏在一起。lineSpacing 要 API 1.8，所以這裡用的是
+// 跟條列一樣的辦法：一行一個文字方塊，行距靠幾何。
+for (const form of ['panel', 'split', 'stack', 'triptych', 'bleed', 'band', 'plain',
+  'paper', 'imageleft', 'imagetop']) {
+  slide = fakeSlide();
+  await build({ kind: 'title', title: 'T', cover: form,
+    body: ['88% 的企業已經在用 AI', '只有 11% 把代理人放進生產環境'] });
+  const a = alive().find((s) => s._text === '88% 的企業已經在用 AI');
+  const b = alive().find((s) => s._text === '只有 11% 把代理人放進生產環境');
+  ok(`${form}：兩句副標各自一個方塊`, !!a && !!b,
+    texts().join(' | '));
+  if (a && b) {
+    const gap = b.top - a.top;
+    ok(`${form}：兩行之間有行距`, gap >= a.height * 0.95 && gap > 20,
+      `間距 ${Math.round(gap)}，行高 ${Math.round(a.height)}`);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

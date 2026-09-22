@@ -1705,7 +1705,12 @@ async function buildSlide(args) {
      */
     const frame = args.chrome === false ? 'none'
       : (kind === 'title' || kind === 'section') ? 'none'
-        : kind === 'statement' ? 'marks'
+        // `quote` belongs in this group for the same reason `statement` does:
+        // the quotation IS the title, so drawing both prints the sentence twice
+        // — once at 25pt in the header and once at 32pt in the middle. 「標題跟
+        // 大文字一樣」 was that, and it is the third place this exact mistake has
+        // turned up. Any recipe whose main element is `title` goes here.
+        : (kind === 'statement' || kind === 'quote') ? 'marks'
           : 'full';
     const dressed = frame !== 'none';
     // Everything below lays out against this, so indenting here is all the
@@ -1876,6 +1881,32 @@ async function buildSlide(args) {
       const sub = body.join('　·　');
 
       /**
+       * The cover's subtitle, set with actual leading.
+       *
+       * ── Why it is not just a text box ──
+       * A cover subtitle is one or two lines of Chinese at 22pt, and at single
+       * spacing two lines of that touch. `ParagraphFormat.lineSpacing` would fix
+       * it and needs PowerPointApi 1.8, which most installs do not have — so the
+       * same trick the bullet lists use applies here: one box per line, on a
+       * pitch we choose.
+       *
+       * When the model supplied several `body` entries they are already separate
+       * lines, which is the good case. When it supplied one long sentence there
+       * is nothing to split on, so it stays a single box — a wrapped line still
+       * being tight is better than breaking a sentence at an arbitrary point.
+       */
+      const subLines = (lines, box, style = {}) => {
+        const items = (lines || []).map((l) => String(l).trim()).filter(Boolean);
+        if (!items.length) return;
+        const size = style.size || TYPE.heading;
+        const pitch = Math.min(style.pitch || size * 1.9, box.height / items.length);
+        items.forEach((line, i) => {
+          text(line, { left: box.left, top: box.top + pitch * i, width: box.width, height: pitch },
+            { size, valign: 'middle', ...style, pitch: undefined });
+        });
+      };
+
+      /**
        * Which composition, and why the look does not get the last word.
        *
        * A look names the cover it was designed around, and that is the right
@@ -1958,10 +1989,8 @@ async function buildSlide(args) {
         text(title, { left: 96, top: 182, width: 740, height: 110 },
           { size: 42, bold: false, color: th.strong, valign: 'middle' });
         band({ left: 96, top: 306, width: 740, height: 1 }, th.line);
-        if (sub) {
-          text(sub, { left: 96, top: 320, width: 740, height: 40 },
-            { size: TYPE.heading, color: th.muted });
-        }
+        subLines(body, { left: 96, top: 320, width: 740, height: 56 },
+          { size: TYPE.heading, color: th.muted });
         if (args.footer) {
           text(String(args.footer), { left: 96, top: 456, width: 740, height: 24 },
             { size: TYPE.small, color: th.muted });
@@ -1980,10 +2009,8 @@ async function buildSlide(args) {
         text(title, { left: 104, top: 188, width: GRID.W - 208, height: 92 },
           { size: 38, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
         band({ left: (GRID.W - 96) / 2, top: 292, width: 96, height: 3 }, th.accent);
-        if (sub) {
-          text(sub, { left: 104, top: 310, width: GRID.W - 208, height: 40 },
-            { size: TYPE.heading, color: th.onCover, align: 'center' });
-        }
+        subLines(body, { left: 104, top: 310, width: GRID.W - 208, height: 56 },
+          { size: TYPE.heading, color: th.onCover, align: 'center' });
         if (args.footer) {
           text(String(args.footer), { left: 64, top: 432, width: GRID.W - 128, height: 24 },
             { size: TYPE.small, color: th.muted, align: 'center' });
@@ -2018,18 +2045,19 @@ async function buildSlide(args) {
         }
         // The organisation or team, set in the panel. Falls back to the eyebrow
         // so the panel is never an empty block of colour.
+        // 「McKinsey / Gartner / MIT / PwC 公開研究」 at 22pt wraps inside 300
+        // points and the two lines touch. One size down with room for both is
+        // the fix that does not need paragraph spacing.
         text(String(args.footer || args.eyebrow || ''),
-          { left: 62, top: 126, width: 300, height: 40 },
-          { font: display, size: 22, bold: true, color: th.onCover, valign: 'middle' });
+          { left: 62, top: 120, width: 300, height: 56 },
+          { font: display, size: 18, bold: true, color: th.onCover, valign: 'middle' });
         band({ left: 62, top: 178, width: 96, height: 4 }, th.accent);
 
         text(title, { left: 470, top: 128, width: 430, height: 132 },
           { font: display, size: 34, bold: true, color: th.strong, valign: 'middle' });
         band({ left: 470, top: 274, width: 140, height: 5 }, th.accent);
-        if (sub) {
-          text(sub, { left: 470, top: 296, width: 430, height: 84 },
-            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
-        }
+        subLines(body, { left: 470, top: 296, width: 430, height: 84 },
+          { size: TYPE.body, color: th.muted });
         if (args.page) {
           text(String(args.page), { left: 470, top: 456, width: 430, height: 22 },
             { size: TYPE.caption, color: th.muted });
@@ -2061,10 +2089,8 @@ async function buildSlide(args) {
         text(title, { left: tx, top: 162, width: tw, height: 132 },
           { font: display, size: 34, bold: true, color: th.strong, valign: 'middle' });
         band({ left: tx, top: 306, width: 120, height: 5 }, th.accent);
-        if (sub) {
-          text(sub, { left: tx, top: 328, width: tw, height: 84 },
-            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
-        }
+        subLines(body, { left: tx, top: 328, width: tw, height: 84 },
+          { size: TYPE.body, color: th.muted });
         if (args.footer) {
           text(String(args.footer), { left: tx, top: 452, width: tw, height: 24 },
             { size: TYPE.caption, color: th.muted });
@@ -2087,10 +2113,8 @@ async function buildSlide(args) {
         text(title, { left: 80, top: 286, width: 800, height: 104 },
           { font: display, size: 38, bold: true, color: th.strong, valign: 'middle' });
         band({ left: 80, top: 398, width: 130, height: 5 }, th.accent);
-        if (sub) {
-          text(sub, { left: 80, top: 418, width: 800, height: 52 },
-            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
-        }
+        subLines(body, { left: 80, top: 418, width: 800, height: 56 },
+          { size: TYPE.body, color: th.muted });
         if (args.footer) {
           text(String(args.footer), { left: 80, top: 492, width: 800, height: 22 },
             { size: TYPE.caption, color: th.muted });
@@ -2115,10 +2139,8 @@ async function buildSlide(args) {
           { font: display, size: 40, bold: true, color: th.onCover, valign: 'middle' });
         // Crosses from the colour onto the page.
         band({ left: 80, top: 302, width: 10, height: 56 }, th.accent);
-        if (sub) {
-          text(sub, { left: 110, top: 372, width: 760, height: 60 },
-            { size: TYPE.heading, color: th.ink, lineSpacing: 1.4 });
-        }
+        subLines(body, { left: 110, top: 372, width: 760, height: 64 },
+          { size: TYPE.heading, color: th.ink });
         if (args.footer) {
           text(String(args.footer), { left: 110, top: 452, width: 760, height: 24 },
             { size: TYPE.small, color: th.muted });
@@ -2145,10 +2167,8 @@ async function buildSlide(args) {
         text(title, { left: 80, top: 186, width: 800, height: 130 },
           { font: display, size: 40, bold: true, color: th.onCover, valign: 'middle' });
         band({ left: 80, top: 330, width: 130, height: 5 }, th.accent);
-        if (sub) {
-          text(sub, { left: 80, top: 352, width: 800, height: 56 },
-            { size: TYPE.heading, color: mix(th.cover, th.onCover, 0.82), lineSpacing: 1.4 });
-        }
+        subLines(body, { left: 80, top: 352, width: 800, height: 60 },
+          { size: TYPE.heading, color: mix(th.cover, th.onCover, 0.82) });
         if (args.footer) {
           text(String(args.footer), { left: 80, top: 456, width: 800, height: 24 },
             { size: TYPE.small, color: mix(th.cover, th.onCover, 0.65) });
@@ -2173,10 +2193,8 @@ async function buildSlide(args) {
         text(title, { left: 88, top: 208, width: 784, height: 104 },
           { font: display, size: 40, bold: false, color: th.strong, valign: 'middle' });
         band({ left: 88, top: 322, width: 64, height: 2 }, th.accent);
-        if (sub) {
-          text(sub, { left: 88, top: 338, width: 784, height: 40 },
-            { font: display, size: TYPE.heading, color: th.ink });
-        }
+        subLines(body, { left: 88, top: 338, width: 784, height: 56 },
+          { font: display, size: TYPE.heading, color: th.ink });
         if (args.footer) {
           text(String(args.footer), { left: 88, top: 436, width: 784, height: 24 },
             { size: TYPE.caption, color: th.muted });
@@ -2192,10 +2210,8 @@ async function buildSlide(args) {
         }
         text(title, { left: 96, top: 224, width: 768, height: 96 },
           { size: 40, bold: false, color: th.strong, valign: 'middle' });
-        if (sub) {
-          text(sub, { left: 96, top: 326, width: 768, height: 36 },
-            { size: TYPE.heading, color: th.muted });
-        }
+        subLines(body, { left: 96, top: 326, width: 768, height: 56 },
+          { size: TYPE.heading, color: th.muted });
         if (args.footer) {
           text(String(args.footer), { left: 96, top: 456, width: 768, height: 24 },
             { size: TYPE.small, color: th.muted });
@@ -2223,10 +2239,8 @@ async function buildSlide(args) {
         // A short rule between title and subtitle. The same idea as the one under
         // a slide title: it belongs to the words above it.
         band({ left: 80, top: 306, width: 120, height: 3 }, th.accent);
-        if (sub) {
-          text(sub, { left: 80, top: 326, width: 780, height: 60 },
-            { size: TYPE.heading, color: th.onCover });
-        }
+        subLines(body, { left: 80, top: 326, width: 780, height: 64 },
+          { size: TYPE.heading, color: th.onCover });
         // The foot. A hairline the width of the type block, then the metadata —
         // this is what stops the bottom third being a hole.
         band({ left: 80, top: 452, width: 800, height: 1 }, th.accent);
@@ -2444,13 +2458,18 @@ async function buildSlide(args) {
         }
       });
     } else if (kind === 'quote') {
-      band({ left: CL, top: 150, width: 4, height: 200 }, th.accent);
-      text('“', { left: CL + 20, top: 132, width: 90, height: 90 },
+      // Pulled up and stretched now that the header no longer carries a title:
+      // the quotation starts where the content band starts, so the page has no
+      // dead strip above it.
+      const qH = Math.max(170, BODY_H - 70);
+      band({ left: CL, top: CT, width: 5, height: qH }, th.accent);
+      text('“', { left: CL + 22, top: CT - 18, width: 90, height: 90 },
         { size: 96, bold: true, color: th.tint });
-      text(title, { left: CL + 34, top: 168, width: CW - 60, height: 164 },
+      text(title, { left: CL + 40, top: CT + 18, width: CW - 70, height: qH - 36 },
         { size: TYPE.title, color: th.ink, valign: 'middle' });
       if (body.length) {
-        text(`— ${body.join('，')}`, { left: CL + 34, top: 344, width: CW - 60, height: 32 },
+        text(`— ${body.join('，')}`,
+          { left: CL + 40, top: CT + qH + 12, width: CW - 70, height: 32 },
           { size: TYPE.body, color: th.muted });
       }
     } else if (kind === 'two_column' || kind === 'compare') {
