@@ -371,5 +371,35 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('有數值就回到深淺模式', withValues.includes('50'));
 }
 
+// ── 地圖：名字說了算 ───────────────────────────────────────────────────────
+//
+// 一頁講中國省份的投影片畫出了整張世界地圖、全部空白，底下一行「找不到：广东、
+// 山东、河南」。工具照著被告知的做了——map 預設 world，沒有人說別的——結果是
+// 用一張全球地圖去說明一個國家的事。
+{
+  const P = { ink: '#111', strong: '#0F6E72', accent: '#E0743A', tint: '#E8F4F3',
+    bg: '#FFF', muted: '#7E9694', line: '#CFE3E1' };
+  const cn = chartSvg({ type: 'map', map: 'world',
+    categories: ['广东', '山东', '河南', '江苏'], values: [13, 10, 9.9, 8.5] }, P);
+  ok('中國省名會自動換成中國地圖', cn.includes('已改用china地圖'));
+  ok('而且不再回報找不到', !cn.includes('找不到'));
+
+  const tw = chartSvg({ type: 'map', categories: ['台北', '高雄', '台中'], values: [1, 2, 3] }, P);
+  ok('台灣縣市不給 map 也會挑對', tw.includes('已改用taiwan地圖'));
+
+  // 一兩個打錯字不該把一張刻意的世界地圖換掉。
+  const w = chartSvg({ type: 'map', map: 'world',
+    categories: ['United States of America', 'China', 'Narnia'], values: [1, 2, 3] }, P);
+  ok('世界地圖有少數名字對不上時不換', !w.includes('已改用'));
+  ok('但仍然把對不上的講出來', w.includes('Narnia'));
+
+  // 「United States of America」原本會直接壓到右邊的數字上。
+  const names = [...w.matchAll(/<text x="([\d.]+)"[^>]*>([^<]*)<\/text>/g)]
+    .filter((m) => /United|China/.test(m[2]));
+  ok('過長的名字會截斷', names.some((m) => m[2].endsWith('…')),
+    names.map((m) => m[2]).join(' | '));
+  ok('短名字不會被動到', names.some((m) => m[2] === 'China'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

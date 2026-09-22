@@ -508,6 +508,30 @@ const SHAPES_OK = new Set([
 ]);
 const geoType = (name) => (SHAPES_OK.has(String(name)) ? String(name) : 'Rectangle');
 
+/**
+ * A coloured bar laid on a panel, without the corners fighting.
+ *
+ * ── The problem, which only shows up on the rounded looks ──
+ * The cap across the top of a card is a plain rectangle. On a square panel that
+ * is right. On a ROUNDED one the bar's square corners stick out past the
+ * panel's curve, so the card reads as 「圓弧 ＋ 直條」 — two shapes that were
+ * clearly not drawn together.
+ *
+ * Inset rather than rounded: a rounded bar 4 points tall renders as a lozenge,
+ * which is worse. Pulling it in by the corner radius means it starts where the
+ * panel's straight edge starts, and the two read as one object.
+ */
+function capBox(shape, box, vertical) {
+  // Keyed off the PANEL's resolved shape, not the look's preference: a top-bar
+  // card is a RoundRectangle in every look, so asking the look would have left
+  // 企業風 with the same mismatched corners it started with.
+  if (shape !== 'RoundRectangle') return box;
+  const inset = 9;
+  return vertical
+    ? { ...box, top: box.top + inset, height: Math.max(2, box.height - inset * 2) }
+    : { ...box, left: box.left + inset, width: Math.max(2, box.width - inset * 2) };
+}
+
 /** RoundRectangle if the look asks for it, otherwise whatever the caller wanted. */
 const boxOf = (lk, base) => geoType(lk.shape === 'RoundRectangle' ? 'RoundRectangle' : base);
 
@@ -2409,7 +2433,7 @@ async function buildSlide(args) {
         card.lineFormat.weight = 1;
         put.shape.push(card);
         // A cap in the stop's own colour, so the card and its dot are the pair.
-        band({ left: bx, top: up ? by + boxH - 3 : by, width: boxW, height: 3 }, tone);
+        band(capBox(boxOf(lk, 'Rectangle'), { left: bx, top: up ? by + boxH - 3 : by, width: boxW, height: 3 }, false), tone);
         if (item.at) {
           text(String(item.at), { left: bx, top: up ? by + boxH - 26 : by, width: boxW, height: 24 },
             { size: TYPE.small, bold: true, color: tone, align: 'center' });
@@ -2448,7 +2472,7 @@ async function buildSlide(args) {
         const item = q[i] || {};
         const tone = colour(item.color, tones[i]);
         band({ left: pos[0], top: pos[1], width: cellW, height: cellH }, th.tint);
-        band({ left: pos[0], top: pos[1], width: cellW, height: 4 }, tone);
+        band(capBox(boxOf(lk, 'Rectangle'), { left: pos[0], top: pos[1], width: cellW, height: 4 }, false), tone);
         text(String(item.title || ''),
           { left: pos[0] + 18, top: pos[1] + 18, width: cellW - 36, height: 28 },
           { size: TYPE.heading, bold: true, color: tone });
@@ -2829,8 +2853,8 @@ function drawKpiRow(pen, kit, items, box, opts = {}) {
     pen.rect({ left: x, top: box.top, width: w, height: box.height },
       { shape: boxOf(lk, 'Rectangle'), tag: 'kpi', fill: sk.fill, line: sk.line && sk.color });
     // On the panel's top edge, not inside it: a border would draw all four sides.
-    pen.rect({ left: x, top: box.top, width: w, height: 4 },
-      { shape: boxOf(lk, 'Rectangle'), tag: 'kpibar', fill: tone });
+    pen.rect(capBox(boxOf(lk, 'Rectangle'), { left: x, top: box.top, width: w, height: 4 }, false),
+      { tag: 'kpibar', fill: tone });
 
     const pad = 14;
     const tx = x + pad;
@@ -2867,7 +2891,7 @@ function drawCallout(pen, kit, spec, box) {
     // make it read as one more card.
     fill: sk.fill, line: tone,
   });
-  pen.rect({ left: box.left, top: box.top, width: 4, height: box.height },
+  pen.rect(capBox(boxOf(lk, 'Rectangle'), { left: box.left, top: box.top, width: 4, height: box.height }, true),
     { tag: 'calloutbar', fill: tone });
 
   let tx = box.left + 16;
@@ -3083,9 +3107,10 @@ async function addCards(args) {
 
       // The bar. A separate shape rather than a thick border, because a border
       // is drawn on all four sides and this must be on exactly one.
-      const spine = add(slide.shapes.addGeometricShape('Rectangle', bar === 'top'
-        ? { left: x, top: y, width: cw, height: 5 }
-        : { left: x, top: y, width: 5, height: ch }));
+      const spine = add(slide.shapes.addGeometricShape('Rectangle',
+        capBox(panel.geo || boxOf(lk, bar === 'top' ? 'RoundRectangle' : 'Rectangle'), bar === 'top'
+          ? { left: x, top: y, width: cw, height: 5 }
+          : { left: x, top: y, width: 5, height: ch }, bar !== 'top')));
       spine.name = stamp('bar');
       spine.fill.setSolidColor(accent);
       spine.lineFormat.visible = false;

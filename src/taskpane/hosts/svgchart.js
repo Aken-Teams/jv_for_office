@@ -665,11 +665,37 @@ function timelineChart(spec, theme) {
  * pale Vietnam reads as 「no data」, which is what it means.
  */
 function mapChart(spec, theme) {
-  const which = String(spec.map || 'world').toLowerCase();
-  const geo = MAPS[which];
-  if (!geo) {
+  const asked = String(spec.map || 'world').toLowerCase();
+  if (!MAPS[asked]) {
     throw new Error(`沒有「${spec.map}」這份地圖。可用的有：${Object.keys(MAPS).join('、')}。`);
   }
+
+  /**
+   * Which map the names are actually from.
+   *
+   * ── The failure this replaces ──
+   * A slide about Chinese provinces came out as a world map with everything
+   * blank and a footnote reading 「找不到：广东、山东、河南」. The tool had done
+   * exactly what it was told — `map` defaulted to world and nobody said
+   * otherwise — and the result was a picture of the whole planet illustrating a
+   * page about one country.
+   *
+   * The names say which map they belong to, so they are asked. Only when the
+   * requested map matches NOTHING and another matches most of them: a deliberate
+   * world map with one or two unrecognised names stays a world map.
+   */
+  const hits = (m) => (Array.isArray(spec.categories) ? spec.categories : [])
+    .filter((c) => MAPS[m][String(c)]).length;
+  let which = asked;
+  const total = (Array.isArray(spec.categories) ? spec.categories : []).length;
+  if (total && hits(asked) === 0) {
+    const better = Object.keys(MAPS)
+      .map((m) => [m, hits(m)])
+      .sort((a, b) => b[1] - a[1])[0];
+    if (better && better[1] > total / 2) which = better[0];
+  }
+  const geo = MAPS[which];
+  const swapped = which !== asked;
 
   const cats = Array.isArray(spec.categories) ? spec.categories.map(String) : [];
   const nums = Array.isArray(spec.values) ? spec.values : [];
@@ -691,6 +717,10 @@ function mapChart(spec, theme) {
     if (Number.isFinite(v)) values.set(c, v);
   });
   const marked = new Set(highlight ? cats : []);
+  // Named but unknown is worth saying out loud: a typo in a region name would
+  // otherwise just be a country that never lights up.
+  // Deferred until the map is chosen — see below.
+
   // Named but unknown is worth saying out loud: a typo in a region name would
   // otherwise just be a country that never lights up.
   const unknown = cats.filter((c) => !geo[c]);
@@ -765,7 +795,23 @@ function mapChart(spec, theme) {
     let ly = f.y + 8;
     for (const [name, v] of rows) {
       out += rect(lx, ly, 12, 12, shade(v, name), ' rx="2"');
-      out += text(lx + 19, ly + 6, name,
+      /**
+       * The name column has a fixed width and 「United States of America」 does
+       * not fit in it — it ran straight under the number on its right. SVG has
+       * no text-overflow, so the string is cut here.
+       *
+       * Measured rather than counted: a CJK glyph is about as wide as the type
+       * is tall, latin is roughly half that, so 「广东」 and 「Bangladesh」 both
+       * get as many characters as actually fit.
+       */
+      const room = (f.W - 16) - (lx + 19) - (v === null ? 4 : 44);
+      let shown = name;
+      let used = 0;
+      for (let i = 0; i < name.length; i++) {
+        used += /[　-鿿＀-￯]/.test(name[i]) ? 12 : 6.6;
+        if (used > room) { shown = `${name.slice(0, Math.max(1, i - 1))}…`; break; }
+      }
+      out += text(lx + 19, ly + 6, shown,
         { size: 12, color: theme.ink || '#3D3D3D', baseline: 'middle' });
       if (v !== null) {
         out += text(f.W - 16, ly + 6, short(v),
@@ -778,6 +824,11 @@ function mapChart(spec, theme) {
       out += text(lx, ly + 6, `（另有 ${total - rows.length} 個未列出）`,
         { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
       ly += 20;
+    }
+    if (swapped) {
+      out += text(lx, ly + 6, `（已改用${which}地圖）`,
+        { size: 10.5, color: theme.muted || '#8A93A0', baseline: 'middle' });
+      ly += 18;
     }
     if (unknown.length) {
       out += text(lx, ly + 6, `找不到：${unknown.slice(0, 3).join('、')}`,

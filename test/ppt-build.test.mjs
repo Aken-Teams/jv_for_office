@@ -1330,5 +1330,27 @@ for (const form of ['panel', 'split', 'stack', 'triptych', 'bleed', 'band', 'pla
       && texts().filter((t) => t === '天狼星火組').length === 1);
 }
 
+// ── 圓角面板配直角色條 ──────────────────────────────────────────────────────
+//
+// 色條是一個純矩形。放在直角面板上是對的；放在**圓角**面板上，它的方角會凸出
+// 圓弧之外，整張卡片讀起來就是「圓弧 ＋ 直條」——兩個明顯不是一起畫的形狀。
+for (const [look, bar] of [['business', 'top'], ['soft', 'top'], ['business', 'left']]) {
+  slide = fakeSlide();
+  await host.executeTool('ppt_add_cards',
+    { look, bar, columns: 2, cards: [{ title: 'A' }, { title: 'B' }] });
+  const panel = alive().find((s) => s.geo && s.height > 50);
+  const cap = alive().find((s) => s.geo && (s.height === 5 || s.width === 5));
+  const rounded = panel.geo === 'RoundRectangle';
+  const inset = bar === 'top' ? cap.left > panel.left : cap.top > panel.top;
+  ok(`${look}/${bar}：${rounded ? '圓角面板的色條要內縮' : '直角面板的色條齊邊'}`,
+    rounded === inset,
+    `${panel.geo}，色條 ${bar === 'top' ? cap.left : cap.top} vs 面板 ${bar === 'top' ? panel.left : panel.top}`);
+  if (inset) {
+    // 內縮但不能縮過頭——色條還是要看得出是那張卡的頂。
+    const span = bar === 'top' ? cap.width / panel.width : cap.height / panel.height;
+    ok(`${look}/${bar}：色條仍然佔大部分寬度`, span > 0.8, span.toFixed(2));
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
