@@ -734,21 +734,95 @@ function askChoice({ question, options }) {
             ${o.detail ? `<span class="choice-detail">${escapeHtml(o.detail)}</span>` : ''}
           </button>`).join('')}
       </div>
-      <input class="confirm-say" type="text" autocomplete="off"
-             placeholder="${escapeHtml(t('都不是？直接告訴它你要怎麼做'))}" aria-label="${escapeHtml(t('自己輸入做法'))}" />`;
+      <div class="choice-pics" hidden></div>
+      <div class="choice-say">
+        <button type="button" class="choice-pic-btn" title="${escapeHtml(t('附一張圖'))}"
+                aria-label="${escapeHtml(t('附一張圖'))}">
+          <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-image"/></svg>
+        </button>
+        <input class="confirm-say" type="text" autocomplete="off"
+               placeholder="${escapeHtml(t('都不是？直接講，或貼一張圖'))}" aria-label="${escapeHtml(t('自己輸入做法'))}" />
+      </div>`;
     $('log').appendChild(card);
     scrollDown();
 
     const say = card.querySelector('.confirm-say');
-    const done = (answer) => {
-      resolveCard(card, 'ok', t('你選了：{0}', answer));
-      resolve(answer);
+    const tray = card.querySelector('.choice-pics');
+
+    /**
+     * Pictures attached to the ANSWER.
+     *
+     * The agent asked 「或直接截一張現在頁面的圖給我」 and the card had nowhere to
+     * put one, so the person had to describe a screenshot in words — which is
+     * the exact thing the question was trying to avoid. These join
+     * `state.sentAttachments`, the list this turn's *_read_attachment reads, so
+     * the answer can point straight at an index.
+     */
+    const added = [];
+    const attach = async (file) => {
+      if (!file || !/^image\//.test(file.type || '')) return;
+      const pic = await shrinkForModel(file);
+      if (!pic) return;
+      state.sentAttachments = [...state.sentAttachments, pic];
+      added.push(state.sentAttachments.length);          // 1-based, as the tool counts
+      tray.hidden = false;
+      const thumb = document.createElement('img');
+      thumb.className = 'choice-pic';
+      thumb.src = `data:${pic.mimeType};base64,${pic.data}`;
+      thumb.alt = t('附上的圖');
+      tray.appendChild(thumb);
+      scrollDown();
     };
+
+    const done = (answer) => {
+      // The picture is useless unless the agent is told it exists and where it
+      // is — nothing else in this turn will mention it.
+      const text = added.length
+        ? `${answer}${answer ? '\n' : ''}（我附了 ${added.length} 張圖，`
+          + `是第 ${added.join('、')} 張，用讀取附圖的工具看）`
+        : answer;
+      resolveCard(card, 'ok', t('你選了：{0}', answer || t('（一張圖）')));
+      resolve(text);
+    };
+
     for (const btn of card.querySelectorAll('.choice-opt')) {
       btn.addEventListener('click', () => done(list[Number(btn.dataset.i)].label));
     }
     say.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && say.value.trim()) { e.preventDefault(); done(say.value.trim()); }
+      // With a picture attached, empty text is a complete answer — 「就是這個，
+      // 你看圖」 is what a person actually says.
+      if (e.key === 'Enter' && (say.value.trim() || added.length)) {
+        e.preventDefault();
+        done(say.value.trim());
+      }
+    });
+    say.addEventListener('paste', (e) => {
+      const files = [...(e.clipboardData?.items || [])]
+        .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+        .map((it) => it.getAsFile()).filter(Boolean);
+      if (!files.length) return;
+      e.preventDefault();
+      for (const f of files) void attach(f);
+    });
+    // Dropping onto the card, for a screenshot already saved to the desktop.
+    card.addEventListener('dragover', (e) => {
+      if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
+    });
+    card.addEventListener('drop', (e) => {
+      const files = [...(e.dataTransfer?.files || [])];
+      if (!files.length) return;
+      e.preventDefault();
+      for (const f of files) void attach(f);
+    });
+    card.querySelector('.choice-pic-btn').addEventListener('click', () => {
+      const picker = document.createElement('input');
+      picker.type = 'file';
+      picker.accept = 'image/*';
+      picker.multiple = true;
+      picker.addEventListener('change', () => {
+        for (const f of picker.files || []) void attach(f);
+      });
+      picker.click();
     });
   });
 }
@@ -920,6 +994,23 @@ async function addAttachment(file) {
 
   state.attachments.push({ id: crypto.randomUUID(), mimeType, data });
   renderAttachments();
+}
+
+/**
+ * The same shrink, without the parking — for a picture handed over DURING a run.
+ *
+ * ── Why this exists next to addAttachment ──
+ * `state.attachments` is the queue for the NEXT message. A picture given in
+ * answer to a question belongs to the turn already in flight, so it has to join
+ * `state.sentAttachments` instead — that is the list `*_read_attachment` reads,
+ * and it is the only way the agent can see a picture without the person having
+ * to end the turn and start another one.
+ */
+async function shrinkForModel(file) {
+  const before = state.attachments.length;
+  await addAttachment(file);
+  if (state.attachments.length === before) return null;   // refused: too big, or over the cap
+  return state.attachments.pop();
 }
 
 /**

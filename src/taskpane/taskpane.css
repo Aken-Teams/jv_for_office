@@ -886,6 +886,27 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
    description and the buttons because it is read as part of deciding, not as a
    separate step — and full width, because 「改用 IFS，不要巢狀 IF」 has to be
    typeable without the field scrolling. */
+/* ── 回答問題的時候也能貼圖 ──────────────────────────────────────────────
+   AI 問「或直接截一張現在頁面的圖給我」，卡片卻只收文字，等於逼人用文字描述
+   一張截圖——那正是這個問題想避開的事。縮圖直接顯示在卡片裡，因為送出去之後
+   就看不到了，而人需要確認自己貼對了。 */
+.choice-pics {
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0;
+}
+.choice-pic {
+  width: 64px; height: 44px; object-fit: cover;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.choice-say { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.choice-say .confirm-say { flex: 1; margin-top: 0; }
+.choice-pic-btn {
+  display: flex; align-items: center; justify-content: center;
+  flex: none; width: 30px; height: 30px; padding: 0; border-radius: 7px;
+  color: var(--fg-subtle); background: transparent;
+  transition: color var(--speed), background var(--speed);
+}
+.choice-pic-btn:hover { color: var(--fg); background: var(--surface); }
+
 .confirm-say {
   display: block; width: 100%; margin: 11px 0 0;
   padding: 7px 9px; border-radius: var(--radius-sm);

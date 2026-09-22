@@ -100,5 +100,29 @@ for (const host of ['excel', 'word', 'ppt']) {
   }
 }
 
+// ── 三個主機都要「先看再動手」 ──────────────────────────────────────────────
+//
+// 使用者說「幫我加一張圖」，AI 就照那句話加一張圖——沒看現在什麼風格、哪裡有空位、
+// 會不會壓到既有內容。做出來的結果使用者會覺得「這個增益集很笨」，而不會覺得是
+// 自己講得不夠細。他本來就不該需要講那麼細。
+//
+// 這是三個主機共同的行為，所以三份提示詞都要有，而且不能只有一份。
+for (const [name, file, reader] of [
+  ['Excel', 'excelContext.ts', 'excel_get_overview'],
+  ['Word', 'wordContext.ts', 'word_get_overview'],
+  ['PowerPoint', 'pptContext.ts', 'ppt_get_overview'],
+]) {
+  const src = fs.readFileSync(new URL(`services/${file}`, serverDir), 'utf8');
+  ok(`${name}：有「第一步先看檔案」這一節`, src.includes('## 第一步永遠是先看這份檔案'));
+  ok(`${name}：指名該用哪個工具`, src.includes(reader));
+  // 「即使他沒說」是整條規則的重點——有說才看等於沒有這條規則。
+  ok(`${name}：使用者沒要求也要看`, src.includes('即使他沒有要你看'));
+  ok(`${name}：說清楚使用者會怪到增益集頭上`,
+    src.includes('這個增益集很笨'));
+  ok(`${name}：看完要先講一句看到什麼`, src.includes('講一句你看到什麼'));
+  // 例外要寫出來，不然「做一份全新的」也會先去讀一個空檔案。
+  ok(`${name}：從零開始是例外`, src.includes('唯一的例外'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

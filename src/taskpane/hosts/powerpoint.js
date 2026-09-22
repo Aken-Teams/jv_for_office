@@ -502,15 +502,38 @@ async function loadSlides(ctx, opts = {}) {
   return slides.items;
 }
 
+/** Shape types that can never hold text. Queuing a load against one poisons the batch. */
+const TEXTLESS = new Set(['image', 'line', 'group', 'unsupported', 'picture']);
+
 /**
- * Text out of a shape, or '' when it has none.
+ * Text out of every shape on a slide, or '' for the ones that have none.
  *
- * `shape.textFrame` throws InvalidArgument for shapes that cannot hold text —
- * pictures, lines — so this must be queued per shape and tolerated per shape,
- * not loaded in bulk with everything else.
+ * ── The bug this is written against, which was worse than it looked ──
+ * The first version queued a textFrame load for every shape and ran ONE sync.
+ * The per-shape try/catch around `s.textFrame` looks like it covers the failure
+ * but does not: reading the property queues work, it does not execute it. The
+ * throw happens later, inside `ctx.sync()`, and a sync that rejects rejects for
+ * the WHOLE batch. So the catch returned '' for every shape on the slide.
+ *
+ * The visible symptom was 「那頁的文案我讀不到」: one picture anywhere on a slide
+ * and the model went blind to all of its text — then edited it by guessing, and
+ * landed things on top of words it could not see.
+ *
+ * It also got worse exactly as the product got better. A slide had to contain a
+ * picture to trigger it, and the texture layer, the photo modes and the
+ * generated backgrounds all put one there.
+ *
+ * ── Two defences, because one is not enough ──
+ * Skipping the types that cannot hold text avoids the throw in the ordinary
+ * case. But `type` is a string from a growing enum and a build we have not seen
+ * may report something new, so a batch that still fails falls back to reading
+ * one shape at a time. That costs a round trip per shape and only happens when
+ * the cheap path has already failed — which is the right way round, because the
+ * alternative is silently returning nothing.
  */
 async function loadTexts(ctx, shapes) {
-  const frames = shapes.map((s) => {
+  const queue = (list) => list.map((s) => {
+    if (TEXTLESS.has(String(s && s.type || '').toLowerCase())) return null;
     try {
       const f = s.textFrame;
       f.load('hasText,textRange/text');
@@ -519,19 +542,35 @@ async function loadTexts(ctx, shapes) {
       return null;
     }
   });
-  try {
-    await ctx.sync();
-  } catch {
-    return shapes.map(() => '');
-  }
-  return frames.map((f) => {
+  const read = (f) => {
     if (!f) return '';
     try {
       return f.hasText ? String(f.textRange.text || '') : '';
     } catch {
       return '';
     }
-  });
+  };
+
+  const frames = queue(shapes);
+  try {
+    await ctx.sync();
+    return frames.map(read);
+  } catch {
+    // The batch was poisoned by at least one shape. Read them individually so
+    // the rest of the slide still comes back.
+    const out = [];
+    for (const s of shapes) {
+      const [f] = queue([s]);
+      if (!f) { out.push(''); continue; }
+      try {
+        await ctx.sync();
+        out.push(read(f));
+      } catch {
+        out.push('');
+      }
+    }
+    return out;
+  }
 }
 
 const OVERVIEW_PREVIEW_CHARS = 60;
