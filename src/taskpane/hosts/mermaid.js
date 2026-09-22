@@ -84,7 +84,39 @@ export async function renderMermaid(code, opts = {}) {
     sequence: { useMaxWidth: false },
     gantt: { useMaxWidth: false },
     class: { htmlLabels: false, useMaxWidth: false },
-    theme: opts.theme || 'default',
+    /**
+     * Recolouring mermaid, and why the old call never did.
+     *
+     * `theme` here is MERMAID's theme name — one of default / base / dark /
+     * forest / neutral. The caller was handing it the deck's palette name
+     * (`corporate`, `linen`, …), which mermaid does not recognise, so every
+     * diagram silently fell back to the default lavender boxes. A flowchart in
+     * purple on a teal deck reads as clip-art someone pasted in.
+     *
+     * The supported way to recolour is `base` plus themeVariables, so that is
+     * what a palette turns into. Without one, the old behaviour stands.
+     */
+    theme: opts.palette ? 'base' : (opts.theme || 'default'),
+    themeVariables: opts.palette ? {
+      background: opts.palette.bg || '#FFFFFF',
+      primaryColor: opts.palette.tint || '#EEF3F8',
+      primaryTextColor: opts.palette.ink || '#3D3D3D',
+      primaryBorderColor: opts.palette.strong || '#1A3A5C',
+      secondaryColor: opts.palette.bg || '#FFFFFF',
+      tertiaryColor: opts.palette.ground || '#F7F9FB',
+      // Edges and their labels: the arrows are the argument in a flowchart, so
+      // they get the deck's own ink rather than mermaid's grey.
+      lineColor: opts.palette.strong || '#1A3A5C',
+      textColor: opts.palette.ink || '#3D3D3D',
+      mainBkg: opts.palette.tint || '#EEF3F8',
+      nodeBorder: opts.palette.strong || '#1A3A5C',
+      clusterBkg: opts.palette.ground || '#F7F9FB',
+      clusterBorder: opts.palette.line || '#D5DBE0',
+      titleColor: opts.palette.strong || '#1A3A5C',
+      edgeLabelBackground: opts.palette.bg || '#FFFFFF',
+      fontFamily: font,
+      fontSize: '15px',
+    } : undefined,
     fontFamily: font,
   });
 

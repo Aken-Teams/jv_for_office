@@ -1209,10 +1209,23 @@ for (const kind of ['timeline', 'quadrant', 'zigzag']) {
   ok('沒有標題底下那條短線',
     !alive().some((s) => s.kind === 'geo' && s.width === 108 && s.height === 4));
   // 原本從 150 開始，上面留一條空帶；現在貼著內文帶的頂端。
-  const spine = alive().find((s) => s.kind === 'geo' && s.width === 5 && s.height > 100);
+  const spine = alive().find((s) => s.kind === 'geo' && s.width === 6 && s.height > 100);
   ok('引言貼著內文帶頂端，上面沒有空帶', spine.top <= 126, `色帶從 ${spine.top} 開始`);
   ok('而且往下填滿', spine.top + spine.height > 400,
     `色帶到 ${spine.top + spine.height}`);
+  // 四個低對比的元素散在一片留白上，讀起來像沒載完。給它一塊底就成立了。
+  const field = alive().find((s) => s.kind === 'geo' && s.width === 884 && s.height > 100);
+  ok('引言坐在一塊色底上', !!field, '不然那一頁只是幾行字浮在白底上');
+  const quote = alive().find((s) => s._text === q);
+  ok('引言在那塊底裡面',
+    quote.left > field.left && quote.top > field.top
+      && quote.top + quote.height <= field.top + field.height + 1);
+  // 署名要讀起來是「出處」，不是引言的最後一行。
+  const cite = alive().find((s) => /MIT 2026/.test(s._text));
+  ok('署名在色底外面、下方', cite.top >= field.top + field.height,
+    `署名 ${cite.top}，色底到 ${field.top + field.height}`);
+  ok('署名上面有一條短線帶出來',
+    alive().some((s) => s.kind === 'geo' && s.width === 48 && s.height === 2));
 }
 
 // ── 封面副標要有行距 ────────────────────────────────────────────────────────

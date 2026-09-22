@@ -128,11 +128,34 @@ function normalise(spec) {
 function frame(spec, opts) {
   const W = Number(spec.width) || 760;
   const H = Number(spec.height) || 380;
+  /**
+   * Room for the axis labels — and a horizontal bar chart needs far more of it.
+   *
+   * ── The bug this fixes ──
+   * 56 points is right for a column chart, where the left margin holds numbers
+   * like 「75」. On a BAR chart the same margin holds the category names, and
+   * 「顯著」回報」 arrived as 「著」回報」 — silently clipped, with the missing half
+   * looking like a label somebody typed wrong.
+   *
+   * So the margin is measured against the longest label rather than fixed. A CJK
+   * glyph is about as wide as the type is tall; latin runs narrower, so the
+   * estimate splits the difference and caps at a third of the canvas — past that
+   * the labels are the chart and the answer is shorter names.
+   */
+  const labelRoom = () => {
+    const cats = (Array.isArray(spec.categories) ? spec.categories : []).map(String);
+    if (!cats.length) return 56;
+    const widest = Math.max(...cats.map((c) => {
+      const cjk = (c.match(/[\u3000-\u9fff\uff00-\uffef]/g) || []).length;
+      return cjk * 11.5 + (c.length - cjk) * 6.5;
+    }));
+    return Math.min(Math.round(widest) + 16, Math.round((Number(spec.width) || 760) / 3));
+  };
   const pad = {
     top: spec.title ? 44 : 16,
     right: 20,
     bottom: opts.legend ? 52 : 34,
-    left: opts.axis ? 56 : 16,
+    left: opts.axis ? (opts.wideLabels ? Math.max(56, labelRoom()) : 56) : 16,
   };
   return { W, H, pad, x: pad.left, y: pad.top, w: W - pad.left - pad.right, h: H - pad.top - pad.bottom };
 }
@@ -167,7 +190,7 @@ function legend(series, f, theme) {
 function barChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const horizontal = spec.type === 'bar';
-  const f = frame(spec, { axis: true, legend: series.length > 1 });
+  const f = frame(spec, { axis: true, legend: series.length > 1, wideLabels: horizontal });
   const top = niceMax(Math.max(...series.flatMap((s) => s.data), 0));
   const TICKS = 4;
   let out = chrome(spec, f, theme);

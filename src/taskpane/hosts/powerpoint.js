@@ -1039,6 +1039,14 @@ async function targetSlide(ctx, args) {
  * in it should obey the same rules, and when they drift the deck stops looking
  * like one deck.
  */
+/**
+ * At or below this size, a box is carrying body copy rather than display type,
+ * and is not allowed to shrink. 16 is the smallest the design rules call
+ * readable from the back of a room; anything set at or under it has no room to
+ * give away.
+ */
+const AUTOFIT_FLOOR = 16;
+
 function styleText(shape, opts) {
   const frame = shape.textFrame;
   const range = frame.textRange;
@@ -1082,9 +1090,26 @@ function styleText(shape, opts) {
   if (v) frame.verticalAlignment = v;
 
   if (opts.wrap !== undefined) frame.wordWrap = !!opts.wrap;
-  // Text that overflows its box is the single most common way an auto-built
-  // slide looks broken, so shrink-to-fit is the default rather than an option.
-  frame.autoSizeSetting = opts.autofit === false ? 'AutoSizeNone' : 'AutoSizeTextToFitShape';
+  /**
+   * Shrink to fit — but not for body copy.
+   *
+   * ── Why the default had to be split ──
+   * Shrink-to-fit exists because text hanging out of its box is the most
+   * obvious way an auto-built slide looks broken. It has a failure of its own
+   * though, and it is worse: there is no floor. A caption that does not fit
+   * comes back at six points, which nobody can read and which does not look
+   * like an error — it looks like the add-in chose that size.
+   * 「openai 底下小字只有 6px，人眼幾乎看不到」 was exactly that.
+   *
+   * Office.js has no minimum-size setting, so the only lever is which boxes are
+   * allowed to shrink at all. Display type can: a 40pt heading dropping to 32 is
+   * still a heading. Body copy cannot — it either fits or it overflows, and an
+   * overflow is a bug somebody can SEE and report.
+   */
+  const bodySize = Number(opts.size) && Number(opts.size) <= AUTOFIT_FLOOR;
+  frame.autoSizeSetting = (opts.autofit === false || (bodySize && opts.autofit === undefined))
+    ? 'AutoSizeNone'
+    : 'AutoSizeTextToFitShape';
   if (opts.padding !== undefined) {
     const p = Number(opts.padding);
     frame.leftMargin = p; frame.rightMargin = p;
@@ -2426,7 +2451,7 @@ async function buildSlide(args) {
         if (item.text) {
           text(String(item.text),
             { left: pos[0] + 18, top: pos[1] + 52, width: cellW - 36, height: cellH - 70 },
-            { size: 13, color: th.ink, valign: 'top', lineSpacing: 1.35 });
+            { size: 13.5, color: th.ink, valign: 'top', lineSpacing: 1.35 });
         }
       });
       // The axes, drawn over the cells so the cross reads as one mark.
@@ -2507,13 +2532,13 @@ async function buildSlide(args) {
           { font: display, size: 38, bold: true, color: th.onCover, align: 'center', valign: 'middle' });
 
         text(String(item.title || ''),
-          { left: textX, top: y + (item.text ? 8 : rowH / 2 - 18), width: textW, height: 34 },
+          { left: textX, top: y + (item.text ? 10 : rowH / 2 - 18), width: textW, height: 32 },
           { size: TYPE.heading, bold: true, color: th.ink,
             align: right ? 'right' : 'left', valign: 'middle' });
         if (item.text) {
           text(String(item.text),
-            { left: textX, top: y + 46, width: textW, height: rowH - 54 },
-            { size: 13.5, color: th.muted, lineSpacing: 1.35,
+            { left: textX, top: y + 44, width: textW, height: rowH - 52 },
+            { size: 14, color: th.muted, lineSpacing: 1.35,
               align: right ? 'right' : 'left', valign: 'top' });
         }
       });
@@ -2521,16 +2546,32 @@ async function buildSlide(args) {
       // Pulled up and stretched now that the header no longer carries a title:
       // the quotation starts where the content band starts, so the page has no
       // dead strip above it.
-      const qH = Math.max(170, BODY_H - 70);
-      band({ left: CL, top: CT, width: 5, height: qH }, th.accent);
-      text('“', { left: CL + 22, top: CT - 18, width: 90, height: 90 },
-        { size: 96, bold: true, color: th.tint });
-      text(title, { left: CL + 40, top: CT + 18, width: CW - 70, height: qH - 36 },
-        { size: TYPE.title, color: th.ink, valign: 'middle' });
+      /**
+       * A quotation, given a page.
+       *
+       * ── What was thin about the first version ──
+       * A hairline down the left, the sentence, a dash and a name. Correct and
+       * unmemorable — on a page with this much air, four elements at low
+       * contrast read as a slide that did not finish loading.
+       *
+       * Three changes, each cheap: a tinted field so the quotation sits ON
+       * something; the opening mark large and overlapping the field's corner,
+       * which is what makes it decoration rather than punctuation; and the
+       * attribution on its own rule below, so it reads as a credit instead of a
+       * trailing line of the quote.
+       */
+      const qH = Math.max(170, BODY_H - 78);
+      band({ left: CL, top: CT, width: CW, height: qH }, th.tint);
+      band({ left: CL, top: CT, width: 6, height: qH }, th.accent);
+      text('“', { left: CL + 26, top: CT - 26, width: 120, height: 120 },
+        { font: display, size: 120, bold: true, color: mix(th.tint, th.strong, 0.22) });
+      text(title, { left: CL + 84, top: CT + 30, width: CW - 140, height: qH - 60 },
+        { font: display, size: TYPE.title, color: th.ink, valign: 'middle' });
       if (body.length) {
-        text(`— ${body.join('，')}`,
-          { left: CL + 40, top: CT + qH + 12, width: CW - 70, height: 32 },
-          { size: TYPE.body, color: th.muted });
+        band({ left: CL + 84, top: CT + qH + 22, width: 48, height: 2 }, th.accent);
+        text(body.join('，'),
+          { left: CL + 84, top: CT + qH + 32, width: CW - 140, height: 30 },
+          { size: TYPE.small, color: th.muted });
       }
     } else if (kind === 'two_column' || kind === 'compare') {
       const left = Array.isArray(args.left) ? args.left.map(String) : String(args.left || '').split(/\r?\n/);
@@ -3113,7 +3154,7 @@ async function addCards(args) {
         body.name = stamp('cb');
         // Centred in the space below the heading. Top-aligned was what produced
         // 「內容擠在上面、下面一片空白」 whenever the estimate ran generous.
-        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted,
+        styleText(body, { font: face, size: num(args.small, 12.5), color: th.muted,
           valign: 'middle', lineSpacing: 1.3 });
         body.fill.clear();
         body.lineFormat.visible = false;
@@ -3611,7 +3652,11 @@ async function addDiagram(args) {
     throw new Error('這個 Office 版本不支援插入圖片（需要 ImageCoercion 1.1，Office 2021 以上）。');
   }
 
-  const png = await renderMermaid(code, { theme: args.theme, font: args.font });
+  // The deck's palette, not its NAME — see renderMermaid for what the old
+  // call was actually asking mermaid for.
+  const lk = look(args.look);
+  const png = await renderMermaid(code,
+    { palette: paletteFor(args, lk), font: args.font || (lk.font || paletteFor(args, lk).font) });
   const geo = fitToBody(png.width, png.height, args);
 
   const note = await focusSlideFor(args);
