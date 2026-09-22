@@ -875,7 +875,11 @@ const BAND_BOTTOM = 480;
   ok('行距只在支援的版本上才設',
     /opts\.lineSpacing \|\| opts\.spaceAfter \|\| opts\.spaceBefore\) && hasApi\('1\.8'\)/.test(src));
   ok('而且說明了為什麼用版本判斷而不是 try', src.includes('throws at the next'));
-  ok('舊版用空行當退路', src.includes("'\n' : '\n\n'") || src.includes('lines.length > 5'));
+  // 空行那條退路已經不需要了：條列改成一行一個文字方塊，行距靠幾何而不是靠 API，
+  // 所有版本都有效。1.8 的屬性只剩「加分」的角色。
+  ok('條列用幾何做行距，不是靠 1.8 的屬性',
+    src.includes('const bulletList') && src.includes('One box per line'));
+  ok('而且說明了為什麼不能只靠屬性', src.includes('is not a feature; it is a comment'));
   ok('內文、卡片、洞察框都有行距',
     (src.match(/lineSpacing:/g) || []).length >= 6,
     `${(src.match(/lineSpacing:/g) || []).length} 處`);

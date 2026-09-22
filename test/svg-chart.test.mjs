@@ -20,6 +20,10 @@
  */
 import { chartSvg, svgProblem, CHART_TYPES } from '../src/taskpane/hosts/svgchart.js';
 
+/** 一套完整的配色，新圖表都吃得到——缺欄位的 fallback 由上面的 loop 驗。 */
+const TH = { ink: '#3D3D3D', strong: '#1A3A5C', second: '#2E6DA4', accent: '#C0392B',
+  muted: '#8A93A0', line: '#E4E8EC', bg: '#FFFFFF' };
+
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => {
   cond ? pass++ : fail++;
@@ -42,7 +46,18 @@ const SHAPES = [
   ['沒有分類名稱', { values: [3, 6, 9] }],
 ];
 
-for (const type of CHART_TYPES) {
+/**
+ * Two types do not take `categories` + `values` at all.
+ *
+ * `timeline` takes `events`, and `radar` refuses fewer than three axes on
+ * purpose — a two-axis radar is a line, and drawing one would be worse than
+ * saying no. Running them through this loop would be testing that they honour a
+ * contract they deliberately do not have. They get their own fixtures further
+ * down, exercising the shapes that ARE awkward for them.
+ */
+const SHAPE_FUZZ = CHART_TYPES.filter((t) => t !== 'timeline' && t !== 'radar');
+
+for (const type of SHAPE_FUZZ) {
   let bad = 0;
   const notes = [];
   for (const [label, spec] of SHAPES) {
@@ -106,7 +121,7 @@ ok('甜甜圈有挖空的內圓', (donut.match(/<circle/g) || []).length >= 1);
 // ── Refusals ─────────────────────────────────────────────────────────────────
 
 let msg = '';
-try { chartSvg({ type: 'radar', categories: ['A'], values: [1] }); } catch (e) { msg = e.message; }
+try { chartSvg({ type: 'gantt', categories: ['A'], values: [1] }); } catch (e) { msg = e.message; }
 ok('不支援的類型會被擋掉並列出可用的', msg.includes('column') && msg.includes('pie'), msg);
 
 msg = '';
@@ -123,6 +138,124 @@ ok('背景用配色的底色', themed.includes('#FEFEFE'));
 
 const clear = chartSvg({ type: 'column', categories: ['A'], values: [1], transparent: true });
 ok('可以要求透明背景', /fill="none"/.test(clear.slice(0, 300)));
+
+// ── 瀑布、漏斗、雷達、時間軸 ─────────────────────────────────────────────────
+//
+// 這四種都是「長條圖畫不出來的問題」。驗的是幾何不變量，不是外觀——沒有瀏覽器
+// 可以在這裡渲染，而且會悄悄壞掉的本來就是座標：SVG 裡的 NaN 不會報錯，那個
+// 元素直接消失，看起來就像增益集什麼都沒做。
+
+const nums = (svg, attr) => [...svg.matchAll(new RegExp(`${attr}="(-?[\\\\d.]+)"`, 'g'))]
+  .map((m) => Number(m[1]));
+const sane = (svg) => !/NaN|Infinity|undefined/.test(svg)
+  && (svg.match(/</g) || []).length === (svg.match(/>/g) || []).length;
+
+{
+  // 走勢是 100 →(+32) →(+18) →(−22) → 128。瀑布圖的內容就是這條路徑。
+  const wf = chartSvg({
+    type: 'waterfall', title: '營收橋接',
+    categories: ['=期初', '新客', '續約', '流失', '=期末'],
+    values: [100, 32, 18, -22, 128], total: [0, 4],
+  }, TH);
+  ok('瀑布圖畫得出來', sane(wf), svgProblem(wf));
+  const bars = [...wf.matchAll(/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"[^>]*fill="(#[0-9A-Fa-f]{6})"/g)]
+    .map((m) => ({ x: +m[1], y: +m[2], w: +m[3], h: +m[4], fill: m[5] }))
+    .filter((b) => b.w < 200);           // 排除背景
+  ok('五個步驟五根柱子', bars.length === 5, `${bars.length} 根`);
+  // 每一根要從上一根結束的地方開始——這是瀑布圖跟長條圖唯一的差別。
+  const ends = bars.map((b) => b.y + b.h);
+  ok('第二根從第一根的頂端接上去', Math.abs(bars[1].y + bars[1].h - bars[0].y) < 1.5,
+    `第一根頂 ${bars[0].y}，第二根底 ${ends[1]}`);
+  // 下降要跟上升不同色，否則讀者得自己看數字才知道方向。
+  ok('下降跟上升不同色', bars[3].fill !== bars[1].fill, `${bars[3].fill} vs ${bars[1].fill}`);
+  ok('合計又是第三種顏色', bars[0].fill !== bars[1].fill && bars[0].fill !== bars[3].fill);
+  ok('等號只是標記，不會印出來', !wf.includes('=期初') && wf.includes('期初'));
+  ok('增減有正負號', wf.includes('+32') && wf.includes('-22'));
+  // 起點 100、終點 128，中間跑到 150——軸要蓋住整條路徑，不是只蓋住數值。
+  const ys = bars.flatMap((b) => [b.y, b.y + b.h]);
+  ok('所有柱子都在畫布裡', Math.min(...ys) >= 0 && Math.max(...ys) <= 380,
+    `${Math.min(...ys)}..${Math.max(...ys)}`);
+}
+
+{
+  const fn = chartSvg({
+    type: 'funnel', title: '導入漏斗',
+    categories: ['曝光', '點擊', '試用', '付費'], values: [10000, 3200, 860, 210],
+  }, TH);
+  ok('漏斗圖畫得出來', sane(fn), svgProblem(fn));
+  // 沒有轉換率的漏斗就是一張裝飾用的長條圖：形狀告訴你它變窄了，那是讀者本來
+  // 就知道的事；它沒告訴你在哪一段掉最兇。
+  ok('每一段之間標出轉換率', (fn.match(/轉換 /g) || []).length === 3, fn.match(/轉換 \d+%/g));
+  ok('也標出流失率', fn.includes('流失'));
+  ok('轉換率算對', fn.includes('轉換 32%'), fn.match(/轉換 \d+%/g));
+  const widths = [...fn.matchAll(/<rect x="[\d.]+" y="[\d.]+" width="([\d.]+)"/g)]
+    .map((m) => +m[1]).filter((w) => w < 700);
+  ok('寬度逐段變窄', widths.every((w, i) => i === 0 || w <= widths[i - 1] + 0.5), widths.join(' '));
+}
+
+{
+  const rd = chartSvg({
+    type: 'radar', title: '六面向',
+    categories: ['資料', '流程', '治理', '人才', '工具', '成效'],
+    values: [[4, 3, 2, 3, 5, 2], [5, 5, 4, 4, 5, 4]], series: ['現況', '目標'],
+  }, TH);
+  ok('雷達圖畫得出來', sane(rd), svgProblem(rd));
+  ok('有四層網格 + 兩個資料多邊形',
+    (rd.match(/<polygon/g) || []).length === 6, (rd.match(/<polygon/g) || []).length);
+  ok('六個面向的標籤都在', ['資料', '流程', '治理', '人才', '工具', '成效']
+    .every((k) => rd.includes(k)));
+  ok('兩個系列都有圖例', rd.includes('現況') && rd.includes('目標'));
+  ok('資料區域半透明，兩層疊起來還看得到下面',
+    rd.includes('fill-opacity="0.18"'));
+
+  // 三個以上就分不出來了，第四層會長得像資料但作用是裝飾。
+  const many = chartSvg({
+    type: 'radar', categories: ['A', 'B', 'C'],
+    values: [[1, 2, 3], [2, 3, 1], [3, 1, 2], [1, 1, 1]],
+  }, TH);
+  ok('最多畫三個系列', (many.match(/fill-opacity/g) || []).length === 3);
+
+  let bad = '';
+  try { chartSvg({ type: 'radar', categories: ['A', 'B'], values: [[1, 2]] }, TH); }
+  catch (e) { bad = e.message; }
+  ok('兩個面向的雷達圖會被擋掉', bad.includes('三個'), bad);
+}
+
+{
+  // 時間軸的內容就是「間隔不平均」：三月兩件、十一月一件才是重點，平均排開會
+  // 把那件事抹掉。
+  const tl = chartSvg({
+    type: 'timeline', title: '導入時程',
+    events: [
+      { at: 2024, label: '試點', note: '兩條產線' },
+      { at: 2024.75, label: '擴大' },
+      { at: 2026, label: '全面上線', highlight: true },
+    ],
+  }, TH);
+  ok('時間軸畫得出來', sane(tl), svgProblem(tl));
+  const dots = [...tl.matchAll(/<circle cx="([\d.]+)"/g)].map((m) => +m[1]);
+  ok('三個事件三個點', dots.length === 3, `${dots.length} 個`);
+  const g1 = dots[1] - dots[0];
+  const g2 = dots[2] - dots[1];
+  ok('間隔照實際數值，不是平均排開', Math.abs(g1 - g2) > 20, `${g1} vs ${g2}`);
+  ok('標註上下交錯，不會擠在同一邊',
+    new Set([...tl.matchAll(/<text x="[\d.]+" y="([\d.]+)"/g)].map((m) => +m[1] > 170)).size === 2);
+  ok('重點事件會被標出來', tl.includes('r="8"'));
+
+  // 給不了刻度的時候平均排開是誠實的——我們沒有的尺度不能自己發明。
+  const words = chartSvg({
+    type: 'timeline',
+    events: [{ at: '第一階段', label: 'A' }, { at: '第二階段', label: 'B' },
+      { at: '第三階段', label: 'C' }],
+  }, TH);
+  const even = [...words.matchAll(/<circle cx="([\d.]+)"/g)].map((m) => +m[1]);
+  ok('非數字的刻度就平均排開',
+    Math.abs((even[1] - even[0]) - (even[2] - even[1])) < 1.5, even.join(' '));
+
+  let none = '';
+  try { chartSvg({ type: 'timeline', events: [] }, TH); } catch (e) { none = e.message; }
+  ok('沒有事件會被擋掉並說要什麼', none.includes('events'), none);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

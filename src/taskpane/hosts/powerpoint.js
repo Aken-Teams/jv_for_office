@@ -238,6 +238,33 @@ const THEMES = {
     bg: '#FFFFFF', ground: '#F6F6F5', warn: '#A8A8A8',
     cover: '#1C1C1C', onCover: '#FAFAFA',
   },
+  teal: {
+    // 藍綠。Reads as technical without reading as cold — the family most decks
+    // reach for when 企業藍 has been used on everything already.
+    label: '藍綠', font: '微軟正黑體',
+    ink: '#2F3E3F', strong: '#0F6E72', accent: '#E0743A', second: '#4AA7A5',
+    tint: '#E8F4F3', muted: '#7E9694', line: '#CFE3E1',
+    bg: '#FFFFFF', ground: '#F2F9F8', warn: '#D8A13C',
+    cover: '#0F5D61', onCover: '#F1FAF9',
+  },
+  sky: {
+    // 淡藍。Deliberately the lightest palette in the set: the cover is a mid
+    // blue rather than a dark one, so a whole deck in it never goes heavy.
+    label: '淡藍', font: '微軟正黑體',
+    ink: '#33414F', strong: '#2A6FB0', accent: '#F2994A', second: '#79B4E3',
+    tint: '#EAF3FB', muted: '#8399AD', line: '#D3E4F3',
+    bg: '#FFFFFF', ground: '#F4F9FD', warn: '#E4B34A',
+    cover: '#3A83C4', onCover: '#FFFFFF',
+  },
+  amber: {
+    // 黃橘。Warm and high-energy without going red — the palette for a launch,
+    // a workshop, anything that should feel like a beginning.
+    label: '黃橘', font: '微軟正黑體',
+    ink: '#40382C', strong: '#B5730F', accent: '#2C6E7F', second: '#E2A93B',
+    tint: '#FDF4E3', muted: '#9C8C74', line: '#EDDDC2',
+    bg: '#FFFFFF', ground: '#FFFBF3', warn: '#C0563A',
+    cover: '#A8660C', onCover: '#FFF8EC',
+  },
 };
 
 /**
@@ -1503,12 +1530,44 @@ async function buildSlide(args) {
       : (args.body ? String(args.body).split(/\r?\n/) : []);
     // A small square rather than 「•」: the reference deck uses one, and a round
     // dot is the mark every word processor puts there by default.
-    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `▪　${l.trim()}`)
-      // On a build without paragraph spacing, a blank line is the only lever
-      // left. It is coarser than 8pt of spaceAfter and still better than four
-      // lines jammed together — but only while the list is short enough to
-      // afford the height.
-      .join(hasApi('1.8') || lines.length > 5 ? '\n' : '\n\n');
+    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `▪　${l.trim()}`).join('\n');
+
+    /**
+     * A bullet list as one text box PER LINE.
+     *
+     * ── Why not one box and a line-spacing property ──
+     * That was the first attempt and on this machine it did nothing, because
+     * `ParagraphFormat.lineSpacing` needs PowerPointApi 1.8 and most installs
+     * are on 1.4–1.6. A feature that silently does nothing on the version people
+     * actually run is not a feature; it is a comment.
+     *
+     * Geometry works on every build. One box per line, positioned on a pitch we
+     * choose, gives exactly the air the property would have — and it gives more
+     * besides: each line can be vertically centred in its own slot, so a point
+     * that wraps to two lines still sits on the same rhythm as the ones that do
+     * not. A single box cannot do that at any API version.
+     *
+     * The list is centred in its band rather than pinned to the top, because
+     * three points in a 350pt band pinned to the top is the 「下半頁是空的」
+     * complaint in its original form.
+     */
+    const bulletList = (lines, box, style = {}) => {
+      const items = lines.filter((l) => String(l).trim());
+      if (!items.length) return;
+      const size = style.size || TYPE.body;
+      // 2.1× the type size: enough that the lines read as separate points, not
+      // so much that a four-point list turns into a page of gaps.
+      const pitch = Math.min(style.pitch || size * 2.1, box.height / items.length);
+      const used = pitch * items.length;
+      const top = style.top === true
+        ? box.top
+        : box.top + Math.max(0, (box.height - used) / 2);
+      items.forEach((line, i) => {
+        text(`▪　${String(line).trim()}`,
+          { left: box.left, top: top + pitch * i, width: box.width, height: pitch },
+          { size, color: th.ink, valign: 'middle', ...style, pitch: undefined, top: undefined });
+      });
+    };
 
     // ── The chrome, on every slide that is not a full-bleed cover ──
     // Fixed geometry, applied the same way every time. See CHROME for why none
@@ -2070,8 +2129,13 @@ async function buildSlide(args) {
             { size: TYPE.heading, bold: true, color: c.tone });
           y += 52;
         }
-        text(bullet(c.lines), { left: c.x + 18, top: y + 10, width: colW - 36, height: CT + colH - y - 22 },
-          { size: TYPE.body, color: th.ink });
+        // Top-aligned rather than centred: two columns whose lists are each
+        // centred in their own panel end up starting at different heights when
+        // one side has four points and the other has three, and the eye reads
+        // that as a mistake.
+        bulletList(c.lines,
+          { left: c.x + 18, top: y + 10, width: colW - 36, height: CT + colH - y - 22 },
+          { align: 'left', top: true });
       }
     } else {
       // ── bullets ──
@@ -2152,15 +2216,11 @@ async function buildSlide(args) {
         if (wide) {
           const half = Math.ceil(items.length / 2);
           const colW = (CW - GRID.gutter) / 2;
-          text(bullet(items.slice(0, half)),
-            { left: CL, top: CT, width: colW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
-          text(bullet(items.slice(half)),
-            { left: CL + colW + GRID.gutter, top: CT, width: colW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
+          bulletList(items.slice(0, half), { left: CL, top: CT, width: colW, height: BODY_H });
+          bulletList(items.slice(half),
+            { left: CL + colW + GRID.gutter, top: CT, width: colW, height: BODY_H });
         } else {
-          text(bullet(items), { left: CL, top: CT, width: CW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
+          bulletList(items, { left: CL, top: CT, width: CW, height: BODY_H });
         }
       }
     }

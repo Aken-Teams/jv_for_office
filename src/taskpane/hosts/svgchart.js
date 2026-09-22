@@ -337,7 +337,287 @@ function pieChart(spec, theme) {
   return out;
 }
 
-const RENDER = { column: barChart, bar: barChart, line: lineChart, area: lineChart, pie: pieChart, donut: pieChart };
+/**
+ * A waterfall — how a number got from one value to another.
+ *
+ * ── Why a column chart cannot do this job ──
+ * The question a waterfall answers is 「這中間發生了什麼」: revenue was 100, it is
+ * now 118, and here are the four things that moved it. Plotted as columns those
+ * four things are four unrelated bars and the reader has to do the running total
+ * in their head. The floating bar IS the explanation — each one starts where the
+ * last one finished, so the path from start to end is a shape rather than an
+ * arithmetic exercise.
+ *
+ * Positive and negative get different colours because that is the one thing the
+ * eye should get for free, and totals get a third because a total is not a
+ * change — it is a resting point, and drawing it like a change is the classic
+ * way to make a waterfall lie.
+ *
+ * Mark a bar as a total with `total: [0, 5]` (indices) or by giving its category
+ * a leading `=`.
+ */
+function waterfallChart(spec, theme) {
+  const { labels, series } = normalise(spec);
+  const data = series[0].data;
+  const f = frame(spec, { axis: true, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const totals = new Set((Array.isArray(spec.total) ? spec.total : []).map(Number));
+  labels.forEach((l, i) => { if (/^=/.test(l)) totals.add(i); });
+  const clean = labels.map((l) => String(l).replace(/^=/, ''));
+
+  // Walk the series once to find where each bar starts and ends, and how far the
+  // running total ever travels — the axis has to cover the PATH, not the values.
+  const steps = [];
+  let run = 0;
+  let lo = 0;
+  let hi = 0;
+  data.forEach((v, i) => {
+    if (totals.has(i)) {
+      steps.push({ from: 0, to: v, kind: 'total' });
+      run = v;
+    } else {
+      steps.push({ from: run, to: run + v, kind: v < 0 ? 'down' : 'up' });
+      run += v;
+    }
+    lo = Math.min(lo, steps[i].from, steps[i].to);
+    hi = Math.max(hi, steps[i].from, steps[i].to);
+  });
+
+  const max = niceMax(hi);
+  const min = lo < 0 ? -niceMax(-lo) : 0;
+  const span = (max - min) || 1;
+  const yOf = (v) => f.y + f.h - ((v - min) / span) * f.h;
+
+  for (let g = 0; g <= 4; g++) {
+    const y = f.y + (f.h / 4) * g;
+    out += line(f.x, y, f.x + f.w, y, theme.line || '#E4E8EC', 1);
+    out += text(f.x - 10, y, short(max - (span / 4) * g),
+      { size: 11, color: theme.muted || '#8A93A0', anchor: 'end', baseline: 'middle' });
+  }
+
+  const slot = f.w / Math.max(1, data.length);
+  const bw = Math.min(64, slot * 0.6);
+  const up = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const down = (spec.colors || [])[1] || theme.accent || SERIES[2];
+  const tot = (spec.colors || [])[2] || theme.second || SERIES[1];
+
+  steps.forEach((st, i) => {
+    const cx = f.x + slot * i + slot / 2;
+    const top = yOf(Math.max(st.from, st.to));
+    const bot = yOf(Math.min(st.from, st.to));
+    const fill = st.kind === 'total' ? tot : st.kind === 'down' ? down : up;
+    // A step that changes nothing still needs to be visible, or the chart has a
+    // gap where a category should be.
+    out += rect(cx - bw / 2, top, bw, Math.max(2, bot - top), fill);
+    // The connector: what makes the bars read as one path instead of a row.
+    if (i < steps.length - 1 && !totals.has(i + 1)) {
+      const y = yOf(st.to);
+      out += line(cx + bw / 2, y, f.x + slot * (i + 1) + slot / 2 - bw / 2, y,
+        theme.muted || '#8A93A0', 1);
+    }
+    const v = st.kind === 'total' ? st.to : st.to - st.from;
+    out += text(cx, top - 8, (v > 0 && st.kind !== 'total' ? '+' : '') + short(v),
+      { size: 11.5, bold: true, color: fill, anchor: 'middle' });
+    out += text(cx, f.y + f.h + 18, clean[i],
+      { size: 11.5, color: theme.ink || '#3D3D3D', anchor: 'middle' });
+  });
+  return out;
+}
+
+/**
+ * A funnel — how many survive each stage.
+ *
+ * ── The one thing that makes it worth drawing ──
+ * The conversion rate between consecutive stages, printed between them. A funnel
+ * without those is a decorative bar chart: the shape tells you it narrows, which
+ * the reader already assumed, and not where it narrows WORST. The drop is the
+ * finding, so it gets a label and it gets one whether or not anybody asked.
+ */
+function funnelChart(spec, theme) {
+  const { labels, series } = normalise(spec);
+  const data = series[0].data;
+  const f = frame(spec, { axis: false, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const top = Math.max(...data) || 1;
+  const rows = data.length;
+  const gap = 12;
+  const h = Math.max(18, (f.h - gap * (rows - 1)) / rows);
+  // Room on the right for the stage name and its count, on the left for the drop.
+  const labelW = 220;
+  const plotW = f.w - labelW;
+
+  data.forEach((v, i) => {
+    const y = f.y + (h + gap) * i;
+    const w = Math.max(8, (v / top) * plotW);
+    const cx = f.x + plotW / 2;
+    const tone = (spec.colors || [])[i]
+      || mixHex(theme.strong || SERIES[0], theme.bg || '#FFFFFF', i / Math.max(1, rows));
+    out += rect(cx - w / 2, y, w, h, tone, ' rx="3"');
+    out += text(cx, y + h / 2, short(v),
+      { size: 13, bold: true, color: '#FFFFFF', anchor: 'middle', baseline: 'middle' });
+    out += text(f.x + plotW + 20, y + h / 2 - 7, labels[i],
+      { size: 12.5, bold: true, color: theme.ink || '#3D3D3D', baseline: 'middle' });
+
+    if (i > 0) {
+      const prev = data[i - 1] || 0;
+      const keep = prev ? (v / prev) * 100 : 0;
+      // Printed in the gap, which is the only place it belongs: it describes the
+      // transition, not either stage.
+      out += text(f.x + plotW + 20, y + h / 2 + 10,
+        `轉換 ${keep.toFixed(0)}%　流失 ${(100 - keep).toFixed(0)}%`,
+        { size: 11, color: theme.muted || '#8A93A0', baseline: 'middle' });
+    }
+  });
+  return out;
+}
+
+/** Blend two hex colours — the funnel fades its stages through one hue. */
+function mixHex(a, b, t) {
+  const hex = (c) => {
+    const v = String(c || '').replace('#', '');
+    return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) || 0);
+  };
+  const [r1, g1, b1] = hex(a);
+  const [r2, g2, b2] = hex(b);
+  const k = Math.max(0, Math.min(0.62, Number(t) || 0));
+  const to = (x, y) => Math.round(x + (y - x) * k).toString(16).padStart(2, '0');
+  return `#${to(r1, r2)}${to(g1, g2)}${to(b1, b2)}`;
+}
+
+/**
+ * A radar — one thing profiled across several axes, or two things compared.
+ *
+ * ── Where this earns its place, and where it does not ──
+ * It is the right chart for 「我們在這六個面向上各多強」 and the wrong chart for
+ * almost everything else: areas on a radar are not comparable between axes, so
+ * anybody reading magnitudes off it is being misled. Three series is already too
+ * many to separate, so the spec caps it — a fourth ring would look like data and
+ * function as decoration.
+ */
+function radarChart(spec, theme) {
+  const { labels, series } = normalise(spec);
+  const f = frame(spec, { axis: false, legend: series.length > 1 });
+  let out = chrome(spec, f, theme);
+
+  const n = labels.length;
+  if (n < 3) throw new Error('雷達圖至少要三個面向，不然畫出來是一條線。');
+  const cx = f.x + f.w / 2;
+  const cy = f.y + f.h / 2;
+  const r = Math.min(f.w, f.h) / 2 - 34;
+  const max = niceMax(Math.max(...series.flatMap((s) => s.data)));
+  // Start at twelve o'clock: a radar whose first axis is on the right reads as
+  // rotated, and nobody can say why.
+  const at = (i, frac) => {
+    const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+    return [cx + Math.cos(a) * r * frac, cy + Math.sin(a) * r * frac];
+  };
+
+  for (let ring = 1; ring <= 4; ring++) {
+    const pts = Array.from({ length: n }, (_, i) => at(i, ring / 4).map(n2).join(','));
+    out += `<polygon points="${pts.join(' ')}" fill="none"`
+      + ` stroke="${theme.line || '#E4E8EC'}" stroke-width="1"/>`;
+  }
+  for (let i = 0; i < n; i++) {
+    const [x, y] = at(i, 1);
+    out += line(cx, cy, x, y, theme.line || '#E4E8EC', 1);
+    const [lx, ly] = at(i, 1.16);
+    out += text(lx, ly, labels[i], {
+      size: 11.5, color: theme.ink || '#3D3D3D', baseline: 'middle',
+      anchor: Math.abs(lx - cx) < 4 ? 'middle' : lx > cx ? 'start' : 'end',
+    });
+  }
+
+  series.slice(0, 3).forEach((sr) => {
+    const pts = sr.data.map((v, i) => at(i, Math.max(0, v) / max).map(n2).join(','));
+    out += `<polygon points="${pts.join(' ')}" fill="${sr.color}" fill-opacity="0.18"`
+      + ` stroke="${sr.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    sr.data.forEach((v, i) => {
+      const [x, y] = at(i, Math.max(0, v) / max);
+      out += `<circle cx="${n2(x)}" cy="${n2(y)}" r="3" fill="${sr.color}"/>`;
+    });
+  });
+
+  if (series.length > 1) {
+    let lx = f.x;
+    series.slice(0, 3).forEach((sr) => {
+      out += rect(lx, f.H - f.pad.bottom + 16, 12, 12, sr.color, ' rx="2"');
+      out += text(lx + 18, f.H - f.pad.bottom + 26, sr.name,
+        { size: 12, color: theme.ink || '#3D3D3D', baseline: 'middle' });
+      lx += 28 + String(sr.name).length * 12;
+    });
+  }
+  return out;
+}
+
+/**
+ * A timeline — events on one axis, in order.
+ *
+ * ── Why this is a chart and not a diagram ──
+ * It could be drawn with shapes, and that is what a mermaid flowchart would do:
+ * boxes joined by arrows, spaced evenly. But a timeline's whole content is that
+ * the gaps are NOT even — two things in March and one in November is the point,
+ * and even spacing erases it. Placing marks against a measured axis is chart
+ * work, so it lives here.
+ *
+ * Labels alternate above and below the line. Eight events on one side collide;
+ * alternating halves the density for free, and it is what every printed timeline
+ * does for the same reason.
+ */
+function timelineChart(spec, theme) {
+  const f = frame(spec, { axis: false, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const items = (Array.isArray(spec.events) ? spec.events : []).filter(Boolean);
+  if (!items.length) throw new Error('events 是必要的：[{ label, at, note }]。');
+
+  const y = f.y + f.h / 2;
+  const x0 = f.x + 24;
+  const x1 = f.x + f.w - 24;
+  // Numbers place marks proportionally; anything else falls back to even spacing,
+  // which is honest — we cannot invent a scale we were not given.
+  const nums = items.map((e) => Number(e.at));
+  const scaled = nums.every((v) => Number.isFinite(v)) && new Set(nums).size > 1;
+  const lo = scaled ? Math.min(...nums) : 0;
+  const hi = scaled ? Math.max(...nums) : 1;
+  const xOf = (i) => (scaled
+    ? x0 + ((nums[i] - lo) / (hi - lo)) * (x1 - x0)
+    : x0 + (items.length === 1 ? (x1 - x0) / 2 : ((x1 - x0) / (items.length - 1)) * i));
+
+  out += line(x0 - 12, y, x1 + 12, y, theme.line || '#E4E8EC', 3);
+  const done = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const mark = (spec.colors || [])[1] || theme.accent || SERIES[2];
+
+  items.forEach((e, i) => {
+    const x = xOf(i);
+    const hot = e.highlight === true;
+    const tone = hot ? mark : done;
+    const above = i % 2 === 0;
+    const stem = 26;
+    out += line(x, y, x, above ? y - stem : y + stem, tone, 1.5);
+    out += `<circle cx="${n2(x)}" cy="${n2(y)}" r="${hot ? 8 : 6}" fill="${tone}"`
+      + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="2.5"/>`;
+
+    const ly = above ? y - stem - 8 : y + stem + 16;
+    out += text(x, ly, String(e.at ?? ''),
+      { size: 11, bold: true, color: tone, anchor: 'middle' });
+    out += text(x, above ? ly - 16 : ly + 16, String(e.label ?? ''),
+      { size: 12.5, bold: true, color: theme.ink || '#3D3D3D', anchor: 'middle' });
+    if (e.note) {
+      out += text(x, above ? ly - 32 : ly + 32, String(e.note),
+        { size: 11, color: theme.muted || '#8A93A0', anchor: 'middle' });
+    }
+  });
+  return out;
+}
+
+const RENDER = {
+  column: barChart, bar: barChart, line: lineChart, area: lineChart,
+  pie: pieChart, donut: pieChart,
+  waterfall: waterfallChart, funnel: funnelChart, radar: radarChart,
+  timeline: timelineChart,
+};
 export const CHART_TYPES = Object.keys(RENDER);
 
 /**
