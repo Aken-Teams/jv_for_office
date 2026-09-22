@@ -279,7 +279,7 @@ const LOOKS = {
     theme: 'corporate',
     masthead: 'double', rule: 'short', ground: 'tint',
     titleSize: 25, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
-    shape: 'Rectangle', card: 'tint', cover: 'bleed', topPad: 0,
+    shape: 'Rectangle', card: 'tint', cover: 'panel', topPad: 0,
   },
   editorial: {
     label: '雜誌', desc: '沒有色條，標題大而不粗，下面一條細細的滿版線。像一篇報導的開頭。',
@@ -302,7 +302,7 @@ const LOOKS = {
     theme: 'muted',
     masthead: 'round', rule: 'none', ground: 'tint',
     titleSize: 26, titleBold: true, titleAlign: 'center', eyebrowCase: 'keep',
-    shape: 'RoundRectangle', card: 'tint', cover: 'band', topPad: 4,
+    shape: 'RoundRectangle', card: 'tint', cover: 'stack', topPad: 4,
   },
   bold: {
     label: '大字', desc: '標題佔掉上面一大塊，色塊當底。給只有一個重點、要講得很用力的場合。',
@@ -316,7 +316,7 @@ const LOOKS = {
     theme: 'night',
     masthead: 'hairline', rule: 'none', ground: 'strong',
     titleSize: 24, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
-    shape: 'Rectangle', card: 'outline', cover: 'bleed', topPad: 0,
+    shape: 'Rectangle', card: 'outline', cover: 'triptych', topPad: 0,
   },
   literary: {
     label: '文青',
@@ -433,6 +433,26 @@ function skin(th, lk, accent, fallbackFill) {
   if (lk.card === 'plain') return { fill: null, line: false, color: accent };
   if (lk.card === 'outline') return { fill: th.bg, line: true, color: accent };
   return { fill: fallbackFill, line: true, color: th.line };
+}
+
+/**
+ * Blend two hex colours.
+ *
+ * Wanted for decoration that is 「the same colour, slightly apart」 — a circle on
+ * a panel that has to read as part of it rather than as a second element. Doing
+ * this by hand would mean a second hex per theme for every such shape, which is
+ * eight more values to keep in step and eight more chances for one to be wrong.
+ */
+function mix(a, b, t) {
+  const hex = (c) => {
+    const v = String(c || '').replace('#', '');
+    return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) || 0);
+  };
+  const [r1, g1, b1] = hex(a);
+  const [r2, g2, b2] = hex(b);
+  const k = Math.max(0, Math.min(1, Number(t) || 0));
+  const to = (x, y) => Math.round(x + (y - x) * k).toString(16).padStart(2, '0');
+  return `#${to(r1, r2)}${to(g1, g2)}${to(b1, b2)}`.toUpperCase();
 }
 
 /** RoundRectangle if the look asks for it, otherwise whatever the caller wanted. */
@@ -984,6 +1004,31 @@ function styleText(shape, opts) {
   const h = H_ALIGN[String(opts.align || '').toLowerCase()];
   if (h) range.paragraphFormat.horizontalAlignment = h;
 
+  /**
+   * Line spacing and the gap between paragraphs.
+   *
+   * ── Why this is not cosmetic ──
+   * 「文字擠在一起」 was the complaint, and it is the difference between a slide
+   * that looks typeset and one that looks pasted. PowerPoint's own default is
+   * single spacing, which is right for a page of prose read at arm's length and
+   * wrong for four lines of Chinese projected across a room.
+   *
+   * ── Why it is gated rather than tried ──
+   * ParagraphFormat only gained lineSpacing / spaceBefore / spaceAfter in
+   * PowerPointApi 1.8. Setting an unknown property on an Office.js proxy does
+   * not throw where it is written — it throws at the next `ctx.sync()`, and that
+   * sync carries the whole slide. The textFrame bug in loadTexts was exactly
+   * this shape, so this asks the requirement set instead of hoping.
+   */
+  if ((opts.lineSpacing || opts.spaceAfter || opts.spaceBefore) && hasApi('1.8')) {
+    const pf = range.paragraphFormat;
+    try {
+      if (opts.lineSpacing) pf.lineSpacing = Number(opts.lineSpacing);
+      if (opts.spaceAfter) pf.spaceAfter = Number(opts.spaceAfter);
+      if (opts.spaceBefore) pf.spaceBefore = Number(opts.spaceBefore);
+    } catch { /* an older build than it claimed; the text is still readable */ }
+  }
+
   const v = V_ALIGN[String(opts.valign || '').toLowerCase()];
   if (v) frame.verticalAlignment = v;
 
@@ -1458,7 +1503,12 @@ async function buildSlide(args) {
       : (args.body ? String(args.body).split(/\r?\n/) : []);
     // A small square rather than 「•」: the reference deck uses one, and a round
     // dot is the mark every word processor puts there by default.
-    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `▪　${l.trim()}`).join('\n');
+    const bullet = (lines) => lines.filter((l) => l.trim()).map((l) => `▪　${l.trim()}`)
+      // On a build without paragraph spacing, a blank line is the only lever
+      // left. It is coarser than 8pt of spaceAfter and still better than four
+      // lines jammed together — but only while the list is short enough to
+      // afford the height.
+      .join(hasApi('1.8') || lines.length > 5 ? '\n' : '\n\n');
 
     // ── The chrome, on every slide that is not a full-bleed cover ──
     // Fixed geometry, applied the same way every time. See CHROME for why none
@@ -1653,7 +1703,23 @@ async function buildSlide(args) {
       // the back — and differ in everything else.
       const sub = body.join('　·　');
 
-      if (lk.cover === 'split') {
+      /**
+       * Which composition, and why the look does not get the last word.
+       *
+       * A look names the cover it was designed around, and that is the right
+       * default. But a deck's first page is the one slide where variety is worth
+       * more than consistency — it is seen once, against nothing, and it sets
+       * the expectation for everything after it. So the model may name a form
+       * outright, and the prompt encourages it to: 「上下、左右、滿版、三欄」 are
+       * different answers to the same page, not different levels of quality.
+       */
+      const FORMS = new Set(['bleed', 'split', 'band', 'plain', 'paper', 'panel',
+        'stack', 'triptych']);
+      const form = FORMS.has(String(args.cover || '').toLowerCase())
+        ? String(args.cover).toLowerCase()
+        : lk.cover;
+
+      if (form === 'split') {
         // A magazine cover: white page, one narrow colour edge, type set left and
         // ragged right. Nothing is centred, which is exactly why it reads as
         // designed rather than as a template.
@@ -1674,7 +1740,7 @@ async function buildSlide(args) {
           text(String(args.footer), { left: 96, top: 456, width: 740, height: 24 },
             { size: TYPE.small, color: th.muted });
         }
-      } else if (lk.cover === 'band') {
+      } else if (form === 'band') {
         // A rounded slab floating on a tinted page. Inset on all four sides, so
         // the page frames it — the friendliest of the four and the only one that
         // stays centred.
@@ -1696,7 +1762,121 @@ async function buildSlide(args) {
           text(String(args.footer), { left: 64, top: 432, width: GRID.W - 128, height: 24 },
             { size: TYPE.small, color: th.muted, align: 'center' });
         }
-      } else if (lk.cover === 'paper') {
+      } else if (form === 'panel') {
+        /**
+         * A colour block down one side, with shapes that run off the edge.
+         *
+         * ── Why the old cover had to go ──
+         * 「企業風的 PPT 他會像圖片這樣，就是黑黑一塊」. It was: a flat rectangle of
+         * navy with type in the middle of it. Nothing was wrong with any single
+         * decision and the result was a coloured slab.
+         *
+         * What makes a real cover look made is that something CROSSES A BOUNDARY
+         * — a circle half off the page, a rule that starts outside the margin.
+         * That reads as a composition somebody positioned; type centred inside a
+         * rectangle reads as type that had nowhere else to go. So the circles
+         * below are deliberately placed to bleed off the left and bottom edges,
+         * and the accent stripe runs the full height rather than stopping
+         * politely at the margins.
+         */
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        band({ left: 0, top: 0, width: 400, height: GRID.H }, th.cover);
+
+        // Same hue as the panel, a step lighter — part of it, not on it.
+        const halo = mix(th.cover, th.onCover, 0.12);
+        const orb = (geo) => {
+          const sh = slide.shapes.addGeometricShape('Oval', geo);
+          sh.name = stamp('orb');
+          sh.fill.setSolidColor(halo);
+          sh.lineFormat.visible = false;
+          put.shape.push(sh);
+        };
+        // Negative coordinates are the point: both run off the page.
+        orb({ left: -110, top: 300, width: 330, height: 330 });
+        orb({ left: 212, top: 176, width: 118, height: 118 });
+
+        band({ left: 400, top: 0, width: 9, height: GRID.H }, th.accent);
+
+        if (args.eyebrow) {
+          text(String(args.eyebrow), { left: 62, top: 96, width: 300, height: 22 },
+            { size: TYPE.small, color: mix(th.cover, th.onCover, 0.72) });
+        }
+        // The organisation or team, set in the panel. Falls back to the eyebrow
+        // so the panel is never an empty block of colour.
+        text(String(args.footer || args.eyebrow || ''),
+          { left: 62, top: 126, width: 300, height: 40 },
+          { font: display, size: 22, bold: true, color: th.onCover, valign: 'middle' });
+        band({ left: 62, top: 178, width: 96, height: 4 }, th.accent);
+
+        text(title, { left: 470, top: 128, width: 430, height: 132 },
+          { font: display, size: 34, bold: true, color: th.strong, valign: 'middle' });
+        band({ left: 470, top: 274, width: 140, height: 5 }, th.accent);
+        if (sub) {
+          text(sub, { left: 470, top: 296, width: 430, height: 84 },
+            { size: TYPE.body, color: th.muted, lineSpacing: 1.45 });
+        }
+        if (args.page) {
+          text(String(args.page), { left: 470, top: 456, width: 430, height: 22 },
+            { size: TYPE.caption, color: th.muted });
+        }
+      } else if (form === 'stack') {
+        /**
+         * 上下 — a colour band across the top two thirds, type below it.
+         *
+         * The one element that makes it a composition rather than two stacked
+         * rectangles is the rule that CROSSES the boundary: it starts inside the
+         * colour and ends on the white. Without it the eye reads a coloured strip
+         * with a caption; with it, one page.
+         */
+        band({ left: 0, top: 0, width: GRID.W, height: GRID.H }, th.bg);
+        band({ left: 0, top: 0, width: GRID.W, height: 330 }, th.cover);
+        if (args.eyebrow) {
+          text(String(args.eyebrow).toUpperCase(), { left: 80, top: 74, width: 700, height: 24 },
+            { size: TYPE.small, color: mix(th.cover, th.onCover, 0.7) });
+        }
+        text(title, { left: 80, top: 116, width: 800, height: 150 },
+          { font: display, size: 40, bold: true, color: th.onCover, valign: 'middle' });
+        // Crosses from the colour onto the page.
+        band({ left: 80, top: 302, width: 10, height: 56 }, th.accent);
+        if (sub) {
+          text(sub, { left: 110, top: 372, width: 760, height: 60 },
+            { size: TYPE.heading, color: th.ink, lineSpacing: 1.4 });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 110, top: 452, width: 760, height: 24 },
+            { size: TYPE.small, color: th.muted });
+        }
+      } else if (form === 'triptych') {
+        /**
+         * 三欄 — three full-height columns of one hue, the title laid across all
+         * of them.
+         *
+         * Same principle again, turned ninety degrees: the type crosses two
+         * boundaries, so the columns read as one surface rather than as three
+         * panels that happen to be adjacent. Cheap — five shapes — and it looks
+         * nothing like any other cover in the set.
+         */
+        const w = GRID.W / 3;
+        band({ left: 0, top: 0, width: w, height: GRID.H }, th.cover);
+        band({ left: w, top: 0, width: w, height: GRID.H }, mix(th.cover, th.onCover, 0.1));
+        band({ left: w * 2, top: 0, width: w, height: GRID.H }, mix(th.cover, th.onCover, 0.2));
+        band({ left: 0, top: 0, width: GRID.W, height: 8 }, th.accent);
+        if (args.eyebrow) {
+          text(String(args.eyebrow).toUpperCase(), { left: 80, top: 150, width: 800, height: 24 },
+            { size: TYPE.small, color: mix(th.cover, th.onCover, 0.75) });
+        }
+        text(title, { left: 80, top: 186, width: 800, height: 130 },
+          { font: display, size: 40, bold: true, color: th.onCover, valign: 'middle' });
+        band({ left: 80, top: 330, width: 130, height: 5 }, th.accent);
+        if (sub) {
+          text(sub, { left: 80, top: 352, width: 800, height: 56 },
+            { size: TYPE.heading, color: mix(th.cover, th.onCover, 0.82), lineSpacing: 1.4 });
+        }
+        if (args.footer) {
+          text(String(args.footer), { left: 80, top: 456, width: 800, height: 24 },
+            { size: TYPE.small, color: mix(th.cover, th.onCover, 0.65) });
+        }
+      } else if (form === 'paper') {
         // Full-bleed warm paper with a hairline frame. Nothing is white, which
         // is the point: 「一頁滿版」 does not have to mean a photograph, it can
         // just mean the page has a colour and the colour reaches the edges.
@@ -1724,7 +1904,7 @@ async function buildSlide(args) {
           text(String(args.footer), { left: 88, top: 436, width: 784, height: 24 },
             { size: TYPE.caption, color: th.muted });
         }
-      } else if (lk.cover === 'plain') {
+      } else if (form === 'plain') {
         // Type and nothing else. The hardest one to get wrong and the easiest to
         // dismiss — which is the point: when the content is strong, decoration
         // is what makes it look weaker.
@@ -1837,16 +2017,25 @@ async function buildSlide(args) {
        * gives the figure a floor and a ceiling, so the slide is a composition
        * with something in the middle instead of a number floating in a void.
        */
-      band({ left: 0, top: 150, width: GRID.W, height: 252 }, th.tint);
-      band({ left: 0, top: 150, width: GRID.W, height: 3 }, th.accent);
-      text(title, { left: CL, top: 176, width: CW, height: 116 },
+      // Pulled up to sit directly under the chrome. It used to start at 150,
+      // which left a band of nothing between the eyebrow and the panel — and a
+      // page whose top third is empty reads as unfinished however big the number
+      // in the middle of it is.
+      band({ left: 0, top: 120, width: GRID.W, height: 292 }, th.tint);
+      band({ left: 0, top: 120, width: GRID.W, height: 3 }, th.accent);
+      text(title, { left: CL, top: 148, width: CW, height: 126 },
         { font: display, size: 84, bold: true, color: th.strong, align: 'center', valign: 'middle' });
-      band({ left: (GRID.W - 120) / 2, top: 300, width: 120, height: 4 }, th.accent);
+      band({ left: (GRID.W - 120) / 2, top: 288, width: 120, height: 4 }, th.accent);
       if (body.length) {
         // The sentence is the half that stops it being a quiz, so it is set at
         // reading size in the ink — not as a grey caption under a big number.
-        text(body.join('\n'), { left: 120, top: 318, width: GRID.W - 240, height: 70 },
-          { size: TYPE.heading, color: th.ink, align: 'center' });
+        //
+        // Narrower than the content band on purpose: a line of Chinese running
+        // the full 884 points is too long a measure to scan, and the version
+        // that wrapped to three ragged centred lines was the one people called
+        // 「擠在一起」.
+        text(body.join('\n'), { left: 170, top: 304, width: GRID.W - 340, height: 96 },
+          { size: TYPE.body, color: th.ink, align: 'center', lineSpacing: 1.45 });
       }
     } else if (kind === 'quote') {
       band({ left: CL, top: 150, width: 4, height: 200 }, th.accent);
@@ -1939,7 +2128,7 @@ async function buildSlide(args) {
 
           if (rest) {
             text(rest, { left: CL + 74, top: y + 44, width: CW - 100, height: ch - 54 },
-              { size: 13.5, color: th.muted, valign: 'top' });
+              { size: 13.5, color: th.muted, valign: 'top', lineSpacing: 1.3 });
           }
         });
       } else {
@@ -1965,13 +2154,13 @@ async function buildSlide(args) {
           const colW = (CW - GRID.gutter) / 2;
           text(bullet(items.slice(0, half)),
             { left: CL, top: CT, width: colW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle' });
+            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
           text(bullet(items.slice(half)),
             { left: CL + colW + GRID.gutter, top: CT, width: colW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle' });
+            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
         } else {
           text(bullet(items), { left: CL, top: CT, width: CW, height: BODY_H },
-            { size: TYPE.body, color: th.ink, valign: 'middle' });
+            { size: TYPE.body, color: th.ink, valign: 'middle', lineSpacing: 1.35, spaceAfter: 8 });
         }
       }
     }
@@ -2159,7 +2348,7 @@ function drawCallout(pen, kit, spec, box) {
     tw -= 100;
   }
   pen.label(spec.text, { left: tx, top: box.top + 4, width: tw, height: box.height - 8 },
-    { font: face, size: 12, color: th.ink, valign: 'middle', tag: 'calloutbody' });
+    { font: face, size: 12, color: th.ink, valign: 'middle', lineSpacing: 1.3, tag: 'calloutbody' });
 }
 
 /**
@@ -2390,7 +2579,8 @@ async function addCards(args) {
         const body = add(slide.shapes.addTextBox(String(card.text),
           { left: bodyX, top: ty, width: bodyW, height: y + ch - ty - 10 }));
         body.name = stamp('cb');
-        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted, valign: 'top' });
+        styleText(body, { font: face, size: num(args.small, 11.5), color: th.muted, valign: 'top',
+          lineSpacing: 1.3 });
         body.fill.clear();
         body.lineFormat.visible = false;
       }

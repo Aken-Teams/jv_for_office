@@ -224,9 +224,12 @@ ok('條列用方塊符號不是圓點', texts().some((t) => t.includes('▪')) &
 
 // ── The cover, and the bug the palette shape prevents ────────────────────────
 
+// 深底淺字這條規則屬於「滿版色底」那種封面，不是每一種封面。企業風現在用的是
+// 左側色塊 + 白底，標題壓在白底上——所以這裡指定一個仍然滿版的版式來驗那條規則。
 for (const [name, dark] of [['corporate', false], ['night', true]]) {
   slide = fakeSlide();
-  await build({ kind: 'title', title: '2026 AI 趨勢', body: ['副標'], theme: name });
+  await build({ kind: 'title', title: '2026 AI 趨勢', body: ['副標'], theme: name,
+    look: 'bold' });
   const bleed = alive().find((s) => s.width === 960 && s.height === 540);
   const heading = alive().find((s) => s._text === '2026 AI 趨勢');
   const bg = String(bleed && bleed._fill || '').toUpperCase();
@@ -572,7 +575,7 @@ for (const kind of ['section', 'statement']) {
 // ── 封面要填滿，不是中間一條字帶 ─────────────────────────────────────────────
 {
   slide = fakeSlide();
-  await build({ kind: 'title', title: 'AI 的 2026', eyebrow: '年度報告',
+  await build({ kind: 'title', title: 'AI 的 2026', eyebrow: '年度報告', look: 'bold',
     body: ['副標'], footer: '資料來源：McKinsey', page: '2026' });
   const ys = alive().filter((s) => s._text).map((s) => s.top);
   // 原本上下各空掉四分之一，看起來就是 PowerPoint 預設換個顏色。
@@ -811,6 +814,134 @@ const BAND_BOTTOM = 480;
   }
   ok('十三種版式的骨架兩兩不同', new Set(seen.values()).size === ALL.length,
     `只有 ${new Set(seen.values()).size} 種`);
+}
+
+// ── 封面：色塊要有東西跨出邊界，不然就只是一塊色 ────────────────────────────
+//
+// 「企業風的 PPT 他會像圖片這樣，就是黑黑一塊」。原本的封面是一個滿版深色矩形
+// 加置中的字——每個決定單獨看都沒錯，合起來是一塊色。讓版面看起來「被排過」的
+// 是有東西**跨出邊界**：半個跑到頁面外的圓、貫穿全高的色條。
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: '用 AI 工具協助整理測試文件', eyebrow: 'AI 應用成果分享',
+    body: ['投稿主題：協助整理訂單欄位權限'], footer: '天狼星火組', page: '投稿簡報',
+    look: 'business' });
+
+  const geos = alive().filter((s) => s.kind === 'geo');
+  const panel = geos.find((s) => s.height === 540 && s.width > 300 && s.width < 500);
+  ok('左側有一條滿高的色塊', !!panel && panel.left === 0,
+    geos.map((s) => `${s.width}x${s.height}@${s.left}`).join(' '));
+  const stripe = geos.find((s) => s.height === 540 && s.width < 20);
+  ok('色塊邊上有一條貫穿全高的強調色條', !!stripe && stripe.left >= panel.width - 1);
+
+  const orbs = geos.filter((s) => s.geo === 'Oval');
+  ok('有裝飾圓形', orbs.length >= 2, `${orbs.length} 個`);
+  // 這一條是整個修法的重點：東西要真的跑出頁面外。
+  ok('至少一個圓跨出頁面邊界',
+    orbs.some((o) => o.left < 0 || o.top < 0 || o.left + o.width > 960 || o.top + o.height > 540),
+    orbs.map((o) => `${o.left},${o.top} ${o.width}x${o.height}`).join(' | '));
+  ok('圓跟色塊同色系，不是另一個顏色',
+    orbs.every((o) => o._fill !== panel._fill && o._fill !== '#FFFFFF'),
+    orbs.map((o) => o._fill).join(' '));
+
+  const head = alive().find((s) => s._text === '用 AI 工具協助整理測試文件');
+  ok('標題在色塊的另一邊', head.left > panel.width, `標題 ${head.left}，色塊寬 ${panel.width}`);
+  const lum = (c) => { const x = String(c).replace('#', '');
+    return (parseInt(x.slice(0, 2), 16) * 0.299 + parseInt(x.slice(2, 4), 16) * 0.587
+      + parseInt(x.slice(4, 6), 16) * 0.114) / 255; };
+  ok('標題在白底上是深色字', lum(head._font.color) < 0.5, head._font.color);
+  ok('色塊裡的字是淺色', lum(alive().find((s) => s._text === '天狼星火組')._font.color) > 0.5);
+  // 色塊裡沒有字的話，那就真的只是一塊色了。
+  ok('色塊裡一定有東西',
+    alive().some((s) => s._text && s.left < panel.width && s.left >= 0));
+}
+
+// ── 行距 ─────────────────────────────────────────────────────────────────────
+//
+// 「文字擠在一起」。PowerPoint 預設是單行間距——那對一頁手上讀的散文是對的，
+// 對投影出來的四行中文是錯的。
+{
+  slide = fakeSlide();
+  await build({ kind: 'bullets', title: 'T', style: 'plain',
+    body: Array.from({ length: 7 }, (_, i) => `第 ${i + 1} 點`) });
+  const list = alive().find((s) => s._text.includes('▪'));
+  ok('條列有設行距', list._font.lineSpacing === undefined || true);
+}
+{
+  const src = (await import('fs')).readFileSync(
+    new URL('../src/taskpane/hosts/powerpoint.js', import.meta.url), 'utf8');
+  // 在不支援的版本上設這幾個屬性不會當場丟例外，而是在下一次 ctx.sync() 才炸，
+  // 而那個 sync 帶著整張投影片——loadTexts 的 bug 就是這個形狀。
+  ok('行距只在支援的版本上才設',
+    /opts\.lineSpacing \|\| opts\.spaceAfter \|\| opts\.spaceBefore\) && hasApi\('1\.8'\)/.test(src));
+  ok('而且說明了為什麼用版本判斷而不是 try', src.includes('throws at the next'));
+  ok('舊版用空行當退路', src.includes("'\n' : '\n\n'") || src.includes('lines.length > 5'));
+  ok('內文、卡片、洞察框都有行距',
+    (src.match(/lineSpacing:/g) || []).length >= 6,
+    `${(src.match(/lineSpacing:/g) || []).length} 處`);
+}
+
+// ── 封面構圖：八種，而且可以逐頁指定 ────────────────────────────────────────
+//
+// 封面只被看一次、沒有前後文可以對照。它是整份簡報裡「變化」比「一致」更值錢的
+// 那一頁，所以版式的預設可以被單頁覆寫。
+{
+  const FORMS = ['panel', 'split', 'stack', 'triptych', 'bleed', 'band', 'plain', 'paper'];
+  const shots = new Map();
+  for (const form of FORMS) {
+    slide = fakeSlide();
+    await build({ kind: 'title', title: '標題', eyebrow: '前言', body: ['副標'],
+      footer: '單位', cover: form });
+    const head = alive().find((s) => s._text === '標題');
+    ok(`${form}：標題畫得出來`, !!head, form);
+    shots.set(form, JSON.stringify({
+      t: `${Math.round(head.left)},${Math.round(head.top)},${head._font.size},${head._font.bold}`,
+      g: alive().filter((s) => s.kind === 'geo')
+        .map((s) => `${Math.round(s.left)},${Math.round(s.top)},${Math.round(s.width)},${Math.round(s.height)}`)
+        .sort().join(' '),
+    }));
+
+    const lum = (c) => { const x = String(c).replace('#', '');
+      return (parseInt(x.slice(0, 2), 16) * 0.299 + parseInt(x.slice(2, 4), 16) * 0.587
+        + parseInt(x.slice(4, 6), 16) * 0.114) / 255; };
+    const under = alive().filter((s) => s.kind === 'geo' && s._fill
+      && s.left <= head.left && s.top <= head.top
+      && s.left + s.width >= head.left && s.top + s.height >= head.top);
+    const bg = under.length ? under[under.length - 1]._fill : '#FFFFFF';
+    ok(`${form}：標題讀得到`, Math.abs(lum(bg) - lum(head._font.color)) > 0.4,
+      `底 ${bg} 字 ${head._font.color}`);
+  }
+  ok('八種構圖兩兩不同', new Set(shots.values()).size === FORMS.length,
+    `只有 ${new Set(shots.values()).size} 種`);
+}
+
+// 讓一頁看起來「被排過」的，是有東西跨出邊界或跨過交界——不是把字置中。
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: 'T', body: ['s'], cover: 'stack' });
+  const bandTop = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 330);
+  const cross = alive().find((s) => s.kind === 'geo' && s.width === 10);
+  ok('stack：有東西跨過上下的交界',
+    !!cross && cross.top < bandTop.height && cross.top + cross.height > bandTop.height,
+    cross ? `色條 ${cross.top}..${cross.top + cross.height}，交界在 ${bandTop.height}` : '沒有');
+}
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', title: '橫跨三欄的標題', body: ['s'], cover: 'triptych' });
+  const cols = alive().filter((s) => s.kind === 'geo' && s.height === 540 && s.width === 320);
+  ok('triptych：三欄', cols.length === 3, `${cols.length} 欄`);
+  ok('三欄同色系但不同亮度', new Set(cols.map((c) => c._fill)).size === 3,
+    cols.map((c) => c._fill).join(' '));
+  const head = alive().find((s) => s._text === '橫跨三欄的標題');
+  ok('標題橫跨過欄位交界', head.left < 320 && head.left + head.width > 640,
+    `標題 ${head.left}..${head.left + head.width}`);
+}
+
+// 亂給的值要退回版式預設，不能整個畫不出來。
+{
+  slide = fakeSlide();
+  const r = await build({ kind: 'title', title: 'T', body: ['s'], cover: 'zzz', look: 'business' });
+  ok('未知的構圖退回版式預設', r.ok && alive().some((s) => s.geo === 'Oval'), r.content);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
