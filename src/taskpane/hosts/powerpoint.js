@@ -3119,8 +3119,9 @@ export function supportedTools() {
     'ppt_read_attachment',
     'ppt_insert_attachment',
     'ppt_read_file',
-    // Answered by the server, not here — but it still has to be advertised.
+    // Answered by the server, not here — but they still have to be advertised.
     'ppt_find_art',
+    'ppt_generate_image',
   ];
   // Pictures are a Common API capability, not a PowerPointApi one, so they are
   // gated on their own requirement set rather than on the host version.
@@ -3229,6 +3230,7 @@ export const meta = {
     ppt_read_attachment: t('正在看你貼的圖…'),
     ppt_insert_attachment: t('正在把圖片放進簡報…'),
     ppt_find_art: t('正在找插畫…'),
+    ppt_generate_image: t('正在生成圖片（十幾秒）…'),
     ppt_read_file: t('正在讀你上傳的檔案…'),
     ppt_run_script: t('正在執行程式…'),
   }),
