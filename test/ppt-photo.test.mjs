@@ -153,6 +153,7 @@ const ok = (name, cond, detail) => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  → ' + (detail || '')}`);
 };
 const UNSPLASH = 'https://images.unsplash.com/photo-1518770660439-4636190af475';
+const SVG_ANY = 'https://stories.freepiklabs.com/storage/1/a.svg';
 async function shoot(args, response = imageResponse()) {
   slide = fakeSlide(); LOG = []; FETCHED = []; RESPONSE = response;
   const r = await host.executeTool('ppt_add_photo', args);
@@ -295,6 +296,49 @@ ok('而且有進度字串', !!host.meta.toolLabels().ppt_add_photo);
   const { r } = await shoot({ url: UNSPLASH, mode: 'collage' });
   ok('未知的 mode 會被擋掉並列出可用的值',
     !r.ok && /hero/.test(r.content) && /side/.test(r.content), r.content);
+}
+
+// ── 圖片不能被拉變形 ────────────────────────────────────────────────────────
+//
+// setSelectedDataAsync 只會拉伸，沒有「放得下就好」這種模式。照片被擠 10% 還是
+// 照片；一張畫在 1:1 畫布上的扁平插畫塞進 384×540 的直欄，就明顯是一張被拉過的
+// 圖——「這樣會很怪」是正確的反應。
+const svgRatio = (w, h) => ({
+  ok: true, status: 200,
+  headers: { get: () => 'image/svg+xml' },
+  text: async () => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}"><circle r="4"/></svg>`,
+  arrayBuffer: async () => new ArrayBuffer(8),
+});
+{
+  const { log } = await shoot({ url: SVG_ANY, mode: 'side' }, svgRatio(500, 500));
+  const b = log.find((e) => e.what === 'image').box;
+  ok('1:1 的插畫放進直欄仍然是 1:1',
+    Math.abs(b.width / b.height - 1) < 0.01, JSON.stringify(b));
+  ok('而且置中在那個欄位裡', Math.abs((b.left + b.width / 2) - (960 - 192)) < 2,
+    JSON.stringify(b));
+  ok('沒有超出欄位', b.width <= 384 && b.height <= 540, JSON.stringify(b));
+}
+{
+  const { log } = await shoot({ url: SVG_ANY, mode: 'hero' }, svgRatio(400, 300));
+  const b = log.find((e) => e.what === 'image').box;
+  // 向量圖在任何模式都不拉伸：被拉過的插畫一眼就看得出來，照片不會。
+  ok('插畫當滿版背景時也不拉伸',
+    Math.abs(b.width / b.height - 4 / 3) < 0.01, JSON.stringify(b));
+}
+{
+  const { log } = await shoot({ url: 'https://images.unsplash.com/photo-1', mode: 'hero' });
+  const b = log.find((e) => e.what === 'image').box;
+  ok('照片當滿版背景時照樣填滿', b.width === 960 && b.height === 540, JSON.stringify(b));
+}
+{
+  // 讀不出尺寸就退回填滿——也就是原本的行為，對背景而言是對的。
+  const { r } = await shoot({ url: SVG_ANY, mode: 'block' }, {
+    ok: true, status: 200,
+    headers: { get: () => 'image/svg+xml' },
+    text: async () => '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>',
+    arrayBuffer: async () => new ArrayBuffer(8),
+  });
+  ok('讀不出比例也不會失敗', r.ok, r.content);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

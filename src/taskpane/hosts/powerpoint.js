@@ -2039,17 +2039,26 @@ async function buildSlide(args) {
 
         band({ left: 400, top: 0, width: 9, height: GRID.H }, th.accent);
 
-        if (args.eyebrow) {
-          text(String(args.eyebrow), { left: 62, top: 96, width: 300, height: 22 },
+        /**
+         * Two lines in the panel, or one — never the same line twice.
+         *
+         * The bold line falls back to the eyebrow so the panel is never an empty
+         * block of colour, but the small line above it was drawn regardless. So
+         * a cover with an eyebrow and no footer printed 「2026 TREND REPORT」 at
+         * 11pt and again at 18pt, one under the other. Same shape of mistake as
+         * section, statement and quote: one value rendered by two parts of the
+         * layout that did not know about each other.
+         *
+         * 18pt rather than 22: 「McKinsey / Gartner / MIT / PwC 公開研究」 wraps
+         * inside 300 points and at 22 the two lines touch.
+         */
+        const org = String(args.footer || args.eyebrow || '');
+        const kicker = args.eyebrow && String(args.eyebrow) !== org ? String(args.eyebrow) : '';
+        if (kicker) {
+          text(kicker, { left: 62, top: 96, width: 300, height: 22 },
             { size: TYPE.small, color: mix(th.cover, th.onCover, 0.72) });
         }
-        // The organisation or team, set in the panel. Falls back to the eyebrow
-        // so the panel is never an empty block of colour.
-        // 「McKinsey / Gartner / MIT / PwC 公開研究」 at 22pt wraps inside 300
-        // points and the two lines touch. One size down with room for both is
-        // the fix that does not need paragraph spacing.
-        text(String(args.footer || args.eyebrow || ''),
-          { left: 62, top: 120, width: 300, height: 56 },
+        text(org, { left: 62, top: kicker ? 120 : 104, width: 300, height: 56 },
           { font: display, size: 18, bold: true, color: th.onCover, valign: 'middle' });
         band({ left: 62, top: 178, width: 96, height: 4 }, th.accent);
 
@@ -2360,6 +2369,18 @@ async function buildSlide(args) {
         // Clamped so the first and last cards stay on the page — a timeline's
         // ends are exactly where an evenly divided width puts them off it.
         const bx = clamp(cx - boxW / 2, CL, CL + CW - boxW);
+        // Same reasoning as zigzag: without a container each stop is three
+        // loose lines of text and the reader has to group them by proximity.
+        const card = slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+          { left: bx, top: by, width: boxW, height: boxH });
+        card.name = stamp('tlcard');
+        card.fill.setSolidColor(th.bg);
+        card.lineFormat.visible = true;
+        card.lineFormat.color = th.line;
+        card.lineFormat.weight = 1;
+        put.shape.push(card);
+        // A cap in the stop's own colour, so the card and its dot are the pair.
+        band({ left: bx, top: up ? by + boxH - 3 : by, width: boxW, height: 3 }, tone);
         if (item.at) {
           text(String(item.at), { left: bx, top: up ? by + boxH - 26 : by, width: boxW, height: 24 },
             { size: TYPE.small, bold: true, color: tone, align: 'center' });
@@ -2385,12 +2406,16 @@ async function buildSlide(args) {
        * captioned boxes and no axes is just four boxes.
        */
       const q = (Array.isArray(args.items) ? args.items : []).slice(0, 4);
+      // The grid gives up a strip at the top and the bottom so the axis labels
+      // have somewhere to stand that is not on top of a cell.
+      const qTop = CT + 8;
+      const qH = BODY_H - 30;
       const gx = CL + CW / 2;
-      const gy = CT + BODY_H / 2;
+      const gy = qTop + qH / 2;
       const cellW = CW / 2 - 14;
-      const cellH = BODY_H / 2 - 14;
+      const cellH = qH / 2 - 14;
       const tones = [th.strong, th.second, th.accent, th.muted];
-      [[CL, CT], [gx + 14, CT], [CL, gy + 14], [gx + 14, gy + 14]].forEach((pos, i) => {
+      [[CL, qTop], [gx + 14, qTop], [CL, gy + 14], [gx + 14, gy + 14]].forEach((pos, i) => {
         const item = q[i] || {};
         const tone = colour(item.color, tones[i]);
         band({ left: pos[0], top: pos[1], width: cellW, height: cellH }, th.tint);
@@ -2405,18 +2430,30 @@ async function buildSlide(args) {
         }
       });
       // The axes, drawn over the cells so the cross reads as one mark.
-      band({ left: gx - 1, top: CT, width: 2, height: BODY_H }, th.line);
+      band({ left: gx - 1, top: qTop, width: 2, height: qH }, th.line);
       band({ left: CL, top: gy - 1, width: CW, height: 2 }, th.line);
-      if (args.x_axis) {
-        text(String(args.x_axis), { left: CL, top: CT + BODY_H + 4, width: CW, height: 20 },
-          { size: TYPE.caption, color: th.muted, align: 'center' });
-      }
+      /**
+       * The axis labels, and why they were unreadable.
+       *
+       * They were set at caption size in a 20pt strip squeezed against the edge
+       * of the content band — 「太小了，被擠在一邊看不清楚」. An axis label is not
+       * a footnote: it is the half of a matrix that says what the four boxes
+       * MEAN, so it is set at the same weight as a card heading.
+       *
+       * Office.js cannot rotate a text box, so the vertical axis cannot run up
+       * the side. It gets its own line above the grid instead, with an arrow to
+       * carry the direction the rotation would have shown.
+       */
       if (args.y_axis) {
-        // Office.js cannot rotate a text box, so the vertical axis is labelled
-        // along the top instead of down the side. Saying it in the wrong place
-        // beats not saying it.
-        text(String(args.y_axis), { left: CL, top: CT - 20, width: CW, height: 18 },
-          { size: TYPE.caption, color: th.muted });
+        text(String(args.y_axis), { left: CL, top: qTop - 26, width: CW / 2, height: 22 },
+          { size: 13, bold: true, color: th.strong, valign: 'middle' });
+      }
+      if (args.x_axis) {
+        // Below the grid and ranged right: an x-axis reads left to right, so its
+        // label belongs at the end of the run, not centred under it.
+        text(String(args.x_axis),
+          { left: CL + CW / 2, top: qTop + qH + 4, width: CW / 2, height: 22 },
+          { size: 13, bold: true, color: th.strong, align: 'right', valign: 'middle' });
       }
     } else if (kind === 'zigzag') {
       /**
@@ -2438,8 +2475,31 @@ async function buildSlide(args) {
         const right = i % 2 === 1;
         const tone = colour(item.color, [th.strong, th.second, th.accent, th.warn || th.second][i % 4]);
         const markX = right ? CL + CW - markW : CL;
-        const textX = right ? CL : CL + markW + 26;
-        const textW = CW - markW - 26;
+        // Inside the panel now, so the padding is the panel's rather than a gap.
+        const textX = (right ? CL : CL + markW) + 22;
+        const textW = CW - markW - 44;
+
+        /**
+         * A panel behind the words, not only behind the number.
+         *
+         * Without it the text floats on the page and the eye has to work out
+         * which paragraph belongs to which marker — 「文字散落各處」. The panel
+         * costs one shape per row and makes the pairing unambiguous.
+         *
+         * Tinted rather than outlined, with the marker's colour as a hairline:
+         * four outlined boxes in a column read as a form to fill in.
+         */
+        const panel = slide.shapes.addGeometricShape(boxOf(lk, 'Rectangle'),
+          // Starts where the marker ends, not where the marker starts — on a
+          // left-marker row those are the same point and the panel would sit
+          // on top of the number.
+          { left: right ? CL : CL + markW, top: y, width: CW - markW, height: rowH });
+        panel.name = stamp('zzpanel');
+        panel.fill.setSolidColor(th.tint);
+        panel.lineFormat.visible = true;
+        panel.lineFormat.color = th.line;
+        panel.lineFormat.weight = 1;
+        put.shape.push(panel);
 
         band({ left: markX, top: y, width: markW, height: rowH }, tone);
         text(String(item.number || String(i + 1).padStart(2, '0')),
@@ -3272,6 +3332,60 @@ function toBase64(buf) {
   return btoa(out);
 }
 
+/**
+ * A picture's own proportions, read out of the bytes.
+ *
+ * ── Why this matters more for illustrations than for photographs ──
+ * `setSelectedDataAsync` stretches to whatever box it is given; it has no
+ * fit-inside mode. On a photograph used as a full-bleed background that is
+ * survivable — a landscape squeezed 10% is a landscape. On a flat illustration
+ * it is not: a figure drawn on a 1:1 canvas stretched into a 384×540 column is
+ * visibly a stretched drawing, and 「這樣會很怪」 is the correct reaction.
+ *
+ * So the natural size comes out of the file. SVG carries it in the viewBox or
+ * the width/height attributes; PNG carries it in the IHDR chunk, which is always
+ * the first chunk and always at the same offset. Returns null when neither is
+ * readable, and the caller then falls back to filling the box — the old
+ * behaviour, which is right for a background.
+ */
+function naturalSize(got) {
+  if (got.svg) {
+    const vb = /viewBox\s*=\s*"[\s\d.+-]*?([\d.]+)[\s,]+([\d.]+)\s*"/.exec(got.svg);
+    if (vb) return { w: Number(vb[1]), h: Number(vb[2]) };
+    const w = /width\s*=\s*"([\d.]+)/.exec(got.svg);
+    const h = /height\s*=\s*"([\d.]+)/.exec(got.svg);
+    if (w && h) return { w: Number(w[1]), h: Number(h[1]) };
+    return null;
+  }
+  try {
+    // PNG: 8-byte signature, then the IHDR length+type, then width and height as
+    // big-endian 32-bit integers at byte 16 and 20.
+    const head = atob(String(got.data).slice(0, 64));
+    if (head.slice(1, 4) !== 'PNG') return null;
+    const be = (at) => head.charCodeAt(at) * 16777216 + head.charCodeAt(at + 1) * 65536
+      + head.charCodeAt(at + 2) * 256 + head.charCodeAt(at + 3);
+    const w = be(16);
+    const h = be(20);
+    return w > 0 && h > 0 ? { w, h } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Centre a picture's own shape inside the slot it was given. */
+function fitInside(box, nat) {
+  if (!nat || !nat.w || !nat.h) return box;
+  const scale = Math.min(box.width / nat.w, box.height / nat.h);
+  const width = Math.round(nat.w * scale);
+  const height = Math.round(nat.h * scale);
+  return {
+    left: Math.round(box.left + (box.width - width) / 2),
+    top: Math.round(box.top + (box.height - height) / 2),
+    width,
+    height,
+  };
+}
+
 /** 6MB. Past that PowerPoint gets slow and the deck gets unmailable. */
 const PHOTO_MAX = 6 * 1024 * 1024;
 
@@ -3346,6 +3460,17 @@ async function addPhoto(args) {
       };
 
   const got = await fetchPhoto(url, mode);
+  /**
+   * Fill the slot, or fit inside it?
+   *
+   * A `hero` is a background: filling is the point, and a few per cent of
+   * stretch on a photograph is invisible. Anything else is a picture somebody
+   * will look AT, so it keeps its own proportions and is centred in the slot.
+   * Vector illustrations are never stretched, in any mode — a distorted drawing
+   * is obvious in a way a distorted photograph is not.
+   */
+  const stretch = mode === 'hero' && !got.svg && args.fit !== 'contain';
+  const placed = stretch ? geo : fitInside(geo, naturalSize(got));
   const note = await focusSlideFor(args);
   if (got.svg) {
     // Vectors need ImageCoercion 1.2. Saying so beats letting the call fail with
@@ -3354,9 +3479,9 @@ async function addPhoto(args) {
       throw new Error('這個 Office 版本放不了向量插畫（需要 ImageCoercion 1.2）。'
         + '改用 ppt_find_art 以外的做法：放照片，或用 ppt_add_diagram 畫圖解。');
     }
-    await insertImageData(got.svg, Office.CoercionType.XmlSvg, geo);
+    await insertImageData(got.svg, Office.CoercionType.XmlSvg, placed);
   } else {
-    await insertImageData(got.data, Office.CoercionType.Image, geo);
+    await insertImageData(got.data, Office.CoercionType.Image, placed);
   }
 
   // Everything below is drawn AFTER the image, and that ordering is the whole
@@ -3366,7 +3491,9 @@ async function addPhoto(args) {
   const sub = String(args.subtitle || '');
   const caption = String(args.caption || '');
   if (!title && !sub && !caption && mode !== 'hero') {
-    return `已插入圖片，${geo.width}×${geo.height} 點，位置 (${geo.left},${geo.top})。${note}`;
+    return `已插入圖片，${placed.width}×${placed.height} 點，位置 (${placed.left},${placed.top})。`
+      + `${placed.width !== geo.width || placed.height !== geo.height
+        ? '（保持原比例置中，沒有拉伸。）' : ''}${note}`;
   }
 
   return PowerPoint.run(async (ctx) => {

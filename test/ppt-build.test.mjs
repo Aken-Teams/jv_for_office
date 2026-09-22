@@ -1235,5 +1235,87 @@ for (const form of ['panel', 'split', 'stack', 'triptych', 'bleed', 'band', 'pla
   }
 }
 
+// ── 區塊要有容器，不然文字散落各處 ──────────────────────────────────────────
+{
+  slide = fakeSlide();
+  await build({ kind: 'zigzag', title: 'T', eyebrow: '01',
+    items: [
+      { title: '學習落差', text: '通用工具不會記住企業的流程' },
+      { title: '整合落差', text: '試點停在部門邊界' },
+      { title: '衡量落差', text: '導入前沒有訂基準線' },
+    ] });
+  const marks = alive().filter((s) => s.kind === 'geo'
+    && s.width > 100 && s.width < 200 && s.height > 60);
+  const panels = alive().filter((s) => s.kind === 'geo'
+    && s.width > 600 && s.height > 60);
+  ok('文字那半邊有自己的容器', panels.length === 3, `${panels.length} 個`);
+  ok('容器有邊框', panels.every((p2) => p2.lineFormat.visible === true));
+  // 容器要蓋住文字，不然它就只是一個放在旁邊的方塊。
+  const head = alive().find((s) => s._text === '學習落差');
+  ok('文字在容器裡面',
+    panels.some((p2) => head.left >= p2.left && head.left + head.width <= p2.left + p2.width + 1),
+    `文字 ${head.left}..${head.left + head.width}`);
+  // 只能跟「同一列」的容器比——不同列本來就會在水平上重疊，那不是問題。
+  ok('每一列的色塊和容器不重疊',
+    marks.every((m) => panels.filter((p2) => Math.abs(p2.top - m.top) < 1).every((p2) =>
+      m.left + m.width <= p2.left + 1 || p2.left + p2.width <= m.left + 1)),
+    marks.map((m) => `${m.top}:${m.left}`).join(' '));
+}
+{
+  slide = fakeSlide();
+  await build({ kind: 'timeline', title: 'T',
+    items: [{ at: '2024', label: 'A', note: 'x' }, { at: '2025', label: 'B' },
+      { at: '2026', label: 'C' }] });
+  const cards = alive().filter((s) => s.kind === 'geo' && s.height === 96);
+  ok('每一站有自己的卡片', cards.length === 3, `${cards.length} 個`);
+  ok('卡片有邊框', cards.every((c) => c.lineFormat.visible === true));
+  // 卡片的色條要跟它那一站的圓點同色，兩者才成對。
+  const caps = alive().filter((s) => s.kind === 'geo' && s.height === 3);
+  ok('卡片有一條同色的頂／底條', caps.length === 3, `${caps.length} 條`);
+}
+
+// ── 四象限的軸標曾經小到讀不到 ──────────────────────────────────────────────
+{
+  slide = fakeSlide();
+  await build({ kind: 'quadrant', title: 'T', x_axis: '規則明確度 →', y_axis: '↑ 發生頻率',
+    items: [{ title: 'A' }, { title: 'B' }, { title: 'C' }, { title: 'D' }] });
+  const x = alive().find((s) => s._text === '規則明確度 →');
+  const y = alive().find((s) => s._text === '↑ 發生頻率');
+  // 軸標是「這四格是什麼意思」的那一半，不是註腳。
+  ok('軸標不是註腳級距', x._font.size >= 13 && y._font.size >= 13,
+    `x ${x._font.size} y ${y._font.size}`);
+  ok('軸標是粗體，跟卡片標題同等重量', x._font.bold === true && y._font.bold === true);
+  const cells = alive().filter((s) => s.kind === 'geo' && s.width > 300 && s.height > 100);
+  const gridTop = Math.min(...cells.map((c) => c.top));
+  const gridBottom = Math.max(...cells.map((c) => c.top + c.height));
+  ok('縱軸標在格線上方，沒有壓到格子', y.top + y.height <= gridTop + 1,
+    `標 ${y.top}+${y.height}，格線從 ${gridTop}`);
+  ok('橫軸標在格線下方', x.top >= gridBottom - 1,
+    `標 ${x.top}，格線到 ${gridBottom}`);
+  ok('格子沒有被擠出內文區', gridBottom <= 490, `${gridBottom}`);
+}
+
+// ── 同一個值不能被版面的兩個部分各畫一次 ───────────────────────────────────
+//
+// panel 封面的粗體那行會在沒有 footer 時退回 eyebrow，但上面那行小字是無條件
+// 畫的——所以「2026 TREND REPORT」被印了兩次，一次 11pt 一次 18pt，上下相疊。
+// 跟 section、statement、quote 是同一種錯：一個值，兩個互不知情的地方在畫。
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', cover: 'panel', title: 'T', eyebrow: '2026 TREND REPORT',
+    body: ['s'] });
+  ok('只有 eyebrow 的時候，它只出現一次',
+    texts().filter((t) => t === '2026 TREND REPORT').length === 1,
+    `出現 ${texts().filter((t) => t === '2026 TREND REPORT').length} 次`);
+}
+{
+  slide = fakeSlide();
+  await build({ kind: 'title', cover: 'panel', title: 'T', eyebrow: '2026 TREND REPORT',
+    footer: '天狼星火組', body: ['s'] });
+  ok('兩個值都有的時候兩行都在，各一次',
+    texts().filter((t) => t === '2026 TREND REPORT').length === 1
+      && texts().filter((t) => t === '天狼星火組').length === 1);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
