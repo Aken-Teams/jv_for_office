@@ -632,16 +632,76 @@ function setStatus(text) {
   else progressDone(false);
 }
 
-function addNote(text, kind = 'note') {
+function addNote(text, kind = 'note', detail = '') {
   clearEmptyState();
   const el = document.createElement('div');
   el.className = `note ${kind}`;
   if (kind === 'err') el.setAttribute('role', 'alert');
   el.textContent = text;
+  /**
+   * The technical half, kept but demoted.
+   *
+   * 「非技術錯誤碼」 does not mean throwing the detail away — when something is
+   * actually broken, IT needs the status code and the address, and the person
+   * sitting in front of it is the only one who can pass them on. So the sentence
+   * they can act on comes first and the string they can forward comes second, in
+   * smaller type. Deleting it would make the pane friendlier and the support call
+   * impossible.
+   */
+  if (detail) {
+    const d = document.createElement('span');
+    d.className = 'note-detail';
+    d.textContent = detail;
+    el.appendChild(d);
+  }
   $('log').appendChild(el);
   scrollDown();
   return el;
 }
+
+/**
+ * What an HTTP failure means, and what to do about it.
+ *
+ * ── Why a status code is not a message ──
+ * 「伺服器錯誤 (500)」 tells somebody that something went wrong, which they had
+ * already noticed, and gives them nothing to do next. Worse was the text on the
+ * main failure path: 「確認伺服器有在跑，而且 CORS_ORIGINS 允許 …」 — instructions
+ * addressed to a developer, shown to whoever happened to be writing a quotation
+ * at the time.
+ *
+ * The server writes its own sentences for the failures it understands, and those
+ * always win. This is the fallback for the ones it does not: the cases where all
+ * we have is a number, and a number is exactly what must not be shown alone.
+ */
+function httpTrouble(status) {
+  const n = Number(status) || 0;
+  if (n === 408 || n === 504) {
+    return t('伺服器太久沒有回應，這次的要求中斷了。內容多的時候比較容易發生，可以分成幾次問。');
+  }
+  if (n === 429) return t('同時要處理的工作太多，等幾秒再送一次就好。');
+  if (n === 413) return t('送出的內容太大。請把訊息縮短一點，或少帶幾個附件。');
+  // Almost always a pane newer than the server: SharedRuntime pins the pane's
+  // JavaScript until Office is quit, but the server can be rolled back.
+  if (n === 404) {
+    return t('伺服器上沒有這個功能，通常是增益集比伺服器新。請通知 IT 更新伺服器。');
+  }
+  if (n >= 500) {
+    return t('伺服器暫時沒辦法處理這個要求，這不是你操作的問題。稍後再試一次；一直這樣的話，把下面這行給 IT。');
+  }
+  return t('這次的要求沒有成功。稍後再試一次；一直這樣的話，把下面這行給 IT。');
+}
+
+/** A request that never reached anybody. */
+function networkTrouble() {
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  return offline
+    ? t('這台電腦目前沒有連上網路。接上網路之後再送一次。')
+    : t('連不上伺服器。可能是伺服器正在重啟，或是公司網路擋住了這個位址。稍後再試一次；一直這樣的話，把下面這行給 IT。');
+}
+
+/** The forwardable half: enough for IT, never the headline. */
+const troubleDetail = (what, extra = '') =>
+  [String(what || ''), extra, state.apiBase].filter(Boolean).join(' · ');
 
 /** Office.js quotes sheet names containing spaces: 'SP 分析報告'!A1:F36 → SP 分析報告!A1:F36 */
 function prettyAddress(address) {
@@ -1767,13 +1827,15 @@ async function send(message, opts = {}) {
       if (res.status === 401 || err.code === 'SUSPENDED' || err.code === 'ACCOUNT_GONE') {
         logout(err.error || t('登入已過期，請重新登入。'));
       } else {
-        addNote(err.error || t('伺服器錯誤 ({0})', res.status), 'err');
+        addNote(err.error || httpTrouble(res.status), 'err',
+          err.error ? '' : troubleDetail(`HTTP ${res.status}`));
       }
       return;
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      addNote(err.error || t('伺服器錯誤 ({0})', res.status), 'err');
+      addNote(err.error || httpTrouble(res.status), 'err',
+        err.error ? '' : troubleDetail(`HTTP ${res.status}`));
       return;
     }
 
@@ -1862,7 +1924,7 @@ async function send(message, opts = {}) {
     if (e && e.name === 'AbortError') {
       addNote(t(host.meta.words.stopped), 'note');
     } else {
-      addNote(t('連線失敗：{0}。確認伺服器有在跑，而且 CORS_ORIGINS 允許 {1}。', e.message, location.origin), 'err');
+      addNote(networkTrouble(), 'err', troubleDetail(e.message, location.origin));
     }
   } finally {
     state.streaming = false;
@@ -1901,7 +1963,9 @@ async function login(email, password, apiBase) {
     body: JSON.stringify({ email, password }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `登入失敗 (${res.status})`);
+  // The server distinguishes wrong password, locked, expired and 「LDAP 連不到」
+  // and says so itself (AC-37). This is only for the ones it has no words for.
+  if (!res.ok) throw new Error(body.error || httpTrouble(res.status));
   return body.token;
 }
 
@@ -1923,7 +1987,9 @@ async function loginAd(username, password, domain, apiBase) {
     body: JSON.stringify({ username, password, domain: domain || undefined }),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `登入失敗 (${res.status})`);
+  // The server distinguishes wrong password, locked, expired and 「LDAP 連不到」
+  // and says so itself (AC-37). This is only for the ones it has no words for.
+  if (!res.ok) throw new Error(body.error || httpTrouble(res.status));
   // Not an error. The server hands back a 30-minute session token precisely so
   // the caller can finish the sign-up itself; see showSetup().
   if (body.firstLogin) return { setup: body.adSessionToken, adUser: body.adUser || {} };
@@ -2746,7 +2812,7 @@ async function acceptHandoff(id) {
       return;
     }
   } catch (e) {
-    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
+    addNote(networkTrouble(), 'err', troubleDetail(e.message));
     return;
   }
 
@@ -2940,11 +3006,12 @@ async function templateRequest(method, suffix, body) {
       // The server's sentence is the useful one — it distinguishes "over the
       // limit" from "not yours" from "blocked by the scanner", and those need
       // different things from the person.
-      addNote(err.error || t('操作失敗（{0}）。', res.status), 'err');
+      addNote(err.error || httpTrouble(res.status), 'err',
+        err.error ? '' : troubleDetail(`HTTP ${res.status}`));
       return false;
     }
   } catch (e) {
-    addNote(t('連不上伺服器（{0}）。', e.message), 'err');
+    addNote(networkTrouble(), 'err', troubleDetail(e.message));
     return false;
   }
   await loadTemplates();
@@ -3503,7 +3570,7 @@ async function loadDataSources() {
       }
     }
   } catch (e) {
-    state.sourceHint = t('連不上伺服器（{0}）。', e.message);
+    state.sourceHint = networkTrouble();
   }
   renderSourceMenu();
   renderModelMenu();

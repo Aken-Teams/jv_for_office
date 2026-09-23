@@ -4337,7 +4337,81 @@ export async function getDocumentName() {
   }
 }
 
+/** Where this deck's id lives. Same name Word uses, for one thing to look for. */
+const DECK_ID_KEY = 'JVisionDocumentId';
+
+/**
+ * The add-in's own storage inside the file.
+ *
+ * ── Why this and not a custom document property ──
+ * Excel and Word each mint a UUID into a custom document property, which travels
+ * with the file and survives a rename. PowerPointApi has no equivalent, so this
+ * used to fall back to the file's PATH — and a path is not an identity.
+ *
+ * `Office.context.document.settings` is the Common API's answer to exactly this:
+ * a small store that belongs to this add-in, lives inside the document, and goes
+ * wherever the document goes. It is not gated on a PowerPointApi requirement set
+ * because it is not a PowerPointApi feature.
+ */
+function deckSettings() {
+  try {
+    const s = Office.context.document.settings;
+    return (s && typeof s.get === 'function' && typeof s.set === 'function') ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read this deck's id, minting one the first time. '' when it cannot be stored. */
+async function storedDeckId() {
+  const store = deckSettings();
+  if (!store) return '';
+  try {
+    const saved = store.get(DECK_ID_KEY);
+    if (saved) return String(saved);
+  } catch {
+    return '';
+  }
+  const id = (self.crypto && self.crypto.randomUUID)
+    ? self.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    store.set(DECK_ID_KEY, id);
+    // Only trust it once it is actually in the file. A id that lives in memory
+    // and vanishes on reopen is worse than no id: it looks like a new deck every
+    // session, which is a different wrong answer from the one being fixed here.
+    const saved = await new Promise((resolve) => {
+      store.saveAsync((res) => resolve(!!res && res.status === Office.AsyncResultStatus.Succeeded));
+    });
+    return saved ? id : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Which presentation this is — the key the conversation hangs off.
+ *
+ * ── The bug this replaces ──
+ * It used to return `ppt:${Office.context.document.url}`, i.e. the file's path.
+ * A path answers 「哪個位置」, and the question here is 「哪一份檔案」. Those come
+ * apart in both directions, and both were reported:
+ *
+ *   · rename a deck → new path → its history is stranded on the old name
+ *   · make a NEW deck with the same name in the same folder → same path →
+ *     it inherits the previous file's entire conversation
+ *
+ * The second one is the dangerous half. Somebody opens a fresh 報價簡報.pptx and
+ * the assistant appears to remember a deck they have never seen, which is also
+ * how one person's work becomes visible in another file's transcript.
+ *
+ * So the id goes INSIDE the file, the way Excel's and Word's already do. The
+ * path stays only as a last resort for a build where settings cannot be saved —
+ * unchanged from today's behaviour, so nothing that works now stops working.
+ */
 export async function getDocumentKey() {
+  const id = await storedDeckId();
+  if (id) return `ppt:${id}`;
   try {
     const url = String(Office.context.document.url || '');
     if (url) return `ppt:${url}`;

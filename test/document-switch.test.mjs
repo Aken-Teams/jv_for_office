@@ -86,5 +86,43 @@ ok('沒有人再直接取 documentKey 了',
   }
 }
 
+/**
+ * 檔案的身分不能是它的位置。
+ *
+ * ── 回報的 bug ──
+ * PowerPoint 的 `getDocumentKey()` 回傳的是 `ppt:${檔案路徑}`。路徑回答的是「在
+ * 哪裡」，這裡要問的是「哪一份」，而這兩件事會往兩個方向分開——而且兩個方向都
+ * 被使用者踩到了：
+ *
+ *   · 把簡報改名 → 路徑變了 → 過往紀錄留在舊名字上，新名字看不到
+ *   · 在同一個資料夾建一份同名的新簡報 → 路徑一樣 → **繼承前一份檔案的全部對話**
+ *
+ * 第二個才是危險的那半。有人開一份全新的報價簡報，助理卻記得一份他沒看過的簡報
+ * ——那也是一個人的工作內容出現在另一份檔案的對話紀錄裡的路徑。
+ *
+ * Excel 和 Word 一直都是在檔案裡種一個 UUID，所以沒有這個問題。這裡釘的是三個
+ * host 現在用的是同一種辦法。
+ */
+{
+  const hosts = {
+    excel: fs.readFileSync(new URL('../src/taskpane/hosts/excel.js', import.meta.url), 'utf8'),
+    word: fs.readFileSync(new URL('../src/taskpane/hosts/word.js', import.meta.url), 'utf8'),
+    powerpoint: fs.readFileSync(new URL('../src/taskpane/hosts/powerpoint.js', import.meta.url), 'utf8'),
+  };
+  for (const [name, src] of Object.entries(hosts)) {
+    const fnSrc = (src.match(/export async function getDocumentKey\(\)[\s\S]*?\n}/) || [''])[0];
+    ok(`${name} 有 getDocumentKey`, fnSrc.length > 0);
+    // 三個都要先問「檔案裡存的 id」。路徑只能當最後手段。
+    ok(`${name} 的身分存在檔案裡，不是靠路徑`,
+      /randomUUID|storedDeckId|getItemOrNullObject/.test(fnSrc));
+  }
+  const ppt = hosts.powerpoint;
+  ok('PowerPoint 改用增益集自己的 settings 存 id', /document\.settings/.test(ppt));
+  // 存不進去就不能宣稱它是 id——只存在記憶體裡的 id 每次開檔都不一樣，那是另一
+  // 種錯，不是比較好的錯。
+  ok('沒存成功就不當作 id', /saved \? id : ''/.test(ppt));
+  ok('路徑仍然留著當最後手段', /ppt:\$\{url\}/.test(ppt));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

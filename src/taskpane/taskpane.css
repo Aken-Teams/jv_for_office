@@ -1150,6 +1150,16 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
 .src-item .src-tick { color: var(--accent); visibility: hidden; }
 .src-item[aria-checked="true"] .src-tick { visibility: visible; }
 .src-item[aria-checked="true"] .ic-sm:first-child { color: var(--accent); }
+/* The forwardable half of an error: a status code and an address, kept where IT
+   can read it off somebody's screen and nowhere near where it competes with the
+   sentence above it. Its own line, smaller, quieter, and selectable — the whole
+   point is that it gets copied into a message. */
+.note-detail {
+  display: block; margin-top: 4px; font-size: 11px; opacity: .72;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  word-break: break-all; user-select: text;
+}
+
 .src-note {
   padding: 4px 9px 3px; font-size: 11px; color: var(--fg-subtle); line-height: 1.4;
 }
