@@ -575,9 +575,138 @@ const TAG = 'jv';
 let seq = 0;
 const stamp = (kind) => `${TAG}:${kind}:${Date.now().toString(36)}${(seq++).toString(36)}`;
 
-/** Shapes created during the current tool call, for undo-by-inverse. */
-let made = [];
-const remember = (slideId, shapeId) => made.push({ slideId, shapeId });
+/**
+ * What this tool call did, expressed as things that can be taken back.
+ *
+ * ── Why a list of operations and not a snapshot ──
+ * PowerPoint has no cheap whole-file snapshot below API 1.10 (Office 2601), so
+ * the Word approach — grab the whole body as OOXML, put it back — is not
+ * available to almost anybody. What IS available is reading a shape's state
+ * before touching it, which is enough to invert every edit this module makes.
+ *
+ * ── Why 「只記新增」 was not enough ──
+ * It covered additions only, so rewriting the text on slide 5 or deleting a
+ * shape could not be taken back, and the note said so. But this add-in's whole
+ * position is that it works on files that already exist — and a tool that edits
+ * your existing deck without being able to put it back teaches people not to let
+ * it near one. Undo is not a feature here, it is the condition for the rest.
+ *
+ * Each entry is an inverse, applied in reverse order:
+ *   created  — it was not there before → delete it
+ *   restore  — it was there and we changed it → put the old values back
+ *   recreate — it was there and we deleted it → build it again
+ *   slide    — a whole slide went → rebuild it from what it held
+ */
+let undoOps = [];
+const remember = (slideId, shapeId) => undoOps.push({ op: 'created', slideId, shapeId });
+
+/**
+ * Shapes we can rebuild from what we can read.
+ *
+ * A picture's bytes and a group's structure are not readable through the API, so
+ * a deleted one is gone for good. Saying which is the point: 「已還原 5 個物件，
+ * 1 張圖片沒辦法還原」 is a true sentence somebody can act on, and silently
+ * restoring five of six is not.
+ */
+const REBUILDABLE = new Set(['geometricshape', 'textbox']);
+
+/** Types with no text frame — asking for one throws and poisons the batch. */
+const NO_TEXT = new Set(['image', 'picture', 'line', 'group', 'unsupported']);
+
+/**
+ * Queue every property the undo needs, tolerating the ones a shape cannot have.
+ *
+ * `ctx.sync()` rejects the WHOLE batch if any single load is invalid, so a
+ * picture in the middle of a slide would otherwise take the whole capture down
+ * with it — the same failure that made ppt_read_slide return empty text for
+ * every shape on a slide that happened to contain one photo.
+ */
+function queueState(shape) {
+  const st = { shape, fill: null, line: null, range: null, font: null };
+  shape.load('id,name,type,left,top,width,height');
+  try { shape.fill.load('type,foregroundColor'); st.fill = shape.fill; } catch { /* no fill */ }
+  try { shape.lineFormat.load('visible,color,weight'); st.line = shape.lineFormat; } catch { /* none */ }
+  if (!NO_TEXT.has(String(shape.type || '').toLowerCase())) {
+    try {
+      const f = shape.textFrame;
+      f.load('hasText');
+      f.textRange.load('text');
+      f.textRange.font.load('name,size,color,bold,italic');
+      st.range = f.textRange;
+      st.font = f.textRange.font;
+    } catch { /* pictures and lines have none */ }
+  }
+  return st;
+}
+
+/** Read one back after the sync. Every property is optional on purpose. */
+function readState(st) {
+  const s = st.shape;
+  const grab = (fn, fallback) => { try { const v = fn(); return v === undefined ? fallback : v; } catch { return fallback; } };
+  const out = {
+    shapeId: grab(() => String(s.id || ''), ''),
+    name: grab(() => String(s.name || ''), ''),
+    type: grab(() => String(s.type || ''), ''),
+    box: {
+      left: grab(() => Number(s.left), undefined),
+      top: grab(() => Number(s.top), undefined),
+      width: grab(() => Number(s.width), undefined),
+      height: grab(() => Number(s.height), undefined),
+    },
+  };
+  if (st.fill) {
+    // A gradient or a picture fill reads as something other than Solid. We can
+    // put a solid colour back but not a gradient, so anything else is recorded
+    // as 「unknown」 and left alone rather than flattened to a colour it never had.
+    const kind = grab(() => String(st.fill.type || ''), '');
+    if (/solid/i.test(kind)) out.fill = grab(() => String(st.fill.foregroundColor || ''), '');
+    else if (/nofill|none/i.test(kind)) out.fill = null;
+  }
+  if (st.line) {
+    out.line = {
+      visible: grab(() => st.line.visible, undefined),
+      color: grab(() => st.line.color, undefined),
+      weight: grab(() => st.line.weight, undefined),
+    };
+  }
+  if (st.range) out.text = grab(() => String(st.range.text ?? ''), undefined);
+  if (st.font) {
+    out.font = {
+      name: grab(() => st.font.name, undefined),
+      size: grab(() => st.font.size, undefined),
+      color: grab(() => st.font.color, undefined),
+      bold: grab(() => st.font.bold, undefined),
+      italic: grab(() => st.font.italic, undefined),
+    };
+  }
+  return out;
+}
+
+/**
+ * Capture a set of shapes, and never let the capture break the edit.
+ *
+ * If reading the old state fails, the edit still happens — it just cannot be
+ * taken back, and restoreSnapshot says how many. The alternative is refusing to
+ * edit because we could not prepare an undo, which trades a recoverable問題 for
+ * an unusable tool.
+ */
+async function captureShapes(ctx, shapes) {
+  const queued = shapes.map((s) => { try { return queueState(s); } catch { return null; } });
+  try {
+    await ctx.sync();
+  } catch {
+    return [];
+  }
+  return queued.map((q) => { try { return q ? readState(q) : null; } catch { return null; } })
+    .filter(Boolean);
+}
+
+/** This call changed these shapes; here is what they looked like first. */
+const rememberBefore = (slideId, states) => {
+  for (const before of states) {
+    if (before && before.shapeId) undoOps.push({ op: 'restore', slideId, before });
+  }
+};
 
 // ── Reading the deck ─────────────────────────────────────────────────────────
 
@@ -980,14 +1109,42 @@ async function deleteSlide(args) {
   if (!from) throw new Error('slide 是必要的（投影片編號，從 1 開始）。');
   const to = num(args.to, from);
   return PowerPoint.run(async (ctx) => {
-    const slides = await loadSlides(ctx, { shapes: false });
+    const slides = await loadSlides(ctx);
     const a = clamp(from, 1, slides.length);
     const b = clamp(Math.max(to, a), a, slides.length);
+
+    /**
+     * Write down what each slide held before it goes.
+     *
+     * ── What comes back, and what does not ──
+     * A rebuilt slide is a rebuild. The boxes, their text, colours and positions
+     * come back; a photograph does not, and neither does the original position
+     * in the deck — PowerPoint's API appends, so a restored slide 3 lands at the
+     * end. That is worse than a real undo and much better than the old answer,
+     * which was 「這個動作復原鍵拿不回來」 and meant it.
+     */
+    const taken = [];
+    for (let i = a - 1; i <= b - 1; i++) {
+      taken.push({
+        index: i + 1,
+        shapes: await captureShapes(ctx, slides[i].shapes.items || []),
+      });
+    }
+    // Reversed so the ops list, which is replayed backwards, rebuilds them in
+    // their original order.
+    for (const t of taken.slice().reverse()) undoOps.push({ op: 'slide', ...t });
+
     // Backwards: deleting slide 3 renumbers everything after it, so a forward
     // loop deletes the wrong slides from the second iteration onward.
     for (let i = b - 1; i >= a - 1; i--) slides[i].delete();
     await ctx.sync();
-    return `已刪除投影片 ${a}${b > a ? `–${b}` : ''}（共 ${b - a + 1} 張）。這個動作復原鍵拿不回來。`;
+    const lost = taken.flatMap((t) => t.shapes)
+      .filter((x) => !REBUILDABLE.has(String(x.type || '').toLowerCase())).length;
+    return `已刪除投影片 ${a}${b > a ? `–${b}` : ''}（共 ${b - a + 1} 張）。`
+      + '\n復原鍵可以把內容重建回來，但會接在簡報最後面，'
+      + '而且是重建不是原件'
+      + (lost ? `，其中 ${lost} 個圖片或群組拿不回來` : '')
+      + '。順序要對請用 PowerPoint 自己的 Ctrl+Z。';
   });
 }
 
@@ -1283,6 +1440,10 @@ async function setText(args) {
     if (which > items.length) throw new Error(`投影片 ${index} 只有 ${items.length} 個物件，沒有第 ${which} 個。`);
     const shape = items[which - 1];
 
+    // Before, not after. This is the whole reason 「AI 把我第 5 頁的字改掉了」
+    // used to be unrecoverable: nobody wrote down what it said.
+    rememberBefore(slide.id, await captureShapes(ctx, [shape]));
+
     shape.textFrame.textRange.text = text;
     styleText(shape, args);
     await ctx.sync();
@@ -1304,6 +1465,8 @@ async function formatShape(args) {
     const items = shapes.items || [];
     if (which > items.length) throw new Error(`投影片 ${index} 只有 ${items.length} 個物件。`);
     const shape = items[which - 1];
+
+    rememberBefore(slide.id, await captureShapes(ctx, [shape]));
 
     const moved = [];
     for (const k of ['left', 'top', 'width', 'height']) {
@@ -1364,11 +1527,22 @@ async function deleteShape(args) {
         + `但你要刪第 ${bad.join('、')} 個。先用 ppt_read_slide 看一次目前的編號。`);
     }
 
+    // Read them before they are gone. What comes back is a description, not the
+    // shape — good enough to rebuild a box with its text, colour and position,
+    // and not good enough for a photograph. restoreSnapshot says which is which
+    // rather than quietly restoring some of them.
+    const gone = await captureShapes(ctx, uniq.map((n) => items[n - 1]));
+    for (const before of gone) {
+      if (before) undoOps.push({ op: 'recreate', slideId: slide.id, before });
+    }
+
     uniq.slice().reverse().forEach((n) => items[n - 1].delete());
     await ctx.sync();
-    return uniq.length === 1
+    const lost = gone.filter((b) => !REBUILDABLE.has(String(b.type || '').toLowerCase())).length;
+    const caveat = lost ? `\n其中 ${lost} 個（圖片或群組）復原鍵拿不回來。` : '';
+    return (uniq.length === 1
       ? `已刪除投影片 ${index} 的第 ${uniq[0]} 個物件。`
-      : `已刪除投影片 ${index} 的 ${uniq.length} 個物件（第 ${uniq.join('、')} 個）。`;
+      : `已刪除投影片 ${index} 的 ${uniq.length} 個物件（第 ${uniq.join('、')} 個）。`) + caveat;
   });
 }
 
@@ -1411,6 +1585,11 @@ async function arrange(args) {
       ? args.shapes.map((n) => all[num(n, 0) - 1]).filter(Boolean)
       : all;
     if (picked.length < 2) throw new Error('至少要有兩個物件才能對齊或分散。');
+
+    // Every shape it is about to move, not just the ones that end up moving:
+    // which ones move depends on the operation, and working that out twice is
+    // how the two copies drift apart.
+    rememberBefore(slide.id, await captureShapes(ctx, picked));
 
     const L = picked.map((s) => Number(s.left) || 0);
     const T = picked.map((s) => Number(s.top) || 0);
@@ -3909,10 +4088,23 @@ async function applyTheme(args) {
 
   return PowerPoint.run(async (ctx) => {
     const slides = await loadSlides(ctx);
+    // Two passes. The first works out what will be touched and writes down how
+    // it looks now; only then does anything change. Deciding and mutating in one
+    // loop would mean capturing shapes we then skip, and skipping shapes we then
+    // capture — and the undo would be a record of a different edit.
+    const wanted = slides.map((slide) => ({
+      slide,
+      shapes: (slide.shapes.items || []).filter((shape) =>
+        !onlyOurs || String(shape.name || '').startsWith(`${TAG}:`)),
+    })).filter((g) => g.shapes.length);
+
+    for (const g of wanted) {
+      rememberBefore(g.slide.id, await captureShapes(ctx, g.shapes));
+    }
+
     let touched = 0;
-    for (const slide of slides) {
-      for (const shape of slide.shapes.items || []) {
-        if (onlyOurs && !String(shape.name || '').startsWith(`${TAG}:`)) continue;
+    for (const g of wanted) {
+      for (const shape of g.shapes) {
         try {
           shape.textFrame.textRange.font.name = th.font;
           touched++;
@@ -3960,50 +4152,157 @@ async function runScript(args, opts = {}) {
 // ── Undo ─────────────────────────────────────────────────────────────────────
 
 /**
- * What this tool call created, so it can be taken back.
+ * Everything this tool call did, as a list of inverses.
  *
- * Not a snapshot. PowerPoint has no cheap whole-file snapshot below API 1.10
- * (Office 2601, released weeks ago), and gating undo on that would mean almost
- * nobody has it. Recording what was made and deleting it covers additions, which
- * is nearly everything an agent does to a deck.
- *
- * What it does NOT cover is stated plainly in restoreSnapshot rather than
- * silently doing less than the button promises.
+ * Collected per call and handed to the shell, which keeps the undo stack. The
+ * list is emptied here so the next call starts clean — a tool that fails
+ * half-way still returns what it managed to record, and restoring that is
+ * correct: those shapes really were changed.
  */
 async function captureCreated() {
-  const snapshot = made.length ? { kind: 'created', shapes: made.slice() } : null;
-  made = [];
+  const snapshot = undoOps.length ? { kind: 'ops', ops: undoOps.slice() } : null;
+  undoOps = [];
   return snapshot;
 }
 
-export async function restoreSnapshot(snapshot) {
-  if (!snapshot || snapshot.kind !== 'created' || !snapshot.shapes.length) {
-    return { kind: 'none', note: '這次的動作沒有可以退回的新增物件。' };
+/** Put one shape's recorded values back. Anything unrecorded is left alone. */
+function applyState(shape, before) {
+  const b = before || {};
+  const box = b.box || {};
+  for (const k of ['left', 'top', 'width', 'height']) {
+    if (Number.isFinite(box[k])) shape[k] = box[k];
   }
+  // undefined means 「we could not read it」, null means 「there was no fill」.
+  // Those are different instructions and collapsing them would paint a
+  // transparent shape white every time an undo ran.
+  if (b.fill !== undefined) {
+    try {
+      if (b.fill === null) shape.fill.clear();
+      else if (b.fill) shape.fill.setSolidColor(b.fill);
+    } catch { /* a shape that cannot be filled was not filled by us either */ }
+  }
+  if (b.line) {
+    try {
+      const lf = shape.lineFormat;
+      if (b.line.visible !== undefined) lf.visible = b.line.visible;
+      if (b.line.color !== undefined) lf.color = b.line.color;
+      if (b.line.weight !== undefined) lf.weight = b.line.weight;
+    } catch { /* ignore */ }
+  }
+  if (b.text !== undefined || b.font) {
+    try {
+      const range = shape.textFrame.textRange;
+      if (b.text !== undefined) range.text = b.text;
+      if (b.font) {
+        for (const k of ['name', 'size', 'color', 'bold', 'italic']) {
+          if (b.font[k] !== undefined) range.font[k] = b.font[k];
+        }
+      }
+    } catch { /* no text frame */ }
+  }
+}
+
+/** Build a shape back from its description. Returns false when we cannot. */
+function rebuild(slide, before) {
+  const b = before || {};
+  if (!REBUILDABLE.has(String(b.type || '').toLowerCase())) return false;
+  const box = b.box || {};
+  const at = {
+    left: Number.isFinite(box.left) ? box.left : 0,
+    top: Number.isFinite(box.top) ? box.top : 0,
+    width: Number.isFinite(box.width) ? box.width : 120,
+    height: Number.isFinite(box.height) ? box.height : 40,
+  };
+  // Rectangle, not the original geometry: PowerPoint does not read back which
+  // geometric shape a shape is. A rebuilt ellipse comes back square, which is
+  // visible and fixable — unlike losing it, which is neither.
+  const shape = /textbox/i.test(String(b.type || ''))
+    ? slide.shapes.addTextBox(String(b.text || ''), at)
+    : slide.shapes.addGeometricShape('Rectangle', at);
+  if (b.name) shape.name = b.name;
+  applyState(shape, /textbox/i.test(String(b.type || '')) ? { ...b, text: undefined } : b);
+  return true;
+}
+
+/**
+ * Undo.
+ *
+ * Applied in reverse: the last thing done is the first thing taken back, which
+ * is the only order that survives a call that both changed a shape and then
+ * deleted it.
+ */
+export async function restoreSnapshot(snapshot) {
+  const ops = (snapshot && snapshot.kind === 'ops' && snapshot.ops) || [];
+  if (!ops.length) return { kind: 'none', note: '這次的動作沒有可以退回的東西。' };
+
   return PowerPoint.run(async (ctx) => {
     const slides = ctx.presentation.slides;
     slides.load('items/id');
     await ctx.sync();
-    const bySlide = new Map((slides.items || []).map((s) => [s.id, s]));
+    const bySlide = new Map((slides.items || []).map((x) => [x.id, x]));
 
-    let removed = 0;
-    for (const { slideId, shapeId } of snapshot.shapes) {
-      const slide = bySlide.get(slideId);
-      if (!slide) continue;
-      try {
-        slide.shapes.getItem(shapeId).delete();
-        removed++;
-      } catch {
-        // Already gone — the person deleted it themselves. Fine.
+    const done = { removed: 0, restored: 0, rebuilt: 0, slides: 0, lost: 0 };
+    for (const entry of ops.slice().reverse()) {
+      const slide = entry.slideId ? bySlide.get(entry.slideId) : null;
+      if (entry.op === 'created') {
+        if (!slide) continue;
+        try { slide.shapes.getItem(entry.shapeId).delete(); done.removed++; } catch {
+          // Already gone — the person deleted it themselves. Fine.
+        }
+      } else if (entry.op === 'restore') {
+        if (!slide) continue;
+        try { applyState(slide.shapes.getItem(entry.before.shapeId), entry.before); done.restored++; } catch {
+          // The shape it describes is no longer there. Nothing to put back.
+        }
+      } else if (entry.op === 'recreate') {
+        if (!slide) continue;
+        try { if (rebuild(slide, entry.before)) done.rebuilt++; else done.lost++; } catch { done.lost++; }
+      } else if (entry.op === 'slide') {
+        try {
+          slides.add();
+          await ctx.sync();
+          slides.load('items/id');
+          await ctx.sync();
+          const fresh = slides.items[slides.items.length - 1];
+          // A new slide is born with the default layout's empty title and
+          // subtitle prompts. Leaving them on a rebuilt slide would put 「按一下
+          // 以新增標題」 behind the content we are restoring — the same problem
+          // buildSlide already solves, solved the same way.
+          try { await clearPlaceholders(ctx, fresh); } catch { /* not fatal */ }
+          for (const before of entry.shapes || []) {
+            try { if (rebuild(fresh, before)) done.rebuilt++; else done.lost++; } catch { done.lost++; }
+          }
+          done.slides++;
+        } catch {
+          done.lost += (entry.shapes || []).length;
+        }
       }
     }
     await ctx.sync();
+
+    const said = [];
+    if (done.removed) said.push(`移除新增的 ${done.removed} 個物件`);
+    if (done.restored) said.push(`還原 ${done.restored} 個被改過的物件`);
+    if (done.slides) said.push(`重建 ${done.slides} 張投影片`);
+    if (done.rebuilt) said.push(`重建 ${done.rebuilt} 個被刪掉的物件`);
+
+    const caveats = [];
+    if (done.lost) {
+      caveats.push(`${done.lost} 個物件沒辦法還原（圖片和群組讀不回來）`);
+    }
+    if (done.slides) {
+      caveats.push('重建的投影片會接在最後面，不是原本的位置——'
+        + 'PowerPoint 的 API 只能往後加。順序要對請用 PowerPoint 自己的 Ctrl+Z');
+    }
+    if (done.rebuilt) {
+      caveats.push('重建的形狀一律是矩形，因為 PowerPoint 讀不回原本是圓形還是箭頭');
+    }
+
     return {
-      kind: 'created',
-      removed,
-      note: `已移除這次新增的 ${removed} 個物件。`
-        + '注意：PowerPoint 沒有整份快照的 API，所以復原只能拿掉新增的東西，'
-        + '改過的文字和搬過的位置退不回來——那些請用 PowerPoint 自己的 Ctrl+Z。',
+      kind: 'ops',
+      ...done,
+      note: (said.length ? `已${said.join('、')}。` : '沒有東西需要退回。')
+        + (caveats.length ? `\n要注意：${caveats.join('；')}。` : ''),
     };
   });
 }
@@ -4196,7 +4495,9 @@ const WRITES = new Set([
 
 export async function executeTool(tool, args, opts = {}) {
   const a = args || {};
-  made = [];
+  // One call, one undo entry. Cleared at the start rather than the end so a
+  // call that throws part-way leaves behind what it actually managed to do.
+  undoOps = [];
   try {
     switch (tool) {
       case 'ppt_get_overview':  return { ok: true, content: await getOverview(a) };
