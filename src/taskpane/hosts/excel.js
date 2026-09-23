@@ -460,10 +460,48 @@ async function readRange(args) {
 
     if (range.isNullObject) return `工作表「${sheetName}」是空的。`;
 
-    let rowCount = range.rowCount;
-    let truncated = false;
-    const maxRows = Math.max(1, Math.floor(MAX_READ_CELLS / Math.max(1, range.columnCount)));
-    if (rowCount > maxRows) { rowCount = maxRows; truncated = true; }
+    /**
+     * Too big does not become a smaller answer. It becomes a different route.
+     *
+     * ── Why this used to truncate, and why that was the bug ──
+     * It returned the first N rows with 「⚠ 已截斷」 on top. The warning was
+     * addressed to the model, and the model would go on to answer the question
+     * anyway: 「最大的三筆是…」 computed over a sixth of the data. Every number
+     * in that answer is real — it read them — so it slips past 「絕對不要編造儲
+     * 存格的值」 完全不違反那條規則, and the user has no way to tell.
+     *
+     * Reading all of it is not the fix either: 50 000 rows do not fit in a
+     * context window, and pretending otherwise just moves the failure.
+     *
+     * The fix is that the route which produces a plausible-but-partial answer
+     * stops existing. `excel_run_script` runs INSIDE Excel with no cell limit at
+     * all and returns only the conclusion — that is the honest way to answer a
+     * question about a large sheet, and it was always available. This makes it
+     * the only way.
+     *
+     * A deliberate sample is still allowed, because naming a bounded range is
+     * saying so out loud: `range: "A1:H200"` is a sample, and it reads as one in
+     * the transcript. `range` omitted on a 50 000-row sheet is not.
+     */
+    const cells = range.rowCount * Math.max(1, range.columnCount);
+    if (cells > MAX_READ_CELLS) {
+      const fits = Math.max(1, Math.floor(MAX_READ_CELLS / Math.max(1, range.columnCount)));
+      const col = colName(range.columnIndex + range.columnCount - 1);
+      const first = colName(range.columnIndex);
+      const top = range.rowIndex + 1;
+      throw new Error(
+        `這個範圍有 ${range.rowCount} 列 × ${range.columnCount} 欄（${cells} 格），`
+        + `超過一次讀取的上限 ${MAX_READ_CELLS} 格。\n\n`
+        + `**不要改成讀一部分再回答**——那會用六分之一的資料講出聽起來完整的結論。`
+        + `照你要做的事選一條：\n\n`
+        + `· 要統計、比較、篩選、排名、找極值 → 用 \`excel_run_script\`。`
+        + `它在 Excel 裡面跑，**沒有格數限制**，整張表都摸得到，回到你手上的只有結論。\n\n`
+        + `· 只是要看欄位長相 → 指定明確範圍，例如 `
+        + `\`range: "${first}${top}:${col}${top + Math.min(fits, 200) - 1}"\`。`
+        + `這樣是刻意取樣，講出來就沒問題。\n\n`
+        + `· 要整份看過一遍 → 分批指定 range，自己記住讀到哪裡。`);
+    }
+    const rowCount = range.rowCount;
 
     const target = sheet.getRangeByIndexes(range.rowIndex, range.columnIndex, rowCount, range.columnCount);
     if (mode === 'values' || mode === 'both') target.load('values');
@@ -473,10 +511,6 @@ async function readRange(args) {
 
     const head = [`工作表 ${sheetName}，範圍 ${bareAddress(target.address)}`
       + `（${rowCount} 列 × ${range.columnCount} 欄）`];
-    if (truncated) {
-      head.push(`⚠ 原始範圍有 ${range.rowCount} 列，已截斷為前 ${rowCount} 列。`
-        + `需要後面的資料請指定明確的 range 分批讀取。`);
-    }
     const body = [];
     if (mode === 'values' || mode === 'both') body.push('### 值\n' + toCsv(target.values));
     if (mode === 'formulas' || mode === 'both') body.push('### 公式\n' + toCsv(target.formulas));
@@ -1823,8 +1857,37 @@ async function tracePrecedents(args) {
 
 // ── Comparison ────────────────────────────────────────────────────────────────
 
-/** Cap the compared range the same way a read is capped — this reads a range too. */
-const MAX_COMPARE_CELLS = MAX_READ_CELLS;
+/**
+ * How much a comparison may read. Twenty-five times what a read may.
+ *
+ * ── Why the two limits are not the same number ──
+ * They protect different things. `excel_read_range` is capped because its output
+ * goes into the MODEL's context, and a context window is small. A comparison's
+ * output does not: the two grids are diffed here, in the task pane's own
+ * JavaScript, and what reaches the model is a report of the differences. The
+ * model never sees the rows.
+ *
+ * So the old cap — the read cap, reused — was protecting the wrong resource. It
+ * capped a comparison at about 2 000 rows because a *different* feature had a
+ * context window. A BOM or a shipping ledger goes past that easily, and the
+ * comparison is the flagship reason somebody installs this.
+ *
+ * What does bind here is the pane's own memory, which is why there is still a
+ * ceiling. Half a million cells is 25 000 rows × 20 columns — past anything
+ * these two repos have seen in practice, and small enough that the grids, the
+ * key maps the diff builds on top of them, and the report all fit.
+ */
+const MAX_COMPARE_CELLS = 500_000;
+
+/**
+ * Cells per round trip to Excel.
+ *
+ * Nothing forces a 500 000-cell read to happen in one `load` — Office just
+ * struggles with it. Asked in slices it is steady, and the wall-clock difference
+ * is small because the cost is dominated by the number of syncs, not their size.
+ * At 40 000 cells a slice, the largest comparison we allow is about a dozen.
+ */
+const COMPARE_CHUNK_CELLS = 40_000;
 
 /**
  * Read one side of a comparison out of the workbook.
@@ -1852,16 +1915,39 @@ async function readCompareSide(ctx, sheetName, rangeRef) {
   await ctx.sync();
   if (range.isNullObject) return { error: `工作表「${sheetName}」是空的，沒有東西可以比對。` };
 
-  const maxRows = Math.max(1, Math.floor(MAX_COMPARE_CELLS / Math.max(1, range.columnCount)));
+  const cols = Math.max(1, range.columnCount);
+  const maxRows = Math.max(1, Math.floor(MAX_COMPARE_CELLS / cols));
   const rowCount = Math.min(range.rowCount, maxRows);
-  const target = sheet.getRangeByIndexes(
-    range.rowIndex, range.columnIndex, rowCount, range.columnCount);
-  target.load('values,address');
-  await ctx.sync();
+
+  /**
+   * Read it in slices and stitch them back together.
+   *
+   * One `load` of everything is what the old cap was really avoiding, and it was
+   * avoided by reading less rather than by reading it differently. A loop costs
+   * a few more round trips and removes the reason for the cap.
+   */
+  const chunkRows = Math.max(1, Math.floor(COMPARE_CHUNK_CELLS / cols));
+  const values = [];
+  let address = '';
+  for (let done = 0; done < rowCount; done += chunkRows) {
+    const take = Math.min(chunkRows, rowCount - done);
+    const slice = sheet.getRangeByIndexes(range.rowIndex + done, range.columnIndex, take, cols);
+    slice.load('values,address');
+    // eslint-disable-next-line no-await-in-loop
+    await ctx.sync();
+    for (const row of slice.values) values.push(row);
+    // The first slice's address names the top-left, which is what every citation
+    // in the report is offset from.
+    if (!address) address = bareAddress(slice.address);
+  }
 
   return {
-    values: target.values,
-    address: bareAddress(target.address),
+    values,
+    // Reported as the whole block, not as the first slice — the report quotes
+    // this back to the user as 「比對範圍」 and a slice would be a lie.
+    address: rowCount === range.rowCount
+      ? bareAddress(range.address)
+      : `${address.split(':')[0]}:${colName(range.columnIndex + cols - 1)}${range.rowIndex + rowCount}`,
     rowIndex: range.rowIndex,
     columnIndex: range.columnIndex,
     truncatedFrom: rowCount < range.rowCount ? range.rowCount : 0,
@@ -1961,8 +2047,9 @@ export async function compareSource(args, source) {
     // as 「只在另一邊」, and without knowing where the cap fell that reads as a
     // real finding rather than an artefact of the read.
     if (left.truncatedFrom) {
-      diff.notes.push(`${sheetName} 這一側有 ${left.truncatedFrom} 列，只比對了前 ${left.rowCount} 列。`
-        + '要比完請指定明確的 range 分批做。');
+      diff.notes.push(`⚠ ${sheetName} 這一側有 ${left.truncatedFrom} 列，`
+        + `只比對了前 ${left.rowCount} 列（上限 ${MAX_COMPARE_CELLS} 格）。`
+        + '第 ' + (left.rowCount + 1) + ' 列之後沒有比到，要比完請指定 range 分批做。');
     }
     if (rightTruncated) {
       diff.notes.push(`${rightLabel} 那一側有 ${rightTruncated} 列，沒有全部比到。`);
