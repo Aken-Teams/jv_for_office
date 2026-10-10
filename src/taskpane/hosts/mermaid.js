@@ -136,6 +136,18 @@ export async function renderMermaid(code, opts = {}) {
     if (junk && junk.parentNode) junk.parentNode.removeChild(junk);
   }
 
+  return svgToPng(svg);
+}
+
+/**
+ * An SVG string to a PNG, through the pane's own canvas.
+ *
+ * Split out of the mermaid path because a chart this module draws itself needs
+ * exactly the same trip: Word takes pictures, not vectors, so whatever is drawn
+ * has to arrive as pixels. The SVG comes back alongside the raster so the
+ * PowerPoint side can take the vector instead.
+ */
+export async function svgToPng(svg) {
   // The SVG carries its own size, but not always as attributes — read the
   // viewBox when width/height are percentages or missing.
   const box = /viewBox="([\d.\-\s]+)"/.exec(svg);

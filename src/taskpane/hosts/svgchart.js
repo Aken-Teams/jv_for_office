@@ -1147,12 +1147,240 @@ function boxChart(spec, theme) {
   return out;
 }
 
+/**
+ * A Gantt chart — what happens when, drawn rather than described.
+ *
+ * ── Why this exists instead of mermaid's `gantt` ──
+ * 「我不建議用 mermaid 來呈現」, with a screenshot that made the case: mermaid
+ * writes each task's NAME ON ITS BAR, so on any real schedule the labels run
+ * into the bars beside them and the chart becomes a pile of overlapping text.
+ * Underneath it, every date on the axis was printed whether or not there was
+ * room, which turned the bottom of the figure into a smear of digits.
+ *
+ * Both failures are the same mistake — drawing everything the data contains and
+ * hoping it fits. So this one makes two decisions up front, and they are the
+ * whole design:
+ *
+ *   1. **Names live in a left-hand gutter, never on the bars.** A column of
+ *      left-aligned labels is readable at any row count; a label floating on a
+ *      bar is readable only when the bar happens to be long enough.
+ *   2. **The number of date ticks is derived from the width available**, not
+ *      from the number of days. Fewer, legible dates beat all of them.
+ *
+ * Sections (「MVP (P0)」, 「V1.1 (P1)」) become tinted bands behind their rows,
+ * which is what makes a phased plan readable as phases rather than as a list.
+ */
+const DAY_MS = 86400000;
+
+/** `2026-10-11` → a day number. Returns NaN for anything else, on purpose. */
+function dayOf(value) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(value || '').trim());
+  if (!m) return NaN;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / DAY_MS;
+}
+
+/** A day number back to `10/11`, or `2026/10/11` when the year matters. */
+function dayLabel(day, withYear) {
+  const d = new Date(day * DAY_MS);
+  const md = `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  return withYear ? `${d.getUTCFullYear()}/${md}` : md;
+}
+
+/**
+ * How many date labels fit, and how far apart they should sit.
+ *
+ * Measured against the room on the axis rather than the length of the project:
+ * the same six-month plan drawn 900 points wide and 400 points wide needs a
+ * different number of dates, and printing the same number on both is how the
+ * narrow one ends up illegible.
+ */
+function tickStep(days, plotWidth, withYear) {
+  const labelPt = withYear ? 62 : 42;
+  const room = Math.max(2, Math.floor(plotWidth / labelPt));
+  // Steps a person reads as intervals: a week, a fortnight, a month, a quarter.
+  for (const step of [1, 2, 3, 7, 14, 30, 60, 90, 180, 365]) {
+    if (days / step <= room) return step;
+  }
+  return Math.ceil(days / room);
+}
+
+function ganttChart(spec, theme) {
+  const raw = Array.isArray(spec.tasks) ? spec.tasks : [];
+  const tasks = raw.map((t) => {
+    const start = dayOf(t && t.start);
+    // `end` wins; `days` is the convenience form for 「這件事做五天」.
+    const len = Math.max(1, Number(t && t.days) || 0);
+    const end = t && t.end ? dayOf(t.end) : start + len - 1;
+    return {
+      name: String((t && t.name) || ''),
+      group: String((t && t.group) || ''),
+      start,
+      end,
+      done: Math.max(0, Math.min(1, Number(t && t.progress) || 0)),
+    };
+  }).filter((t) => t.name && Number.isFinite(t.start) && Number.isFinite(t.end) && t.end >= t.start);
+
+  if (!tasks.length) {
+    throw new Error('tasks 是必要的：[{ name, start: "2026-10-11", end: "2026-10-20" }]。'
+      + '日期要用 YYYY-MM-DD；也可以用 days 代替 end。');
+  }
+
+  const W = Number(spec.width) || 760;
+  const H = Number(spec.height) || Math.max(180, 64 + tasks.length * 26 + 34);
+  const first = Math.min(...tasks.map((t) => t.start));
+  const last = Math.max(...tasks.map((t) => t.end));
+  const span = Math.max(1, last - first + 1);
+  /**
+   * Show the year when it is ambiguous, not just when the plan is long.
+   *
+   * A five-month plan running Oct→Mar is under 300 days, so a span-only test
+   * prints 「12/22」 and 「1/5」 side by side with nothing saying they are twelve
+   * months apart in reading order but two weeks apart in fact.
+   */
+  const withYear = span > 300
+    || new Date(first * DAY_MS).getUTCFullYear() !== new Date(last * DAY_MS).getUTCFullYear();
+
+  /**
+   * The gutter holds the section label AND the task name, side by side.
+   *
+   * Measuring it from the names alone was the first version's bug: the section
+   * column was then drawn over the first 56 points of that space, and every
+   * task name lost its last few characters to make room — 「需求確認與設計」 came
+   * out as 「需求確…」, which reads as data someone truncated rather than as a
+   * layout that ran out of room.
+   */
+  const grouped = tasks.some((t) => t.group);
+  const groupW = grouped
+    ? Math.min(96, Math.max(44, Math.max(...tasks.map((t) => labelWidth(t.group))) + 10))
+    : 0;
+  const nameW = Math.min(
+    groupW + Math.max(70, Math.max(...tasks.map((t) => labelWidth(t.name))) + 14),
+    Math.round(W * 0.46),
+  );
+  const top = spec.title ? 44 : 16;
+  const axisH = 26;
+  const x0 = 12 + nameW;
+  const plotW = Math.max(60, W - x0 - 16);
+  const rows = tasks.length;
+  const rowH = Math.max(16, Math.min(30, (H - top - axisH - 8) / rows));
+  const barH = Math.max(8, rowH - 9);
+  const atDay = (d) => x0 + ((d - first) / span) * plotW;
+
+  let out = '';
+  if (spec.title) out += text(12, 26, spec.title, { size: 17, bold: true, color: theme.strong });
+
+  /**
+   * Section bands first, so everything else sits on top of them.
+   *
+   * Drawn as one band per CONTIGUOUS run rather than per distinct name: tasks
+   * are listed in the order they happen, so a group that appears twice is two
+   * phases with the same label and deserves two bands.
+   */
+  const bands = [];
+  for (let i = 0; i < rows; i++) {
+    const g = tasks[i].group;
+    const prev = bands[bands.length - 1];
+    if (prev && prev.group === g) prev.to = i;
+    else bands.push({ group: g, from: i, to: i });
+  }
+  const tintFor = (i) => mixHex(theme.bg || '#FFFFFF',
+    (spec.colors || [])[i % ((spec.colors || []).length || 1)]
+      || SERIES[i % SERIES.length], 0.12);
+  bands.forEach((b, i) => {
+    if (!b.group) return;
+    const y = top + b.from * rowH;
+    out += rect(0, y, W, (b.to - b.from + 1) * rowH, tintFor(i));
+    out += text(10, y + ((b.to - b.from + 1) * rowH) / 2, b.group,
+      { size: 11.5, bold: true, color: theme.muted || '#8A93A0', baseline: 'middle' });
+  });
+
+  // Grid and dates. One pass, so a tick and its label can never disagree.
+  const step = tickStep(span, plotW, withYear);
+  const axisY = top + rows * rowH;
+  for (let d = first; d <= last; d += step) {
+    out += line(atDay(d), top, atDay(d), axisY, theme.line || '#D5DBE0');
+    out += text(atDay(d), axisY + 16, dayLabel(d, withYear),
+      { size: 10.5, color: theme.muted || '#8A93A0', anchor: 'middle' });
+  }
+  out += line(x0, axisY, x0 + plotW, axisY, theme.line || '#D5DBE0');
+
+  tasks.forEach((t, i) => {
+    const y = top + i * rowH;
+    const tone = (spec.colors || [])[bands.findIndex((b) => i >= b.from && i <= b.to) % ((spec.colors || []).length || 1)]
+      || SERIES[Math.max(0, bands.findIndex((b) => i >= b.from && i <= b.to)) % SERIES.length];
+    // The name, in the gutter. Left-aligned and clipped by the gutter width
+    // rather than by the bar, so a long name never lands on top of a neighbour.
+    out += text(12 + groupW, y + rowH / 2, fit(t.name, nameW - groupW - 6),
+      { size: 11.5, color: theme.ink || '#3D3D3D', baseline: 'middle' });
+
+    const bx = atDay(t.start);
+    // +1 because a task that starts and ends on the same day still lasts a day;
+    // a floor so a one-day task is a mark rather than a hairline.
+    const bw = Math.max(4, ((t.end - t.start + 1) / span) * plotW);
+    out += rect(bx, y + (rowH - barH) / 2, bw, barH, tone, ' rx="3"');
+    if (t.done > 0) {
+      out += rect(bx, y + (rowH - barH) / 2, bw * t.done, barH,
+        mixHex(tone, '#000000', 0.25), ' rx="3"');
+    }
+  });
+
+  /**
+   * Today, when today is inside the plan.
+   *
+   * Drawn last so it reads as an overlay, and skipped entirely when it falls
+   * outside the range — a red line pinned to the left edge of a chart about next
+   * year says nothing and looks like a rendering fault.
+   */
+  const now = dayOf(spec.today);
+  if (Number.isFinite(now) && now >= first && now <= last) {
+    out += line(atDay(now), top - 4, atDay(now), axisY, theme.accent || '#C0392B', 1.5);
+    out += text(atDay(now), top - 8, '今天',
+      { size: 10, color: theme.accent || '#C0392B', anchor: 'middle' });
+  }
+
+  return out;
+}
+
+/**
+ * How tall this chart wants to be when nobody said.
+ *
+ * A Gantt's height is a function of its row count — the other charts all fit the
+ * same box whatever they hold, a Gantt does not. Twenty tasks in a 380-point
+ * frame is six points a row, which is a smear.
+ */
+ganttChart.preferredHeight = (spec) => {
+  const n = (Array.isArray(spec.tasks) ? spec.tasks : []).length || 1;
+  return Math.max(180, (spec.title ? 44 : 16) + n * 26 + 34);
+};
+
+/** Rough on-screen width of a label, CJK counted double. */
+function labelWidth(s) {
+  let w = 0;
+  for (const ch of String(s || '')) {
+    w += /[\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60]/.test(ch) ? 11.5 : 6;
+  }
+  return w;
+}
+
+/** Trim a label to the room it has, with an ellipsis so the cut is visible. */
+function fit(s, room) {
+  const str = String(s || '');
+  if (labelWidth(str) <= room) return str;
+  let out = '';
+  for (const ch of str) {
+    if (labelWidth(out + ch) > room - 8) break;
+    out += ch;
+  }
+  return out + '…';
+}
+
 const RENDER = {
   column: barChart, bar: barChart, line: lineChart, area: lineChart,
   pie: pieChart, donut: pieChart,
   waterfall: waterfallChart, funnel: funnelChart, radar: radarChart,
   timeline: timelineChart, map: mapChart,
   scatter: scatterChart, stacked: stackedChart, stacked100: stackedChart,
+  gantt: ganttChart,
   box: boxChart,
 };
 export const CHART_TYPES = Object.keys(RENDER);
@@ -1195,7 +1423,10 @@ export function chartSvg(spec = {}, theme = {}) {
     bg: theme.bg || '#FFFFFF',
   };
   const W = Number(spec.width) || 760;
-  const H = Number(spec.height) || 380;
+  // A renderer may ask for a height when the caller did not give one — see
+  // ganttChart.preferredHeight, where the row count decides it.
+  const H = Number(spec.height)
+    || (typeof render.preferredHeight === 'function' ? render.preferredHeight(spec) : 380);
   const body = render({ ...spec, type, width: W, height: H }, t);
 
   // width/height in points AND a viewBox: PowerPoint sizes the inserted object

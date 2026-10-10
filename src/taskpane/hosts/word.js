@@ -31,7 +31,8 @@ import { makeScriptGuard } from './guard.js';
 import { equationOoxml, xmlImbalance } from './omml.js';
 // Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the
 // first time somebody asks for a diagram.
-import { renderMermaid } from './mermaid.js';
+import { renderMermaid, svgToPng } from './mermaid.js';
+import { chartSvg } from './svgchart.js';
 
 /** Cheap and synchronous; Office.js answers from a local table. */
 export function hasApi(version) {
@@ -73,6 +74,8 @@ const BASE_TOOLS = [
   'word_insert_layout',
   'word_insert_chart',
   'word_insert_diagram',
+  // 時程表自己畫，不走 mermaid——理由見 insertGantt。
+  'word_insert_gantt',
   'word_insert_equation',
   'word_insert_link',
   'word_page_design',
@@ -2741,6 +2744,78 @@ async function insertCover(args) {
  */
 const TEXT_COLUMN_PT = 450;
 
+/**
+ * A schedule, drawn rather than described.
+ *
+ * ── Why this is not a mermaid diagram ──
+ * 「我不建議用 mermaid 來呈現」, and the screenshot settled it. Mermaid's gantt
+ * writes each task's NAME ON ITS BAR, so on any real plan the labels collide
+ * with the bars beside them; and it prints every date on the axis whether there
+ * is room or not, which turns the bottom of the figure into a smear of digits.
+ *
+ * The chart module already draws one properly — names in a left gutter, tick
+ * count derived from the width available — so this is that chart, rendered to a
+ * picture the way the mermaid path already does.
+ *
+ * It is still a picture, like every other figure in a Word document: Word has
+ * no chart object that can do a Gantt. The result message says so rather than
+ * letting the model imply the bars are editable.
+ */
+async function insertGantt(args) {
+  const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+  if (!tasks.length) {
+    throw new Error('tasks 是必要的：[{ name: "需求確認", start: "2026-10-13", end: "2026-10-24" }]。'
+      + '日期用 YYYY-MM-DD，end 可以換成 days。');
+  }
+  const width = Math.max(240, Math.min(Number(args.width) || TEXT_COLUMN_PT, 900));
+  const svg = chartSvg({
+    type: 'gantt',
+    title: args.title,
+    tasks,
+    today: args.today,
+    width,
+    height: args.height === undefined ? undefined : Number(args.height),
+    colors: Array.isArray(args.colors) ? args.colors : undefined,
+  }, {
+    // A document is black on white; a schedule inside one should not be the
+    // brightest thing on the page. Greys and one accent, same as the tables.
+    ink: '#000000', strong: '#000000', second: '#595959', accent: '#C0392B',
+    muted: '#595959', line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFFFFF',
+  });
+
+  // Outside Word.run: a script load, an image decode and a canvas, none of
+  // which belong inside an Office batch.
+  const png = await svgToPng(svg);
+  const drawn = /height="(\d+)"/.exec(svg);
+  const h = drawn ? Number(drawn[1]) : 300;
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, { track: args.track === true }, async () => {
+      const anchor = args.paragraph && items.length
+        ? items[resolveRange(items, args).from - 1]
+            .insertParagraph('', String(args.at) === 'before' ? 'Before' : 'After')
+        : ctx.document.body.insertParagraph('', 'End');
+      anchor.alignment = 'Centered';
+      const pic = anchor.insertInlinePictureFromBase64(png.data, 'Replace');
+      pic.width = width;
+      // Scaled from what was actually drawn, so the picture never arrives
+      // stretched — the Gantt's height depends on how many rows it holds.
+      pic.height = Math.round((h / (Number(/width="(\d+)"/.exec(svg)?.[1]) || width)) * width);
+      if (args.caption) {
+        const cap = anchor.insertParagraph(String(args.caption), 'After');
+        cap.styleBuiltIn = 'Caption';
+        cap.alignment = 'Centered';
+      }
+      await ctx.sync();
+      return null;
+    });
+    return `已插入甘特圖，${tasks.length} 項工作，寬 ${width} 點。`
+      + '這是一張圖片（Word 沒有甘特圖物件），要改內容就重新產生一張。'
+      + trackingNote(result);
+  });
+}
+
 async function insertDiagram(args) {
   const code = String(args.code || '').trim();
   if (!code) throw new Error('code 是必要的，內容是 mermaid 語法。');
@@ -3539,6 +3614,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_layout':
       case 'word_insert_chart':
       case 'word_insert_diagram':
+      case 'word_insert_gantt':
       case 'word_insert_equation':
       case 'word_checkbox':
       case 'word_insert_link':
@@ -3578,6 +3654,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_layout: insertLayout,
           word_insert_chart: insertChart,
           word_insert_diagram: insertDiagram,
+          word_insert_gantt: insertGantt,
           word_insert_equation: insertEquation,
           word_checkbox: checkbox,
           word_insert_link: link,
@@ -3673,6 +3750,7 @@ export const meta = {
     word_insert_layout: t('正在並排區塊…'),
     word_insert_chart: t('正在繪製圖表…'),
     word_insert_diagram: t('正在畫流程圖…'),
+    word_insert_gantt: t('正在畫時程圖…'),
     word_insert_equation: t('正在插入公式…'),
     word_read_attachment: t('正在看你貼的圖…'),
     word_insert_attachment: t('正在把圖片放進文件…'),
@@ -3697,6 +3775,7 @@ export const meta = {
     word_insert_table: t('正在整理表格…'),
     word_insert_chart: t('正在設計圖表…'),
     word_insert_diagram: t('正在設計流程圖…'),
+    word_insert_gantt: t('正在排時程…'),
     word_insert_equation: t('正在推導公式…'),
     word_format_range: t('正在決定格式…'),
   }),

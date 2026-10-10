@@ -4055,16 +4055,25 @@ async function addChart(args) {
     // it could not draw, and the agent — correctly — reported it as unsupported.
     events: args.events,
     total: args.total,
+    // A Gantt carries its rows in `tasks`, not in categories/values — the same
+    // omission that broke `timeline` above, caught before it shipped this time.
+    tasks: args.tasks,
+    today: args.today,
     colors: args.colors || [th.strong, th.second, th.accent],
     data_labels: args.data_labels,
     area: args.area,
     center: args.center,
     center_label: args.center_label,
     width: num(args.width, 760),
-    height: num(args.height, 380),
+    // A Gantt's height follows its row count, so it is left for the renderer to
+    // decide unless somebody asked for one.
+    height: args.height === undefined && String(args.type) === 'gantt'
+      ? undefined : num(args.height, 380),
   }, th);
 
-  const geo = fitToBody(num(args.width, 760), num(args.height, 380), args);
+  const drawn = /height="(\d+)"/.exec(svg);
+  const drawnH = drawn ? Number(drawn[1]) : num(args.height, 380);
+  const geo = fitToBody(num(args.width, 760), drawnH, args);
   const note = await focusSlideFor(args);
   await insertImageData(svg, Office.CoercionType.XmlSvg, geo);
   return `已插入${args.title ? `「${args.title}」` : ''}圖表，${geo.width}×${geo.height} 點。${note}\n`

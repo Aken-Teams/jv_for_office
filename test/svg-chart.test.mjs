@@ -70,7 +70,7 @@ const SHAPES = [
  * covering the shapes that ARE awkward for it.
  */
 const SHAPE_FUZZ = CHART_TYPES.filter(
-  (t) => !['timeline', 'radar', 'map', 'scatter', 'box'].includes(t));
+  (t) => !['timeline', 'radar', 'map', 'scatter', 'box', 'gantt'].includes(t));
 
 for (const type of SHAPE_FUZZ) {
   let bad = 0;
@@ -136,7 +136,9 @@ ok('甜甜圈有挖空的內圓', (donut.match(/<circle/g) || []).length >= 1);
 // ── Refusals ─────────────────────────────────────────────────────────────────
 
 let msg = '';
-try { chartSvg({ type: 'gantt', categories: ['A'], values: [1] }); } catch (e) { msg = e.message; }
+// 曾經用 'gantt' 當這裡的代表，後來甘特圖真的做出來了——一個「不支援的類型」的
+// 樣本在它被支援的那天就不再是樣本，所以換成一個不會哪天長出來的名字。
+try { chartSvg({ type: 'sankey', categories: ['A'], values: [1] }); } catch (e) { msg = e.message; }
 ok('不支援的類型會被擋掉並列出可用的', msg.includes('column') && msg.includes('pie'), msg);
 
 msg = '';
@@ -508,6 +510,81 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('寬畫布的圖例不縮', /font-size="12"/.test(big.svg));
   ok('圖例沒有掉出畫布', small.lowest <= 300, `${small.lowest}`);
   ok('地圖拿到的寬度比圖例多', small.w > 430 * 0.3, `${small.w.toFixed(0)}`);
+}
+
+/**
+ * 甘特圖——為什麼不用 mermaid 畫。
+ *
+ * 「我不建議用 mermaid 來呈現」，而那張截圖把理由講完了：mermaid 的 gantt 把**任務
+ * 名寫在長條上**，所以只要排程有兩件事時間重疊，字就疊在一起；而且它有幾天印幾天，
+ * 最後整排日期擠成一團。
+ *
+ * 兩個失敗是同一個錯誤——把資料裡有的東西全部畫出來，然後祈禱它放得下。所以這裡釘
+ * 的就是那兩個相反的決定：**名字在左欄不在長條上**、**日期標籤的數量由寬度決定**。
+ */
+{
+  const TH = { ink: '#3D3D3D', strong: '#1A3A5C', accent: '#C0392B', muted: '#8A93A0',
+    line: '#D5DBE0', tint: '#EEF3F8', bg: '#FFFFFF' };
+  const PLAN = [
+    { name: '需求確認與設計', group: 'MVP (P0)', start: '2026-10-13', end: '2026-10-24' },
+    { name: '編輯器與題型', group: 'MVP (P0)', start: '2026-10-27', end: '2026-11-14' },
+    { name: '發佈與填答頁', group: 'MVP (P0)', start: '2026-11-03', end: '2026-11-21' },
+    { name: '外觀主題與 AI 出題', group: 'V1.1 (P1)', start: '2026-12-15', end: '2027-01-09' },
+    { name: '測驗模式與 PDF 報告', group: 'V1.2 (P2)', start: '2027-02-02', end: '2027-03-06' },
+  ];
+  const svg = chartSvg({ type: 'gantt', title: '版本規劃與時程', width: 700,
+    today: '2026-12-20', tasks: PLAN }, TH);
+  ok('甘特圖畫得出乾淨的 SVG', !svgProblem(svg), svgProblem(svg));
+
+  // 任務名完整出現在左欄——這是 mermaid 那張圖最明顯的毛病。
+  const labels = [...svg.matchAll(/<text[^>]*>([^<]+)</g)].map((m) => m[1]);
+  for (const t of PLAN) {
+    ok(`「${t.name}」完整畫出來，沒有被截斷`, labels.includes(t.name),
+      labels.filter((l) => l.startsWith(t.name.slice(0, 3))).join('|'));
+  }
+  ok('階段名稱變成色帶標籤', ['MVP (P0)', 'V1.1 (P1)', 'V1.2 (P2)'].every((g) => labels.includes(g)));
+
+  // 日期標籤數量是算出來的，不是有幾天印幾天。
+  const dates = labels.filter((l) => /^\d{4}\/\d+\/\d+$|^\d+\/\d+$/.test(l));
+  ok('日期標籤沒有多到擠成一團', dates.length <= Math.floor(700 / 42), `${dates.length} 個`);
+  ok('日期標籤也不會少到看不出時間軸', dates.length >= 3, `${dates.length} 個`);
+  // 跨年的時程要帶年份，不然 12/22 和 1/5 看起來像差兩週。
+  ok('跨年的時程會帶年份', dates.every((d) => /^\d{4}\//.test(d)), dates.join(' '));
+
+  ok('今天在範圍內就畫線', labels.includes('今天'));
+  const away = chartSvg({ type: 'gantt', width: 700, today: '2030-01-01', tasks: PLAN }, TH);
+  // 一條釘在左邊緣的紅線，對一份講明年的圖表什麼也沒說，只像畫壞了。
+  ok('今天不在範圍內就不畫', !/今天/.test(away));
+}
+
+{
+  const TH = { ink: '#3D3D3D', strong: '#1A3A5C', bg: '#FFFFFF' };
+  // 高度跟著列數走——20 列塞進 380 點是一列六點，那是一團糊。
+  const five = chartSvg({ type: 'gantt', width: 600, tasks: Array.from({ length: 5 },
+    (_, i) => ({ name: `T${i}`, start: '2026-01-01', days: 5 })) }, TH);
+  const twenty = chartSvg({ type: 'gantt', width: 600, tasks: Array.from({ length: 20 },
+    (_, i) => ({ name: `T${i}`, start: '2026-01-01', days: 5 })) }, TH);
+  const h = (x) => Number(/height="(\d+)"/.exec(x)[1]);
+  ok('高度跟著工作數量長', h(twenty) > h(five), `${h(five)} → ${h(twenty)}`);
+
+  // days 是「做幾天」的簡寫，跟 end 擇一。
+  const byDays = chartSvg({ type: 'gantt', width: 400,
+    tasks: [{ name: 'a', start: '2026-01-01', days: 10 }] }, TH);
+  ok('days 可以代替 end', !svgProblem(byDays), svgProblem(byDays));
+
+  // 一天的工作要看得見，不能是一條髮絲。
+  const oneDay = chartSvg({ type: 'gantt', width: 800,
+    tasks: [{ name: '甲', start: '2026-01-01', end: '2026-01-01' },
+      { name: '乙', start: '2026-01-02', end: '2026-06-30' }] }, TH);
+  const widths = [...oneDay.matchAll(/<rect[^>]*width="([\d.]+)"[^>]*rx="3"/g)].map((m) => Number(m[1]));
+  ok('一天的工作仍然看得見', widths.length > 0 && Math.min(...widths) >= 4,
+    widths.join('|'));
+
+  let threw = '';
+  try { chartSvg({ type: 'gantt', tasks: [] }, TH); } catch (e) { threw = e.message; }
+  ok('沒有 tasks 會說清楚格式', /YYYY-MM-DD/.test(threw), threw);
+  try { chartSvg({ type: 'gantt', tasks: [{ name: 'x', start: '明天' }] }, TH); } catch (e) { threw = e.message; }
+  ok('日期格式不對也會說清楚', /YYYY-MM-DD/.test(threw), threw);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
