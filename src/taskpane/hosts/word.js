@@ -1788,30 +1788,90 @@ export function drawChart(spec) {
   return canvas;
 }
 
+/**
+ * A document's figures come from the same renderer the deck's do.
+ *
+ * ── Why this stopped being a hand-rolled canvas chart ──
+ * 「可以多一些用自己畫的圖來呈現在 WORD 中，也可以放一些圖表」. Word had four
+ * types — column, bar, line, pie — drawn by a canvas routine written only for
+ * this host, while the chart module next door already had sixteen, tested
+ * against eleven awkward data shapes each.
+ *
+ * Both paths end at the same place: Word has no chart object worth having here,
+ * so a figure is a picture either way. Keeping two renderers meant the document
+ * side was permanently a decade behind the slide side for no benefit at all —
+ * and a waterfall or a radar is exactly as useful in a report as on a slide.
+ *
+ * The palette is the document's, not a deck's: greys and one accent, because a
+ * figure in a report should not be the brightest thing on the page.
+ */
+/** What each type is called, for the sentence that comes back. */
+const CHART_LABEL = {
+  column: '直條', bar: '橫條', line: '折線', area: '區域', pie: '圓餅', donut: '甜甜圈',
+  waterfall: '瀑布', funnel: '漏斗', radar: '雷達', timeline: '時間軸', map: '地圖',
+  scatter: '散佈', stacked: '堆疊長條', stacked100: '百分比堆疊', box: '箱型',
+};
+
+const DOC_CHART_INK = {
+  ink: '#000000', strong: '#1F3864', second: '#595959', accent: '#C0392B',
+  muted: '#595959', line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFFFFF',
+};
+
 async function insertChart(args) {
   const type = String(args.type || 'column').toLowerCase();
+  if (type === 'gantt') {
+    throw new Error('甘特圖請用 word_insert_gantt——它的資料是 tasks（每項有 name/start/end），'
+      + '不是 categories/values。');
+  }
   const cats = Array.isArray(args.categories) ? args.categories.map(String) : [];
-  let series = Array.isArray(args.series) ? args.series : [];
-  // A single unnamed row of numbers is the common case; accept it without
-  // making the model wrap it in the full shape.
-  if (!series.length && Array.isArray(args.values)) series = [{ name: args.title || '數列 1', values: args.values }];
-  series = series
-    .filter(sr => sr && Array.isArray(sr.values))
-    .map((sr, i) => ({ name: String(sr.name || `數列 ${i + 1}`), values: sr.values }));
 
-  if (!cats.length || !series.length) {
-    throw new Error('需要 categories（分類名稱）和 series（數列）。例如 '
-      + 'categories=["Q1","Q2"], series=[{name:"營收", values:[120,140]}]。');
+  /**
+   * Two input shapes, one of them historical.
+   *
+   * This tool has always taken `series: [{name, values}]`, while the chart
+   * module takes `values` (one row or several) plus `series` as a list of
+   * NAMES. Both are accepted rather than one being broken: a model that learnt
+   * the old shape from an older build should not start failing mid-document.
+   */
+  const rich = (Array.isArray(args.series) ? args.series : [])
+    .filter((sr) => sr && Array.isArray(sr.values));
+  const values = rich.length ? rich.map((sr) => sr.values) : args.values;
+  const names = rich.length
+    ? rich.map((sr, i) => String(sr.name || `數列 ${i + 1}`))
+    : args.series;
+
+  // Charts that take their data some other way say so themselves; the rest need
+  // categories and numbers, and saying it here gives a better message than the
+  // renderer's.
+  const SELF_SHAPED = ['timeline', 'map', 'scatter', 'box'];
+  if (!SELF_SHAPED.includes(type) && (!cats.length || !values)) {
+    throw new Error('需要 categories（分類名稱）和 values（數字）。例如 '
+      + 'categories=["Q1","Q2"], values=[120,140]；多個數列就給二維陣列，'
+      + '再用 series=["營收","毛利"] 命名。');
   }
-  if (series.some(sr => sr.values.length !== cats.length)) {
-    throw new Error(`每個數列的數字個數必須跟 categories 一樣多（目前 categories 有 ${cats.length} 個）。`);
-  }
-  if (type === 'pie' && series.length > 1) {
+  if (type === 'pie' && Array.isArray(values) && Array.isArray(values[0]) && values.length > 1) {
     throw new Error('圓餅圖只能有一個數列。要比較多個數列請用 column 或 bar。');
   }
 
-  const canvas = drawChart({ type, title: String(args.title || ''), categories: cats, series });
-  const base64 = canvas.toDataURL('image/png').split(',')[1];
+  const width = Math.max(240, Math.min(Number(args.width) || TEXT_COLUMN_PT, 900));
+  const svg = chartSvg({
+    type,
+    title: String(args.title || ''),
+    categories: cats,
+    values,
+    series: names,
+    events: args.events,
+    total: args.total,
+    points: args.points,
+    map: args.map,
+    data_labels: args.data_labels,
+    width,
+    height: args.height === undefined ? undefined : Number(args.height),
+  }, DOC_CHART_INK);
+
+  const png = await svgToPng(svg);
+  const base64 = png.data;
+  const drawnH = Number((/height="(\d+)"/.exec(svg) || [])[1]) || 380;
 
   return Word.run(async (ctx) => {
     const items = await addressedParagraphs(ctx, args);
@@ -1824,7 +1884,12 @@ async function insertChart(args) {
         anchor = ctx.document.body.insertParagraph('', 'End');
       }
       anchor.alignment = 'Centered';
-      anchor.insertInlinePictureFromBase64(base64, 'Replace');
+      const pic = anchor.insertInlinePictureFromBase64(base64, 'Replace');
+      // Sized from what was actually drawn, so a chart whose height the renderer
+      // chose (a tall timeline, a long radar) arrives in proportion rather than
+      // squashed into whatever Word assumed.
+      pic.width = width;
+      pic.height = Math.round(drawnH * (width / (Number((/width="(\d+)"/.exec(svg) || [])[1]) || width)));
       if (args.caption) {
         const cap = anchor.insertParagraph(String(args.caption), 'After');
         cap.alignment = 'Centered';
@@ -1835,8 +1900,8 @@ async function insertChart(args) {
       await ctx.sync();
       return null;
     });
-    return `已插入${type === 'pie' ? '圓餅' : type === 'line' ? '折線' : type === 'bar' ? '橫條' : '直條'}圖`
-      + `（${cats.length} 個分類、${series.length} 個數列）。`
+    return `已插入 ${CHART_LABEL[type] || type} 圖${cats.length ? `（${cats.length} 個分類）` : ''}，`
+      + `寬 ${width} 點。`
       + '圖是以圖片插入的——Word 的增益集 API 沒有原生圖表物件，所以它不能在 Word 裡點開改數字；'
       + '數字有變要重新產生一張。' + trackingNote(result);
   });

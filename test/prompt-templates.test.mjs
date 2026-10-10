@@ -343,5 +343,46 @@ ok('可以改範圍', /host = \?[\s\S]{0,120}UPDATE|UPDATE prompt_templates SET[
     && /if \(!saved\) return;/.test(app));
 }
 
+/**
+ * 選了繁體中文，就不能跑出英文。
+ *
+ * ── 回報的畫面 ──
+ * 「WORD 的 AI 明明選擇繁體中文，但有時候會跑出英文的回答」，而截圖裡文件內容從頭
+ * 到尾是中文，**工具呼叫之間的進度說明**卻悄悄變成英文：「Now chapter 1, the
+ * product overview.」「Next I'll add the goals table…」。
+ *
+ * ── 為什麼只有那幾行會漂 ──
+ * `LOCALE_PROMPT` 在 locale 是 zh-TW 的時候直接回傳空字串——理由是「主提示詞本來
+ * 就是中文，再講一次是噪音」。那對**文件內容**成立（它是中文因為問題是中文），對
+ * **進度說明**不成立：那是模型在對自己交代進度，不是在回答，長流程跑下去沒有東西
+ * 釘著它就會漂成英文。
+ *
+ * 所以每一種語言都要有指示，zh-TW 也不例外。
+ */
+{
+  const fs2 = await import('fs');
+  const src = fs2.default.readFileSync(
+    new URL('../../ai-agents-office/server/src/services/excelContext.ts', import.meta.url), 'utf8');
+  const names = src.match(/export const LOCALE_NAMES[\s\S]*?\};/)[0]
+    .replace('export ', '').replace(': Record<string, string>', '');
+  const fn = src.match(/export function LOCALE_PROMPT[\s\S]*?\n}/)[0]
+    .replace('export function', 'function').replace('(locale: string): string', '(locale)');
+  const mod = await import('data:text/javascript,'
+    + encodeURIComponent(`${names}${fn};export{LOCALE_PROMPT}`));
+
+  for (const loc of ['zh-TW', 'zh-CN', 'en']) {
+    const p2 = mod.LOCALE_PROMPT(loc);
+    ok(`${loc} 有拿到語言指示`, !!p2 && p2.length > 50, `${p2.length} 字`);
+  }
+  const tw = mod.LOCALE_PROMPT('zh-TW');
+  ok('繁中的指示講的是繁體中文', /一律用\*\*繁體中文\*\*/.test(tw), tw.slice(0, 60));
+  // 這是真正會漂的地方，要點名。
+  ok('有點名工具呼叫之間的進度說明', /每一句進度說明/.test(tw));
+  ok('有講它為什麼會漂（對自己交代進度）', /對自己\s*交代進度|不是在回答使用者/.test(tw));
+  // 工具參數不是講給使用者聽的，不該被翻譯。
+  ok('丟給工具的參數是例外', /丟給工具的參數/.test(tw));
+  ok('不翻譯使用者原本的內容', /不要翻譯/.test(tw));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

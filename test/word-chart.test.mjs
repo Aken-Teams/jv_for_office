@@ -109,6 +109,10 @@ const CASES = [
 ];
 
 let pass = 0, fail = 0;
+const ok = (name, cond, detail) => {
+  cond ? pass++ : fail++;
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  → ' + (detail || '')}`);
+};
 for (const [name, spec] of CASES) {
   made = [];
   let bad = null;
@@ -133,5 +137,31 @@ for (const [name, spec] of CASES) {
 // The three shapes the tool refuses outright are checked at the executeTool
 // layer, not here; what this file pins is that anything that DOES reach the
 // renderer comes out as a picture rather than as a blank rectangle.
+/**
+ * 文件裡的圖，跟投影片用同一個繪圖器。
+ *
+ * ── 為什麼不再自己用 canvas 畫 ──
+ * Word 原本只有 column／bar／line／pie 四種，是一支只為這個 host 寫的 canvas 程式；
+ * 隔壁的圖表模組已經有十六種，而且每一種都被十一種刁鑽的資料形狀測過。
+ *
+ * 兩條路最後都是同一件事：Word 沒有值得用的原生圖表物件，所以圖就是圖片。養兩個
+ * 繪圖器只換來「文件端永遠落後投影片端十年」，而瀑布圖和雷達圖在報告裡跟在投影片
+ * 裡一樣有用。
+ */
+{
+  const fs = await import('fs');
+  const spec = JSON.parse(fs.default.readFileSync(
+    new URL('../../ai-agents-office/server/src/services/wordToolSpec.ts', import.meta.url), 'utf8')
+    .match(/enum: \[('column'[^\]]*)\]/)[1]
+    .replace(/'/g, '"')
+    .replace(/^/, '[').replace(/$/, ']'));
+  for (const t of ['waterfall', 'funnel', 'radar', 'timeline', 'map', 'scatter',
+    'stacked', 'stacked100', 'box', 'area', 'donut']) {
+    ok(`word_insert_chart 收得到 ${t}`, spec.includes(t), spec.join(','));
+  }
+  // 甘特圖的資料形狀不一樣，所以它有自己的工具——留在這個 enum 裡只會讓模型用錯。
+  ok('甘特圖不在這個 enum 裡', !spec.includes('gantt'), spec.join(','));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
