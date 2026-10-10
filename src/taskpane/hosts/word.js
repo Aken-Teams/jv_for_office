@@ -749,6 +749,94 @@ async function manageList(args) {
  *   totals   the last N rows, filled dark with white bold text, so the number
  *            the reader is looking for is the one that stands out.
  */
+/**
+ * Roughly how wide a string looks, in half-width units.
+ *
+ * CJK characters and full-width punctuation occupy two columns in every font a
+ * document like this uses, so counting `.length` makes 「優先級」 look the same
+ * width as 「abc」 and the column comes out a third too narrow.
+ */
+function textWidth(text) {
+  let w = 0;
+  for (const ch of String(text ?? '')) {
+    w += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/
+      .test(ch) ? 2 : 1;
+  }
+  return w;
+}
+
+/** No column narrower than this, in points — about four half-width characters. */
+const MIN_COL_PT = 34;
+/**
+ * Where a cell stops asking for more width.
+ *
+ * Body prose is going to wrap whatever we do, so a 300-character description
+ * must not be allowed to claim thirty times the width of an ID column. Past
+ * roughly thirty half-width units a cell's demand is capped and the wrapping is
+ * accepted as normal.
+ */
+const WIDTH_CAP = 30;
+
+/**
+ * Share a table's width out according to what each column actually holds.
+ *
+ * ── The problem this fixes ──
+ * Word gives every column the same width, so a 「編號」 column holding 「F-01」
+ * gets exactly as much room as a 「說明」 column holding a sentence. The result
+ * is what the report showed: the ID wrapping onto two lines, the header 「編號」
+ * breaking into 編 / 號, and the description crammed into a quarter of the page
+ * while two thirds of the table sits empty.
+ *
+ * The tool has always taken a `widths` argument, which looks like the answer and
+ * is not: the model only passes it when it thinks to, and it rarely thinks to.
+ * A good default beats an available option — the same reason the recipes carry
+ * their own layout rather than asking for coordinates.
+ *
+ * ── Headers set the floor, body text sets the appetite ──
+ * A wrapped header is the thing that reads as broken, so a header's full width
+ * is always honoured. Body cells ask for what they hold up to WIDTH_CAP and then
+ * stop, because prose wraps and that is fine.
+ */
+function autoWidths(rows, hasHeader, totalPt) {
+  const cols = rows[0].length;
+  const want = [];
+  for (let c = 0; c < cols; c++) {
+    let body = 0;
+    for (let r = hasHeader ? 1 : 0; r < rows.length; r++) {
+      body = Math.max(body, Math.min(textWidth(rows[r][c]), WIDTH_CAP));
+    }
+    const head = hasHeader ? textWidth(rows[0][c]) : 0;
+    // +2 for the cell's own padding, so a column that exactly fits its text does
+    // not wrap on the last character.
+    want[c] = Math.max(body, head, 2) + 2;
+  }
+
+  const sum = want.reduce((a, b) => a + b, 0);
+  let out = want.map((w) => (totalPt * w) / sum);
+
+  /**
+   * Lift the narrow columns to the floor, and take it from the wide ones.
+   *
+   * Proportional alone puts a two-character column at 18pt, which wraps 「P0」.
+   * The width has to come from somewhere, so it is taken from the columns that
+   * are above the floor, in proportion to how far above it they are — the wide
+   * description column gives up the most and notices it least.
+   */
+  const short = out.map((w, i) => (w < MIN_COL_PT ? MIN_COL_PT - w : 0));
+  const owed = short.reduce((a, b) => a + b, 0);
+  if (owed > 0) {
+    const spare = out.map((w) => Math.max(0, w - MIN_COL_PT));
+    const pool = spare.reduce((a, b) => a + b, 0);
+    // Nothing to take from — every column is already at or under the floor, so
+    // the table is simply too narrow for this many columns. Leave it alone and
+    // let Word wrap; forcing the floor here would push the table off the page.
+    if (pool > owed) {
+      out = out.map((w, i) => w + short[i] - (owed * spare[i]) / pool);
+    }
+  }
+  return out.map((w) => Math.round(w * 10) / 10);
+}
+
 async function insertTable(args) {
   const values = Array.isArray(args.values) ? args.values.map(r => (Array.isArray(r) ? r.map(String) : [String(r)])) : [];
   if (!values.length) throw new Error('values 是必要的，格式是二維陣列（第一列通常是表頭）。');
@@ -774,7 +862,22 @@ async function insertTable(args) {
       table.headerRowCount = hasHeader ? 1 : 0;
       if (args.banded !== undefined) table.styleBandedRows = !!args.banded;
       if (args.first_column !== undefined) table.styleFirstColumn = !!args.first_column;
+      /**
+       * Read the width back rather than assuming one.
+       *
+       * Word has just sized the table to the text column, and that number
+       * depends on the page size and the margins of a document somebody else
+       * set up. Measuring it is exact; assuming 450pt would leave an A5 table
+       * hanging off the page and an A3 one marooned in the middle.
+       */
+      table.load('width');
       await ctx.sync();
+
+      // Explicit widths win — the model asked for something specific, and the
+      // automatic split is a default, not a policy.
+      const auto = (!widths.length && args.auto_width !== false && Number(table.width) > 0)
+        ? autoWidths(rows, hasHeader, Number(table.width))
+        : null;
 
       // Per-cell work. Queued in one batch — getCell is cheap and the sync below
       // is the only round trip.
@@ -787,6 +890,7 @@ async function insertTable(args) {
           // column with a left-aligned title looks like a mistake.
           if (a) cell.horizontalAlignment = a;
           if (widths[c]) cell.columnWidth = Number(widths[c]);
+          else if (auto) cell.columnWidth = auto[c];
           if (isTotal) {
             cell.shadingColor = String(args.total_fill || '#1F3864');
             const f = cell.body.font;
@@ -802,6 +906,7 @@ async function insertTable(args) {
     const notes = [];
     if (align.length) notes.push('欄位對齊已套用');
     if (widths.length) notes.push('欄寬已指定');
+    else if (args.auto_width !== false) notes.push('欄寬已依內容自動分配');
     if (totals) notes.push(`最後 ${totals} 列設成合計列（深底白字）`);
     return `已插入 ${rows.length} 列 × ${cols} 欄的表格`
       + (notes.length ? `，${notes.join('、')}` : '')
@@ -987,39 +1092,120 @@ async function insertToc(args) {
      * something honest about its limits, and the result message says which
      * happened so nobody is misled about whether 「更新目錄」 will do anything.
      */
-    let asField = true;
+    /**
+     * Three ways to put a contents page in, in order of how good the result is.
+     *
+     * ── Why there are three ──
+     * 「目錄產生一定失敗」. What was failing was `insertOoxml` with a TOC field
+     * inside it: Word refuses the fragment without explaining itself, every
+     * time, so the code fell straight through to the text-only fallback. The
+     * screenshot of the result tells the story — entries and indent levels, no
+     * page numbers, no dot leaders, and 「更新目錄」 does nothing to it.
+     *
+     *   1. `Range.insertField` (WordApi 1.5). The supported way to make a field,
+     *      which is what a contents page IS. Word owns the result, so 更新目錄
+     *      works and page numbers appear.
+     *   2. The OOXML fragment. Kept for builds older than 1.5, where it is the
+     *      only route to a real field even if it is a fragile one.
+     *   3. Styled paragraphs. Not a contents page — a picture of one. Last.
+     *
+     * The result message says which happened, because the three are worth
+     * different things to the person reading them and only one of them responds
+     * to 更新目錄.
+     */
+    let how = 'field';
     const result = await withTracking(ctx, { track: false }, async () => {
+      // The field needs a paragraph of its own to live in; the heading, when
+      // there is one, goes immediately above it.
+      const makeHost = () => {
+        if (!anchor) {
+          const host = ctx.document.body.insertParagraph('', 'Start');
+          if (heading) {
+            const h = host.insertParagraph(heading, 'Before');
+            h.styleBuiltIn = 'TOCHeading';
+          }
+          return host;
+        }
+        const host = anchor.insertParagraph('', where);
+        if (heading) {
+          const h = host.insertParagraph(heading, 'Before');
+          h.styleBuiltIn = 'TOCHeading';
+        }
+        return host;
+      };
+
+      if (hasApi('1.5')) {
+        try {
+          const host = makeHost();
+          /**
+           * `\o "1-3"` collect Heading 1–3, `\h` make the entries hyperlinks,
+           * `\z` hide the leader in web view, `\u` use the outline level. The
+           * same switches Word's own 「參考資料 → 目錄」 writes, so the result is
+           * a contents page Word recognises as its own rather than something an
+           * add-in left behind.
+           */
+          host.getRange('Whole').insertField('Replace', 'TOC', '\\o "1-3" \\h \\z \\u', false);
+          await ctx.sync();
+          return null;
+        } catch {
+          // Fall through. The empty paragraph may survive the failure; the OOXML
+          // path below writes over the same spot, which tidies it up.
+          how = 'ooxml';
+        }
+      } else {
+        how = 'ooxml';
+      }
+
       try {
         if (anchor) anchor.insertOoxml(ooxml, where);
         else ctx.document.body.insertOoxml(ooxml, 'Start');
         await ctx.sync();
+        return null;
       } catch {
-        asField = false;
-        // Plain paragraphs, in reverse so each insert lands above the last and
-        // the order comes out right without tracking an anchor as it moves.
-        const lines = heading
-          ? [{ level: 0, text: heading }, ...entries]
-          : entries.slice();
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const e = lines[i];
-          const p = anchor
-            ? anchor.insertParagraph(e.text, where)
-            : ctx.document.body.insertParagraph(e.text, 'Start');
-          p.styleBuiltIn = e.level === 0 ? 'TOCHeading' : `TOC${e.level}`;
-          p.alignment = 'Left';
-        }
-        await ctx.sync();
+        how = 'text';
       }
+
+      // Plain paragraphs, in reverse so each insert lands above the last and
+      // the order comes out right without tracking an anchor as it moves.
+      const lines = heading
+        ? [{ level: 0, text: heading }, ...entries]
+        : entries.slice();
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const e = lines[i];
+        const q = anchor
+          ? anchor.insertParagraph(e.text, where)
+          : ctx.document.body.insertParagraph(e.text, 'Start');
+        q.styleBuiltIn = e.level === 0 ? 'TOCHeading' : `TOC${e.level}`;
+        q.alignment = 'Left';
+      }
+      await ctx.sync();
       return null;
     });
 
-    if (asField) {
-      return `已插入目錄，收錄 ${entries.length} 個標題（${entries.filter(e => e.level === 1).length} 個第一層）。`
+    /**
+     * Say which of the three happened, because they are worth different things.
+     *
+     * The old message claimed 「項目現在就看得到了」 on every success, which was
+     * true of the OOXML path (it writes the entry text into the field result)
+     * and false of a real field, which Word leaves empty until it paginates. A
+     * person told the entries are already there, looking at an empty box, has
+     * been told the tool worked when it has not finished.
+     */
+    const found = `收錄 ${entries.length} 個標題（${entries.filter((e) => e.level === 1).length} 個第一層）`;
+    if (how === 'field') {
+      return `已插入目錄欄位，${found}。\n`
+        + '【要告訴使用者】請按一次「參考資料 → 更新目錄」，項目和頁碼才會出現——'
+        + 'Office.js 讀不到分頁，所以欄位要由 Word 自己算一次。'
+        + '算過之後它就是一個真正的目錄：之後標題有增減，再按一次更新就會同步。'
+        + trackingNote(result);
+    }
+    if (how === 'ooxml') {
+      return `已插入目錄，${found}。`
         + '項目現在就看得到了；頁碼要等使用者按一次「參考資料 → 更新目錄」才會出現，'
         + '因為 Office.js 讀不到分頁資訊。之後標題有增減，同樣按更新就會同步。'
         + trackingNote(result);
     }
-    return `已插入目錄，收錄 ${entries.length} 個標題。\n`
+    return `已插入目錄，${found}。\n`
       + '【要告訴使用者的一件事】這份文件不接受用增益集插入目錄「欄位」，'
       + '所以放進去的是一份**文字版**目錄：項目和階層都對，但沒有頁碼，'
       + '而且之後改了標題不會自動同步。'

@@ -45,11 +45,25 @@ function fakeCell(r, c, log) {
   return cell;
 }
 
+/** 一張 A4、一吋邊界的文件，文字欄大約就是這麼寬。 */
+const TABLE_WIDTH_PT = 451;
+
 function fakeTable(rows, cols, log) {
   const cells = new Map();
   return {
     rowCount: rows,
     styleBuiltIn: '', headerRowCount: -1, styleBandedRows: null, styleFirstColumn: null,
+    /**
+     * 寬度要讀得回來。
+     *
+     * 真正的 Office 會在插入時把表格撐到文字欄寬，而自動欄寬是**先量再分配**——
+     * 量不到就什麼都不做。假物件少一個 load()，整段 withTracking 會丟 TypeError，
+     * 然後對齊、合計列、欄寬全部靜靜地沒被套用。
+     */
+    width: undefined,
+    load(what) {
+      if (String(what).includes('width')) this.width = TABLE_WIDTH_PT;
+    },
     getCell(r, c) {
       const key = `${r},${c}`;
       if (!cells.has(key)) cells.set(key, fakeCell(r, c, log));
@@ -284,6 +298,78 @@ const spec = fs.readFileSync('d:/github/ai-agents-office/server/src/services/wor
 ok('後端規格宣告了 word_insert_layout', spec.includes("name: 'word_insert_layout'"));
 ok('後端規格宣告了表格對齊', spec.includes('align:') && spec.includes('total_rows:'));
 ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thickness:'));
+
+/**
+ * 沒給欄寬的時候，欄寬要自己算。
+ *
+ * ── 回報的畫面 ──
+ * 「表格真的很醜」。Word 預設每一欄一樣寬，所以裝著「F-01」的編號欄跟裝著一整句
+ * 說明的欄位一樣寬——結果就是編號折成兩行、表頭「編號」斷成 編／號、而說明欄被擠
+ * 在四分之一的版面裡，旁邊三分之二是空的。
+ *
+ * 這支工具一直都收 `widths` 參數，看起來像答案但不是：模型只有想到的時候才會給，
+ * 而它很少想到。**好的預設值勝過可用的選項**——跟版型自己帶版面、而不是要模型算
+ * 座標是同一個道理。
+ */
+{
+  const grid = [
+    ['編號', '功能', '說明', '優先級'],
+    ['F-01', '題型支援', '單選、複選、下拉、簡答、詳答、線性量表（1–10）、日期、時間', 'P0'],
+    ['F-02', '題目編輯', '新增、複製、刪除、拖曳排序；可設為必填', 'P0'],
+    ['F-03', '問卷範本', '提供活動報名、時間調查、滿意度、讀者調查等 8 種範本', 'P0'],
+  ];
+  reset();
+  const r = await host.executeTool('word_insert_table', { values: grid });
+  const t = log.tables[0].table;
+  const w = [0, 1, 2, 3].map((c) => t.getCell(0, c).columnWidth);
+
+  ok('四欄都拿到寬度', w.every((x) => typeof x === 'number' && x > 0), w.join('|'));
+  // 說明欄裝的是一整句話，編號欄裝的是四個字——不該一樣寬。
+  ok('說明欄最寬', w[2] === Math.max(...w), w.join('|'));
+  ok('編號欄最窄', w[0] === Math.min(...w), w.join('|'));
+  ok('說明欄至少是編號欄的兩倍', w[2] > w[0] * 2, w.join('|'));
+  // 這是畫面上最刺眼的那個：表頭折行看起來就像壞掉。
+  ok('編號欄夠寬，不會把「編號」折成兩行', w[0] >= 34, `${w[0]}`);
+  ok('優先級欄夠寬', w[3] >= 34, `${w[3]}`);
+  // 分配完要剛好是表格的寬度，不能多也不能少。
+  const sum = w.reduce((a, b) => a + b, 0);
+  ok('加起來等於表格寬度', Math.abs(sum - TABLE_WIDTH_PT) < 1, `${sum} vs ${TABLE_WIDTH_PT}`);
+  ok('回報有講欄寬是自動分配的',
+    /自動分配/.test(String(r.content || '')), String(r.content || ''));
+}
+
+{
+  // 中日韓字元佔兩格。用 .length 算的話「優先級」會跟「abc」一樣寬，欄位就窄三成。
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['abc', '中文字'], ['x', 'y']],
+  });
+  const t = log.tables[0].table;
+  ok('中文表頭比同字數的英文表頭寬',
+    t.getCell(0, 1).columnWidth > t.getCell(0, 0).columnWidth,
+    `${t.getCell(0, 0).columnWidth} vs ${t.getCell(0, 1).columnWidth}`);
+}
+
+{
+  // 模型明確指定就照做——自動分配是預設值，不是政策。
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['a', 'b'], ['1', '2']], widths: [100, 351],
+  });
+  const t = log.tables[0].table;
+  ok('有給 widths 就以 widths 為準',
+    t.getCell(0, 0).columnWidth === 100 && t.getCell(0, 1).columnWidth === 351);
+}
+
+{
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['a', 'b'], ['1', '2']], auto_width: false,
+  });
+  const t = log.tables[0].table;
+  ok('auto_width: false 就完全不碰欄寬',
+    t.getCell(0, 0).columnWidth === undefined, `${t.getCell(0, 0).columnWidth}`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
