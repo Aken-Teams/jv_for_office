@@ -1264,7 +1264,22 @@ function readAttachment(args) {
 
 // ── Bridge: run a tool the agent asked for ────────────────────────────────────
 
-async function postToolResult(runId, callId, result) {
+/**
+ * Send a tool's answer back, and say how it got past the gate.
+ *
+ * ── Why the decision travels with the result ──
+ * The confirmation card is shown HERE and nowhere else, so this is the only
+ * place that knows whether a person actually looked at it. The server can see
+ * that a write happened; it cannot see whether anybody agreed to it, and an
+ * audit that records the first without the second answers the easy half of
+ * 「發生了什麼事」 and not the half anyone asks about afterwards.
+ *
+ * 'auto' is its own value rather than folded into 'allowed' on purpose. 自動允許
+ * means the write ran with nobody watching, and that is a materially different
+ * fact from somebody reading the card and clicking — collapsing them would make
+ * the log agree with itself and disagree with what happened.
+ */
+async function postToolResult(runId, callId, result, decision = 'none') {
   try {
     await fetch(`${state.apiBase}/api/${host.meta.api}/tool-result`, {
       method: 'POST',
@@ -1274,6 +1289,7 @@ async function postToolResult(runId, callId, result) {
         ok: result.ok !== false,
         content: result.content,
         error: result.error,
+        decision,
         // Only ever set by the two tools that answer with pixels. The bridge
         // passes it through untouched and excel-mcp turns it into an MCP image
         // block, which is what actually puts it in front of the model.
@@ -1347,7 +1363,9 @@ async function handleToolRequest(payload) {
       updateUndoButton();
       noteUndoScope();
     }
-    await postToolResult(state.runId, callId, result);
+    // Nothing was gated here: inserting a picture the person attached to this
+    // very message is not a write anybody needs warning about.
+    await postToolResult(state.runId, callId, result, 'none');
     setStatus(t('思考中…'));
     return;
   }
@@ -1355,6 +1373,15 @@ async function handleToolRequest(payload) {
   let card = null;
   /** Anything the person typed on the confirmation card. */
   let userNote = '';
+  /**
+   * How this call got past the confirmation gate, for the audit row.
+   *
+   * Starts at 'none' because that is the truth for a read and for a write that
+   * needed no gate — most calls. It only becomes something else where a gate
+   * actually happened, so a new branch that forgets to set it records 「沒有人
+   * 確認」, which is the safe thing for it to record.
+   */
+  let decided = 'none';
 
   if (needsConfirm) {
     // Look before asking: the dialog is only useful if it says what will be lost.
@@ -1375,10 +1402,12 @@ async function handleToolRequest(payload) {
     // runs and a broken target still fails here rather than mid-write.
     if (state.autoApprove && !isIrreversible(payload)) {
       card = autoApprovedCard(summary);
+      decided = 'auto';
     } else {
       const decision = await askConfirm(summary, detail, meta, isIrreversible(payload));
       card = decision.card;
       userNote = decision.note || '';
+      decided = decision.approved ? 'allowed' : 'rejected';
       if (!decision.approved) {
         // A refusal that carries the person's own instruction is worth far more
         // than a bare "no": the agent can act on it immediately instead of
@@ -1389,7 +1418,7 @@ async function handleToolRequest(payload) {
           error: userNote
             ? `使用者不同意這樣做，他的說明是：「${userNote}」。請照他說的調整，不要重複同一個呼叫。`
             : '使用者拒絕了這次操作。請不要重試，改問他想怎麼做。',
-        });
+        }, 'rejected');
         setStatus('');
         return;
       }
@@ -1463,7 +1492,7 @@ async function handleToolRequest(payload) {
     progressFailed(t('沒成功，AI 正在換方法'), result.error || t('執行失敗'));
   }
 
-  await postToolResult(state.runId, callId, result);
+  await postToolResult(state.runId, callId, result, decided);
   setStatus(t('思考中…'));
   // How much came back is the number that matters here. excel_run_script exists so
   // the model gets a CONCLUSION, not a data dump; a result measured in tens of KB
