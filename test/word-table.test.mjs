@@ -85,14 +85,62 @@ function fakeWord() {
     log.tables.push({ rows: r, cols: c, loc, values, table: t });
     return t;
   };
+  /**
+   * 樣式集合。
+   *
+   * ensureBaseStyles 是**改樣式定義**，不是在段落上塗字型——這是「一開始就對」
+   * 跟「最後再修一次」的差別。假物件答不出樣式，那段就被 catch 吃掉，而測試會以
+   * 為它有跑。
+   */
+  log.styles = {};
+  const fakeStyle = (name, exists) => {
+    const st = {
+      isNullObject: !exists,
+      font: {},
+      load() {},
+    };
+    for (const k of ['name', 'size', 'color', 'bold']) {
+      Object.defineProperty(st.font, k, {
+        set: (v) => {
+          log.styles[name] = log.styles[name] || {};
+          log.styles[name][k] = v;
+        },
+        get: () => (log.styles[name] || {})[k],
+      });
+    }
+    return st;
+  };
+  // 一台繁體中文的 Word：內建樣式用的是中文名字，英文名查不到。
+  const REAL_STYLES = new Set(['內文', '標題 1', '標題 2', '標題 3', '標題 4',
+    '標題', '清單段落', '圖表標號', '引文']);
+
   const ctx = {
     document: {
       changeTrackingMode: 'Off',
+      getStyles: () => ({
+        getByNameOrNullObject: (n) => fakeStyle(n, REAL_STYLES.has(n)),
+      }),
       body: {
         insertTable: makeTable,
         insertOoxml: (xml) => log.ooxml.push({ xml, loc: 'End' }),
         insertParagraph: () => ({}),
-        paragraphs: { items: [], load() {} },
+        /**
+         * 不能是空的。
+         *
+         * 封面是先寫幾段 OOXML、再抓最後一段當錨點把資訊表接在後面。items 是空
+         * 陣列的話錨點是 undefined，表格整段靜靜地沒建出來——而用 `if (table)`
+         * 包起來的斷言就會「通過」，因為它根本沒跑。
+         */
+        paragraphs: {
+          items: Array.from({ length: 8 }, () => ({
+            insertTable: makeTable,
+            insertOoxml: (xml, loc) => log.ooxml.push({ xml, loc }),
+            insertParagraph: () => ({ styleBuiltIn: '' }),
+            insertBreak: () => {},
+            getRange: () => ({ insertField: () => ({}) }),
+          })),
+          load() {},
+        },
         // executeTool photographs the document before every write so the change
         // is undoable; the fake answers with an empty body rather than nothing,
         // because a snapshot failure would be swallowed into ok:false and the
@@ -123,7 +171,8 @@ globalThis.Office = {
     // Every gate answers yes for 1.x so the tools under test are reachable;
     // the point here is the arithmetic, not the gating.
     requirements: { isSetSupported: () => true },
-    document: { addHandlerAsync: () => {} },
+    // 可寫：ensureBaseStyles 是一份文件只做一次，換文件才會再做一次。
+    document: { url: 'C:/first.docx', addHandlerAsync: () => {} },
   },
   EventType: { DocumentSelectionChanged: 'sel' },
 };
@@ -189,7 +238,18 @@ ok('欄寬逐欄對上', [36, 180, 40, 36, 78, 80].every((w, c) => at(0, c, 'col
 // plain; rows 3–5 are 小計/稅/總計.
 ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#1F3864'),
   [0, 1, 2, 3, 4, 5].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
-ok('明細列沒有被染到', [0, 1, 2].every((r) => at(r, 0, 'shadingColor') === undefined));
+// 明細列現在也會上色（白／淡灰相間），但絕不能沾到合計列的深底。
+ok('合計列的深底沒有外溢到明細列',
+  [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#1F3864'),
+  [0, 1, 2].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
+ok('明細列是白／淡灰相間',
+  at(1, 0, 'shadingColor') === '#FFFFFF' && at(2, 0, 'shadingColor') === '#F2F2F2',
+  `${at(1, 0, 'shadingColor')}|${at(2, 0, 'shadingColor')}`);
+ok('表頭黑底白字',
+  at(0, 0, 'shadingColor') === '#000000' && t.getCell(0, 0).body.font.color === '#FFFFFF',
+  `${at(0, 0, 'shadingColor')}|${t.getCell(0, 0).body.font.color}`);
+ok('明細列的字是黑的', t.getCell(1, 0).body.font.color === '#000000',
+  String(t.getCell(1, 0).body.font.color));
 ok('合計列白色粗體',
   [3, 4, 5].every((r) => t.getCell(r, 5).body.font.color === '#FFFFFF' && t.getCell(r, 5).body.font.bold === true));
 ok('合計列仍然靠右', at(5, 5, 'horizontalAlignment') === 'Right',
@@ -199,7 +259,8 @@ ok('合計列仍然靠右', at(5, 5, 'horizontalAlignment') === 'Right',
 reset();
 await host.executeTool('word_insert_table', { values: [['A', 'B'], ['1', '2']], total_rows: 99 });
 const t2 = log.tables[0].table;
-ok('total_rows 過大也不會吃掉表頭', t2.getCell(0, 0)._props.shadingColor === undefined,
+ok('total_rows 過大也不會吃掉表頭',
+  t2.getCell(0, 0)._props.shadingColor === '#000000',
   String(t2.getCell(0, 0)._props.shadingColor));
 
 // Ragged input is normal from a model; short rows get padded rather than
@@ -369,6 +430,147 @@ ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thick
   const t = log.tables[0].table;
   ok('auto_width: false 就完全不碰欄寬',
     t.getCell(0, 0).columnWidth === undefined, `${t.getCell(0, 0).columnWidth}`);
+}
+
+/**
+ * 一開始就對，而不是最後再修一次。
+ *
+ * ── 回報的問題 ──
+ * 「他其實一開始都會做得非常醜…文字是細明體，標題、段落、條列的設計不一，然後她
+ * 會在最後有一個專門看排版的流程把這些都修好，但其實我很希望他當下就修好。」
+ *
+ * 舊做法做不到：`word_apply_theme` 是走過每一段去塗——它只修得到**已經寫好**的
+ * 東西，而之後寫進去的又會變回 Word 的 zh-TW 預設（細明體）。最後要一道排版流程
+ * 收尾，本身就是「格式長在段落上而不是長在樣式上」的症狀。
+ *
+ * 改樣式定義就從源頭解決：「內文」從此是微軟正黑體，之後每一段、每個項目、每個
+ * 圖說、每個表格儲存格都第一次就對，而且會一直對。
+ */
+{
+  // 換一份沒碰過的文件，才看得到「第一次寫入」的行為——上面那些表格測試已經把
+  // 這份文件的樣式設過了，而那個鎖本身就是要測的東西之一。
+  Office.context.document.url = 'C:/fresh.docx';
+  reset();
+  log.styles = {};
+  await host.executeTool('word_insert_text', { text: '第一句話' });
+
+  ok('寫第一個字之前就先改樣式', Object.keys(log.styles).length > 0,
+    JSON.stringify(log.styles));
+  // 這是整件事的重點：細明體是 Word 的 zh-TW 預設，不改樣式就永遠是它。
+  ok('內文字型是微軟正黑體', log.styles['內文'] && log.styles['內文'].name === '微軟正黑體',
+    JSON.stringify(log.styles['內文']));
+  ok('標題 1 也改了', !!log.styles['標題 1'], JSON.stringify(log.styles['標題 1']));
+  ok('標題階層是遞減的',
+    log.styles['標題 1'].size > log.styles['標題 2'].size
+    && log.styles['標題 2'].size > log.styles['標題 3'].size,
+    [1, 2, 3].map((n) => log.styles[`標題 ${n}`].size).join(' > '));
+  // 第四層如果比內文還小，讀起來就不像標題了。
+  ok('標題 4 不會比內文小', log.styles['標題 4'].size > log.styles['內文'].size,
+    `${log.styles['標題 4'].size} vs ${log.styles['內文'].size}`);
+  // 條列用的是「清單段落」樣式——不一起改，條列就會跟內文長得不一樣。
+  ok('清單段落一起改了', log.styles['清單段落'].name === '微軟正黑體');
+  // 表格儲存格裡的文字是「內文」樣式的段落，所以改內文就一起涵蓋到了。
+  ok('圖說也一起改了', log.styles['圖表標號'].name === '微軟正黑體');
+  ok('圖說比內文小一點', log.styles['圖表標號'].size < log.styles['內文'].size);
+
+  // 查不到的名字要安靜跳過，不能讓整段寫入失敗。
+  ok('英文名查不到也不會壞', !log.styles.Normal && !log.styles['Heading 1'],
+    JSON.stringify(Object.keys(log.styles)));
+}
+
+{
+  // 一份文件只做一次——每次寫入都重跑是白花一趟來回。
+  Office.context.document.url = 'C:/once.docx';
+  reset();
+  log.styles = {};
+  await host.executeTool('word_insert_text', { text: 'a' });
+  const first = JSON.stringify(log.styles);
+  ok('新文件的第一次寫入有改樣式', Object.keys(log.styles).length > 0, first.slice(0, 80));
+  log.styles = {};
+  await host.executeTool('word_insert_text', { text: 'b' });
+  ok('第二次寫入不會再改一次樣式', Object.keys(log.styles).length === 0,
+    JSON.stringify(log.styles).slice(0, 80));
+
+  // 但換了一份文件就要重做——SharedRuntime 會讓窗格活過換檔案。
+  Office.context.document.url = 'C:/another.docx';
+  log.styles = {};
+  await host.executeTool('word_insert_text', { text: 'c' });
+  ok('換一份文件會重新設定樣式', Object.keys(log.styles).length > 0,
+    JSON.stringify(log.styles).slice(0, 80));
+}
+
+{
+  // 表格預設顏色：藍色的底配黑字，表格最該做好的「看得清楚」反而最差。
+  reset();
+  await host.executeTool('word_insert_table', { values: [['a', 'b'], ['1', '2']] });
+  const style = log.tables[0].table.styleBuiltIn;
+  /**
+   * 內建樣式是一場賭博：它實際畫出什麼取決於文件的佈景主題，而那是建檔的人的。
+   * 表格唯一的工作就是看得清楚，這件事不值得賭——所以 TableGrid 只負責框線，
+   * 顏色自己上。
+   */
+  ok('預設樣式只提供框線，不帶顏色', style === 'TableGrid', style);
+  ok('沒有 Accent 色號', !/Accent/.test(style), style);
+  // 自己畫條紋的時候，樣式自己的條紋要關掉——兩組錯開半列的條紋比哪一組都糟。
+  ok('關掉內建的條紋', log.tables[0].table.styleBandedRows === false,
+    String(log.tables[0].table.styleBandedRows));
+}
+
+{
+  // 指定了樣式就是選了一個外觀，不該被我們蓋掉。
+  reset();
+  await host.executeTool('word_insert_table',
+    { values: [['a'], ['1']], style: 'GridTable4_Accent1' });
+  const t3 = log.tables[0].table;
+  ok('指定樣式時不自己上色', t3.getCell(0, 0)._props.shadingColor === undefined,
+    String(t3.getCell(0, 0)._props.shadingColor));
+}
+
+{
+  reset();
+  await host.executeTool('word_insert_table', { values: [['a'], ['1']], paint: false });
+  const t4 = log.tables[0].table;
+  ok('paint: false 也不上色', t4.getCell(0, 0)._props.shadingColor === undefined);
+}
+
+{
+  reset();
+  await host.executeTool('word_insert_table',
+    { values: [['a']], style: 'GridTable4_Accent1' });
+  ok('使用者指定顏色還是照做',
+    log.tables[0].table.styleBuiltIn === 'GridTable4_Accent1');
+}
+
+{
+  /**
+   * 封面的文件資訊表跟內文表格要長得一樣。
+   *
+   * 一份文件裡的表格對「表格長什麼樣」各說各話，正是這整件事要擋掉的。而這張沒有
+   * 表頭列——它是標籤／值的配對——所以條紋要從第一列開始數，也不該有黑底。
+   */
+  reset();
+  await host.executeTool('word_insert_cover', {
+    title: '個人問卷平台 產品需求文件',
+    subtitle: 'Personal Survey Platform — PRD',
+    meta: { 文件版本: 'v1.0', 建立日期: '2026-10-11', 文件狀態: '草稿' },
+  });
+  const info = log.tables[0] && log.tables[0].table;
+  if (info) {
+    ok('封面資訊表第一列是白的，不是黑底',
+      info.getCell(0, 0)._props.shadingColor === '#FFFFFF',
+      String(info.getCell(0, 0)._props.shadingColor));
+    ok('封面資訊表第二列是淡灰',
+      info.getCell(1, 0)._props.shadingColor === '#F2F2F2',
+      String(info.getCell(1, 0)._props.shadingColor));
+    ok('封面資訊表的字是黑的',
+      info.getCell(0, 1).body.font.color === '#000000',
+      String(info.getCell(0, 1).body.font.color));
+  }
+  // 「首頁文字我希望盡量都是黑色」——標題和副標都不該是藍的。
+  const xml = log.ooxml.map((o) => o.xml).join('');
+  ok('封面沒有藍色文字', !/w:color w:val="(1F3864|2E5C9A|4F81BD|16314F)"/.test(xml),
+    (xml.match(/w:color w:val="[0-9A-Fa-f]{6}"/g) || []).slice(0, 6).join(' '));
+  ok('封面有黑色文字', /w:color w:val="000000"/.test(xml));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

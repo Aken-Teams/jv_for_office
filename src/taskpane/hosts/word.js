@@ -837,6 +837,187 @@ function autoWidths(rows, hasHeader, totalPt) {
   return out.map((w) => Math.round(w * 10) / 10);
 }
 
+/**
+ * The table a document gets when nobody asked for a particular look.
+ *
+ * ── Why the colours are painted rather than picked from a built-in style ──
+ * Two built-in styles were tried and both were wrong in a way that could not be
+ * argued with. `GridTable4_Accent1` was blue on blue: the loudest thing on a
+ * page of black text, with bands close enough in value to the type that the
+ * cells stopped being easy to read. Swapping to plain `GridTable4` fixed the
+ * hue and broke the contrast — a solid black header whose text stayed dark, and
+ * mid-grey banding instead of light.
+ *
+ * The lesson is that a built-in style is a lottery: what it actually paints
+ * depends on the document's theme, which belongs to whoever created the file.
+ * For the one thing a table has to do — be readable — that is not a bet worth
+ * taking. So `TableGrid` supplies the borders and nothing else, and the four
+ * colours below are stated outright.
+ *
+ * A table in a document is a reference, not a feature. Colour belongs on the
+ * thing you want looked at, and that is almost never the table.
+ */
+const DEFAULT_TABLE_STYLE = 'TableGrid';
+
+/**
+ * Black header with white type; light grey and white alternating below.
+ *
+ * The band is `#F2F2F2` rather than a mid grey on purpose — it is there to help
+ * the eye track across a wide row, and anything darker starts competing with the
+ * text instead of carrying it.
+ */
+const TABLE_INK = {
+  headerFill: '#000000',
+  headerText: '#FFFFFF',
+  band: '#F2F2F2',
+  plain: '#FFFFFF',
+  text: '#000000',
+};
+
+/**
+ * Give a table the house colours.
+ *
+ * Shared by the three places that build one — the table tool, the cover's
+ * document-facts table, and the key-value block — because a document whose
+ * tables disagree about what a table looks like is the thing this was meant to
+ * stop. The cover table has no header row, so `hasHeader` decides both where
+ * the black band goes and where the stripes start counting from.
+ */
+function paintTable(table, rowCount, colCount, hasHeader) {
+  // Our own stripes, so the style's are switched off — two sets half a row out
+  // of phase is worse than either alone.
+  table.styleBandedRows = false;
+  table.styleFirstColumn = false;
+  for (let r = 0; r < rowCount; r++) {
+    const isHead = hasHeader && r === 0;
+    for (let c = 0; c < colCount; c++) {
+      const cell = table.getCell(r, c);
+      if (isHead) {
+        cell.shadingColor = TABLE_INK.headerFill;
+        const hf = cell.body.font;
+        hf.color = TABLE_INK.headerText;
+        hf.bold = true;
+      } else {
+        // Counted from the first BODY row, not the first table row: with a
+        // header present, counting from the table starts the stripes one row
+        // out and the banding reads as a mistake.
+        const band = (r - (hasHeader ? 1 : 0)) % 2 === 1;
+        cell.shadingColor = band ? TABLE_INK.band : TABLE_INK.plain;
+        cell.body.font.color = TABLE_INK.text;
+      }
+    }
+  }
+}
+
+/**
+ * The built-in styles worth redefining, and what each one is for.
+ *
+ * Office.js looks styles up BY NAME, and the name is localised — a Chinese Word
+ * calls Normal 「內文」. There is no by-enum lookup on the style collection, so
+ * each entry carries the names it might answer to and the first one that exists
+ * wins. An entry nobody matches is skipped rather than failing the write.
+ */
+const BASE_STYLES = [
+  { role: 'body', names: ['Normal', '內文', '正文', '标准'] },
+  { role: 'h1', names: ['Heading 1', '標題 1', '标题 1'] },
+  { role: 'h2', names: ['Heading 2', '標題 2', '标题 2'] },
+  { role: 'h3', names: ['Heading 3', '標題 3', '标题 3'] },
+  { role: 'h4', names: ['Heading 4', '標題 4', '标题 4'] },
+  { role: 'title', names: ['Title', '標題', '标题'] },
+  { role: 'body', names: ['List Paragraph', '清單段落', '清单段落'] },
+  { role: 'aside', names: ['Caption', '圖表標號', '題注', '题注'] },
+  { role: 'aside', names: ['Quote', '引文', '引用'] },
+];
+
+/** Which document this session has already styled, so it happens once. */
+let styledDoc = null;
+
+/**
+ * Make the document look right BEFORE anything is written into it.
+ *
+ * ── The complaint this answers ──
+ * 「他其實一開始都會做得非常醜…文字是細明體，標題、段落、條列的設計不一，然後她
+ * 會在最後有一個專門看排版的流程把這些都修好，但其實我很希望他當下就修好」.
+ *
+ * Exactly right, and the old design could not do it. `word_apply_theme` walks
+ * every existing paragraph and paints it — which means it can only fix what has
+ * already been written, and anything written afterwards comes out in Word's
+ * zh-TW default (細明體) again. A tidy-up pass at the end is the symptom of
+ * formatting living on paragraphs instead of on styles.
+ *
+ * Redefining the STYLE fixes it at the source: 「內文」 is 微軟正黑體 from now
+ * on, so every paragraph, list item, caption and table cell that uses it comes
+ * out right the first time and stays right. Nothing to repair afterwards,
+ * because nothing was ever wrong.
+ *
+ * ── Why tables are covered too, without being touched ──
+ * A table cell's text is a paragraph in the Normal style. A table STYLE sets
+ * borders and shading, not a typeface — so redefining Normal reaches inside
+ * every table as well. That is the other half of 「表格文字沒改到」: there was
+ * nothing to reach in and change, only a style that had never been set.
+ *
+ * Runs once per document per session, and never throws: a document whose styles
+ * are locked still gets its content, just in whatever it was already using.
+ */
+async function ensureBaseStyles(ctx, wanted) {
+  const key = `${docKeyHint()}::${wanted || 'modern'}`;
+  if (styledDoc === key) return false;
+  // Marked up front: a build that cannot do this must not retry on every write.
+  styledDoc = key;
+  if (!hasApi('1.5')) return false;
+
+  const th = THEMES[String(wanted || 'modern').toLowerCase()] || THEMES.modern;
+  try {
+    const all = ctx.document.getStyles();
+    const found = BASE_STYLES.map((spec) => ({
+      spec,
+      tries: spec.names.map((n) => {
+        const st = all.getByNameOrNullObject(n);
+        st.load('isNullObject');
+        return st;
+      }),
+    }));
+    await ctx.sync();
+
+    let touched = 0;
+    for (const { spec, tries } of found) {
+      const style = tries.find((st) => !st.isNullObject);
+      if (!style) continue;
+      const f = style.font;
+      f.name = th.font;
+      if (spec.role === 'title') {
+        f.size = th.titleSize; f.color = th.titleColor; f.bold = true;
+      } else if (spec.role[0] === 'h') {
+        const level = Number(spec.role[1]) || 1;
+        // One step down per level, floored so a Heading 4 never ends up smaller
+        // than the body text it introduces.
+        f.size = Math.max(th.bodySize + 1, th.headingSize - (level - 1) * 1.5);
+        f.color = th.headingColor;
+        f.bold = true;
+      } else if (spec.role === 'aside') {
+        f.size = Math.max(8, th.bodySize - 1.5);
+        f.color = th.bodyColor;
+      } else {
+        f.size = th.bodySize;
+        f.color = th.bodyColor;
+      }
+      touched++;
+    }
+    if (!touched) return false;
+    await ctx.sync();
+    return true;
+  } catch {
+    // Locked styles, a protected document, a host that will not take it. The
+    // content still goes in; it just goes in looking like the document did.
+    return false;
+  }
+}
+
+/** Something stable to key the once-per-document guard on. */
+function docKeyHint() {
+  try { return String(Office.context.document.url || ''); } catch { return ''; }
+}
+
 async function insertTable(args) {
   const values = Array.isArray(args.values) ? args.values.map(r => (Array.isArray(r) ? r.map(String) : [String(r)])) : [];
   if (!values.length) throw new Error('values 是必要的，格式是二維陣列（第一列通常是表頭）。');
@@ -858,7 +1039,7 @@ async function insertTable(args) {
       } else {
         table = ctx.document.body.insertTable(rows.length, cols, 'End', rows);
       }
-      table.styleBuiltIn = String(args.style || 'GridTable4_Accent1').replace(/\s+/g, '');
+      table.styleBuiltIn = String(args.style || DEFAULT_TABLE_STYLE).replace(/\s+/g, '');
       table.headerRowCount = hasHeader ? 1 : 0;
       if (args.banded !== undefined) table.styleBandedRows = !!args.banded;
       if (args.first_column !== undefined) table.styleFirstColumn = !!args.first_column;
@@ -879,12 +1060,25 @@ async function insertTable(args) {
         ? autoWidths(rows, hasHeader, Number(table.width))
         : null;
 
+      /**
+       * Paint only when the look was left to us.
+       *
+       * Somebody who named a style chose a look, and overwriting it with ours
+       * would make the argument unwinnable. `paint: false` is the same escape
+       * for anybody who wants the bare style back.
+       */
+      const paint = !args.style && args.paint !== false;
+      // Totals are painted afterwards in the loop below, so they win.
+      if (paint) paintTable(table, rows.length, cols, hasHeader);
+
       // Per-cell work. Queued in one batch — getCell is cheap and the sync below
       // is the only round trip.
       for (let r = 0; r < rows.length; r++) {
         const isTotal = totals > 0 && r >= rows.length - totals;
+        const isHead = hasHeader && r === 0;
         for (let c = 0; c < cols; c++) {
           const cell = table.getCell(r, c);
+          void isHead;
           const a = ALIGNMENTS[String(align[c] || '').toLowerCase()];
           // The header follows the column, not the data: a right-aligned amount
           // column with a left-aligned title looks like a mistake.
@@ -908,6 +1102,7 @@ async function insertTable(args) {
     if (widths.length) notes.push('欄寬已指定');
     else if (args.auto_width !== false) notes.push('欄寬已依內容自動分配');
     if (totals) notes.push(`最後 ${totals} 列設成合計列（深底白字）`);
+    if (!args.style && args.paint !== false) notes.push('表頭黑底白字，內文淡灰白相間、黑字');
     return `已插入 ${rows.length} 列 × ${cols} 欄的表格`
       + (notes.length ? `，${notes.join('、')}` : '')
       + '。' + trackingNote(result);
@@ -2215,9 +2410,29 @@ async function applyTheme(args) {
       // body font on it would restyle the mathematics into the body face, which
       // is exactly the thing that makes an equation stop looking like one.
       if (!String(p.text || '').trim()) continue;
-      // Inside a table the table style is in charge — including the white-on-dark
-      // header row that a body colour would quietly destroy.
-      if (inTable(p)) { counts.table++; continue; }
+      /**
+       * Inside a table, the typeface follows the document and the colour does
+       * not.
+       *
+       * ── 「表格文字沒改到」 ──
+       * This used to skip table cells entirely, so a document whose body had
+       * been restyled still had 細明體 inside every table — the one place a
+       * mismatch is most visible, because the table sits right next to the prose
+       * it belongs to.
+       *
+       * The original caution was right about colour and wrong about the rest: a
+       * table style owns the white-on-dark header row, and writing a body colour
+       * over it makes the header unreadable. The typeface and size are not the
+       * table style's business, so those are set like anywhere else.
+       */
+      const inside = inTable(p);
+      if (inside) {
+        const tf = p.font;
+        tf.name = font;
+        tf.size = theme.bodySize;
+        counts.table++;
+        continue;
+      }
 
       const f = p.font;
       f.name = font;
@@ -2389,10 +2604,22 @@ export async function insertImage(pic, args) {
  * Sizes and colours below are the ones those documents actually use, not
  * invented: 26pt titles, 10-12pt everything else, navy rather than black.
  */
+/**
+ * The cover's ink.
+ *
+ * ── Why it is black now ──
+ * 「首頁文字我希望盡量都是黑色」. It was navy for the title and a mid blue for
+ * the subtitle, which photographs badly, prints worse, and reads as decoration
+ * on a page whose whole job is to say what the document is. A cover gets its
+ * weight from size and space, not from colour — the title is already 26pt and
+ * alone on the page.
+ *
+ * `meta` and `faint` stay grey: those are the lines that should recede.
+ */
 const COVER_INK = {
-  title: '#16314F',
-  sub: '#4F81BD',
-  meta: '#6B7C90',
+  title: '#000000',
+  sub: '#000000',
+  meta: '#595959',
   faint: '#595959',
 };
 
@@ -2439,8 +2666,8 @@ async function insertCover(args) {
       lines.push(coverLine(spaced, { size: 17, color: COVER_INK.title, bold: true, align: 'Centered', font, spaceAfter: 12 }));
     } else if (layout === 'form') {
       // 表單: everything centred, everything small, the timestamp smallest.
-      lines.push(coverLine(title, { size: 20, color: '#1F3864', bold: true, align: 'Centered', font }));
-      if (args.subtitle) lines.push(coverLine(args.subtitle, { size: 11, color: '#2E5C9A', align: 'Centered', font }));
+      lines.push(coverLine(title, { size: 20, color: COVER_INK.title, bold: true, align: 'Centered', font }));
+      if (args.subtitle) lines.push(coverLine(args.subtitle, { size: 11, color: COVER_INK.sub, align: 'Centered', font }));
       if (args.note) lines.push(coverLine(args.note, { size: 9, color: COVER_INK.faint, align: 'Centered', font, spaceAfter: 12 }));
     } else {
       // 報告: one large title, one quiet subtitle, then the facts in a table.
@@ -2468,9 +2695,11 @@ async function insertCover(args) {
         await ctx.sync();
         const anchor = paras.items[Math.min(lines.length - 1, paras.items.length - 1)];
         const table = anchor.insertTable(rows.length, 2, 'After', rows);
-        table.styleBuiltIn = String(args.table_style || 'GridTable4_Accent1').replace(/\s+/g, '');
+        table.styleBuiltIn = String(args.table_style || DEFAULT_TABLE_STYLE).replace(/\s+/g, '');
         table.headerRowCount = 0;
-        table.styleFirstColumn = true;
+        // No header row — these are label/value pairs, so the stripes run from
+        // the top and nothing gets the black band.
+        if (!args.table_style) paintTable(table, rows.length, 2, false);
         await ctx.sync();
       }
 
@@ -2586,7 +2815,16 @@ async function insertDiagram(args) {
  * internally consistent without anyone having to remember what they chose last
  * time.
  */
-const BLOCK_INK = { label: '#16314F', value: '#6B7C90', rule: '#4F81BD' };
+/**
+ * A key-value block's ink.
+ *
+ * `label` was navy and `value` a pale blue-grey — the combination in the report,
+ * where the whole facts table on the cover read as decoration rather than
+ * information. Black for the label, dark grey for the value: the value still
+ * recedes from the label, which is the only distinction that block needs.
+ * `rule` is a border on an aside, not text, so it keeps its accent.
+ */
+const BLOCK_INK = { label: '#000000', value: '#333333', rule: '#808080' };
 
 /** One label/value line: label in the accent, value quieter, separated by a tab. */
 function fieldLine(label, value, opts) {
@@ -2642,9 +2880,9 @@ async function insertBlock(args) {
           await ctx.sync();
         }
         const table = anchor.insertTable(rows.length, 2, 'After', rows);
-        table.styleBuiltIn = String(args.table_style || 'GridTable4_Accent1').replace(/\s+/g, '');
+        table.styleBuiltIn = String(args.table_style || DEFAULT_TABLE_STYLE).replace(/\s+/g, '');
         table.headerRowCount = 0;
-        table.styleFirstColumn = true;
+        if (!args.table_style) paintTable(table, rows.length, 2, false);
         summary = `${rows.length} 列的資訊表`;
       } else if (kind === 'note') {
         // A callout: smaller, indented, with a coloured rule down the left so it
@@ -3314,6 +3552,17 @@ export async function executeTool(tool, args, opts = {}) {
         // cover a rewrite, but they do not cover a style sweep, and 「復原上一步」
         // has to mean the same thing whichever tool ran.
         snapshot = await captureDocument();
+        /**
+         * Styles first, content second.
+         *
+         * Cheap (one extra sync, once per document) and it is what makes the
+         * first draft look like the final one. `word_apply_theme` is left alone
+         * — somebody asking for a different look still gets the full sweep.
+         */
+        if (tool !== 'word_apply_theme') {
+          await Word.run((c) => ensureBaseStyles(c, a.base_style))
+            .catch(() => {});
+        }
         const run = {
           word_write_range: writeRange,
           word_insert_text: insertText,
