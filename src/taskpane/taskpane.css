@@ -1098,10 +1098,29 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   border: 1px solid var(--line-strong); border-radius: 10px;
   background: var(--bg); box-shadow: var(--shadow);
   animation: rise 140ms ease-out;
+  /* The list is going to grow — a new Claude generation adds rows and nobody
+     revisits this file when it does. A menu that opens UPWARD from the last row
+     of the pane runs out of pane before it runs out of models, so it scrolls
+     inside itself instead of being clipped by the window.
+
+     56vh rather than a pixel height: the pane is resizable, and on a short one
+     a fixed 320px menu would still reach past the top. Roughly six rows on a
+     normal window, which is enough that scrolling is the exception. */
+  max-height: 56vh; overflow-y: auto; overscroll-behavior: contain;
 }
+/* Thin and quiet. The scrollbar is a hint that there is more, not a control
+   anybody aims at — six rows deep, dragging it is never the fast way. */
+.model-menu::-webkit-scrollbar { width: 8px; }
+.model-menu::-webkit-scrollbar-thumb {
+  background: var(--line-strong); border-radius: 4px;
+  border: 2px solid var(--bg);
+}
+.model-menu::-webkit-scrollbar-track { background: transparent; }
 .model-item {
   display: block; width: 100%; text-align: left;
-  padding: 7px 9px; border-radius: 7px;
+  /* Tighter vertically than it was: the rows carry a name and nothing else now,
+     so the padding that framed a two-line entry just spread four words apart. */
+  padding: 6px 9px; border-radius: 7px;
   transition: background var(--speed);
 }
 .model-item:hover { background: var(--surface-hover); }

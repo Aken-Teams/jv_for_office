@@ -60,6 +60,10 @@ const BASE_TOOLS = [
   // fallback that works on any build, so this one is always offered.
   'excel_trace_precedents',
   'excel_sheet_style',
+  // 表單的三件事：下拉選單、定義名稱、註解。做報價單一定會用到第一個。
+  'excel_data_validation',
+  'excel_define_name',
+  'excel_cell_comment',
   // Compute inside Excel instead of hauling the data into the model's context.
   // See runScript below for why this one matters more than all the others.
   'excel_run_script',
@@ -1651,6 +1655,254 @@ async function cleanData(args) {
  * already requires — but each property is set independently so an unexpectedly
  * old host degrades property by property instead of failing the whole call.
  */
+// ── Cell rules: dropdowns, names, comments ───────────────────────────────────
+
+/**
+ * The three things people build forms out of.
+ *
+ * ── Why these belong in the tool list rather than in run_script ──
+ * All three were reachable through `excel_run_script` already, so they look like
+ * conveniences. They are not. 「把這欄做成下拉選單」 is one of the most common
+ * things anybody asks a spreadsheet for — it is most of what makes a 報價單 a
+ * form rather than a grid — and routing it through generated code meant writing
+ * and approving a script every time, with the confirmation card that implies.
+ *
+ * A named tool is also how the model finds the capability at all. It will not
+ * write a validation script for a request it never recognised as a validation
+ * request.
+ */
+
+/** Operators Excel accepts on the numeric, date and length rules. */
+const VALIDATION_OPS = new Set(['Between', 'NotBetween', 'EqualTo', 'NotEqualTo',
+  'GreaterThan', 'LessThan', 'GreaterThanOrEqualTo', 'LessThanOrEqualTo']);
+
+/**
+ * Restrict what may be typed into a range.
+ *
+ * ── The one that matters is `list` ──
+ * A dropdown is the difference between a form somebody fills in correctly and a
+ * column of 「台北/臺北/台北市/TPE」 that no formula can group afterwards. Excel
+ * takes the options either as a literal comma-separated string (capped at 255
+ * characters by Excel itself, not by us) or as a reference to a range of cells —
+ * the second is what you want for anything that changes, because editing the
+ * list then edits every dropdown at once.
+ */
+async function dataValidation(args) {
+  if (!hasApi('1.8')) {
+    return '這個 Excel 版本不支援從增益集設定資料驗證（需要 ExcelApi 1.8，約 Office 2019 之後）。'
+      + '可以請使用者自己用「資料 → 資料驗證」設定。';
+  }
+  const sheetName = String(args.sheet || '');
+  const ref = String(args.range || '');
+  if (!ref) return '錯誤：range 是必要的。';
+  const kind = String(args.rule || 'list').toLowerCase();
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${sheetName}」。`;
+
+    const range = sheet.getRange(ref);
+    if (kind === 'clear' || args.clear === true) {
+      range.dataValidation.clear();
+      await ctx.sync();
+      return `已清除 ${sheetName}!${ref} 的資料驗證。`;
+    }
+
+    let rule;
+    let said;
+    if (kind === 'list') {
+      const from = String(args.source || '').trim();
+      const options = Array.isArray(args.options)
+        ? args.options.map((o) => String(o).trim()).filter(Boolean) : [];
+      if (!from && !options.length) {
+        return '錯誤：list 需要 options（選項陣列）或 source（來源範圍，例如 "設定!$A$1:$A$9"）。';
+      }
+      // A reference wins when both are given: it is the one that keeps working
+      // after somebody adds a tenth option.
+      const source = from || options.join(',');
+      if (!from && source.length > 255) {
+        return `錯誤：選項字串有 ${source.length} 個字，超過 Excel 的 255 字上限。`
+          + '請把選項放進某張工作表的一欄，再用 source 指向那個範圍。';
+      }
+      rule = { list: { inCellDropDown: args.dropdown !== false, source } };
+      said = from ? `來源 ${from}` : `${options.length} 個選項`;
+    } else if (kind === 'wholenumber' || kind === 'decimal' || kind === 'date'
+      || kind === 'textlength') {
+      const op = String(args.operator || 'Between');
+      if (!VALIDATION_OPS.has(op)) {
+        return `錯誤：operator 必須是 ${[...VALIDATION_OPS].join('、')} 其中之一。`;
+      }
+      if (args.min === undefined && args.formula1 === undefined) {
+        return '錯誤：這個規則需要 min（或 formula1）。Between／NotBetween 還要 max。';
+      }
+      const body = {
+        operator: op,
+        formula1: args.formula1 === undefined ? args.min : args.formula1,
+      };
+      if (/Between/.test(op)) {
+        if (args.max === undefined && args.formula2 === undefined) {
+          return `錯誤：${op} 需要 max（或 formula2）。`;
+        }
+        body.formula2 = args.formula2 === undefined ? args.max : args.formula2;
+      }
+      const key = {
+        wholenumber: 'wholeNumber', decimal: 'decimal',
+        date: 'date', textlength: 'textLength',
+      }[kind];
+      rule = { [key]: body };
+      said = `${key} ${op}`;
+    } else if (kind === 'custom') {
+      if (!args.formula1) return '錯誤：custom 需要 formula1（一條回傳 TRUE/FALSE 的公式）。';
+      rule = { custom: { formula: String(args.formula1) } };
+      said = '自訂公式';
+    } else {
+      return '錯誤：rule 必須是 list、wholeNumber、decimal、date、textLength、custom 或 clear。';
+    }
+
+    range.dataValidation.rule = rule;
+    /**
+     * The message is the half people forget.
+     *
+     * A rule that rejects input without saying why reads as a broken spreadsheet:
+     * Excel's own default alert is 「這個值不符合儲存格定義的資料驗證限制」, which
+     * tells somebody nothing about what IS allowed.
+     */
+    if (args.error_message) {
+      range.dataValidation.errorAlert = {
+        message: String(args.error_message),
+        showAlert: true,
+        style: String(args.error_style || 'Stop'),
+        title: String(args.error_title || '輸入不符合規定'),
+      };
+    }
+    if (args.prompt_message) {
+      range.dataValidation.prompt = {
+        message: String(args.prompt_message),
+        showPrompt: true,
+        title: String(args.prompt_title || '請注意'),
+      };
+    }
+    await ctx.sync();
+    const quiet = kind === 'list' && args.dropdown === false
+      ? '\n（dropdown: false，所以不會顯示箭頭，只會擋下不合規的輸入。）' : '';
+    return `已在 ${sheetName}!${ref} 設定${kind === 'list' ? '下拉選單' : '輸入限制'}（${said}）。${quiet}`;
+  });
+}
+
+/**
+ * Give a range a name, so formulas can say what they mean.
+ *
+ * `=SUM(單價表)` survives somebody inserting a column; `=SUM(C2:C40)` does not.
+ * That is the whole argument, and it is why a named range is worth a tool rather
+ * than being left to whoever remembers the name box exists.
+ */
+async function defineName(args) {
+  if (!hasApi('1.4')) return '這個 Excel 版本不支援從增益集定義名稱（需要 ExcelApi 1.4）。';
+  const op = String(args.op || 'add').toLowerCase();
+  const name = String(args.name || '').trim();
+
+  return Excel.run(async (ctx) => {
+    const names = ctx.workbook.names;
+
+    if (op === 'list') {
+      names.load('items/name,items/formula,items/comment');
+      await ctx.sync();
+      const items = names.items || [];
+      if (!items.length) return '這個活頁簿還沒有定義任何名稱。';
+      return `這個活頁簿有 ${items.length} 個定義名稱：\n`
+        + items.map((n) => `· ${n.name} → ${n.formula}${n.comment ? `（${n.comment}）` : ''}`).join('\n');
+    }
+
+    if (!name) return '錯誤：name 是必要的。';
+    if (op === 'delete') {
+      const hit = names.getItemOrNullObject(name);
+      hit.load('isNullObject');
+      await ctx.sync();
+      if (hit.isNullObject) return `錯誤：沒有叫「${name}」的定義名稱。`;
+      hit.delete();
+      await ctx.sync();
+      return `已刪除定義名稱「${name}」。`;
+    }
+
+    if (op !== 'add') return '錯誤：op 必須是 add、delete 或 list。';
+    const sheetName = String(args.sheet || '');
+    const ref = String(args.range || '');
+    if (!sheetName || !ref) return '錯誤：add 需要 sheet 和 range。';
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${sheetName}」。`;
+
+    // Replacing rather than erroring: 「把單價表改成指到 C2:C60」 is the common
+    // second call, and failing it would only make the model delete-then-add.
+    const existing = names.getItemOrNullObject(name);
+    existing.load('isNullObject');
+    await ctx.sync();
+    const replaced = !existing.isNullObject;
+    if (replaced) { existing.delete(); await ctx.sync(); }
+
+    names.add(name, sheet.getRange(ref), String(args.comment || '') || undefined);
+    await ctx.sync();
+    return `已${replaced ? '更新' : '新增'}定義名稱「${name}」→ ${sheetName}!${ref}。`
+      + `公式裡可以直接寫 ${name}，插入欄列也不會跑掉。`;
+  });
+}
+
+/**
+ * Leave a note on a cell.
+ *
+ * Threaded comments — what the Comment ribbon makes in current Excel, not the
+ * old yellow sticky note. Worth a tool because 「為什麼這一格是手動改的」 is a
+ * question somebody asks six months later, and the answer belongs beside the
+ * cell rather than in a chat transcript nobody kept.
+ */
+async function cellComment(args) {
+  if (!hasApi('1.10')) {
+    return '這個 Excel 版本不支援從增益集加註解（需要 ExcelApi 1.10）。'
+      + '可以請使用者自己用「校閱 → 新增註解」。';
+  }
+  const op = String(args.op || 'add').toLowerCase();
+  const sheetName = String(args.sheet || '');
+  const cell = String(args.cell || args.range || '');
+  if (!sheetName || !cell) return '錯誤：sheet 和 cell 都是必要的。';
+
+  return Excel.run(async (ctx) => {
+    const sheet = ctx.workbook.worksheets.getItemOrNullObject(sheetName);
+    sheet.load('isNullObject');
+    await ctx.sync();
+    if (sheet.isNullObject) return `錯誤：找不到工作表「${sheetName}」。`;
+
+    const at = `${sheetName}!${cell}`;
+    const comments = ctx.workbook.comments;
+    const existing = comments.getItemByCellOrNullObject(at);
+    existing.load('isNullObject');
+    await ctx.sync();
+
+    if (op === 'delete') {
+      if (existing.isNullObject) return `${at} 上沒有註解。`;
+      existing.delete();
+      await ctx.sync();
+      return `已刪除 ${at} 的註解。`;
+    }
+    if (op !== 'add') return '錯誤：op 必須是 add 或 delete。';
+
+    const text = String(args.text || '').trim();
+    if (!text) return '錯誤：text 是必要的。';
+    if (!existing.isNullObject) {
+      // A second comment on the same cell becomes a reply in Excel's own model,
+      // which is usually what somebody means by 「再補一句」.
+      existing.replies.add(text);
+      await ctx.sync();
+      return `已在 ${at} 既有的註解下回覆一則。`;
+    }
+    comments.add(at, text);
+    await ctx.sync();
+    return `已在 ${at} 加上註解。`;
+  });
+}
+
 async function sheetStyle(args) {
   return Excel.run(async (ctx) => {
     const sheet = ctx.workbook.worksheets.getItemOrNullObject(String(args.sheet || ''));
@@ -2815,6 +3067,9 @@ export async function executeTool(tool, args, opts = {}) {
       }
       case 'excel_trace_precedents': return { ok: true, content: await tracePrecedents(args || {}) };
       case 'excel_sheet_style':    return { ok: true, content: await sheetStyle(args || {}) };
+      case 'excel_data_validation': return { ok: true, content: await dataValidation(args || {}) };
+      case 'excel_define_name':    return { ok: true, content: await defineName(args || {}) };
+      case 'excel_cell_comment':   return { ok: true, content: await cellComment(args || {}) };
       case 'excel_run_script': {
         // Only for approved writes: a read-mode script cannot change anything
         // (the guard sees to that), so photographing the workbook first would be

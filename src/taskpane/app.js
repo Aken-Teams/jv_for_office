@@ -2651,7 +2651,7 @@ function renderModelMenu() {
     <button type="button" class="model-item" role="menuitemradio" data-id="${escapeHtml(m.id)}"
             aria-checked="${m.id === current.id}">
       <span class="m-name">${escapeHtml(m.label)}</span>
-      <span class="m-note">${escapeHtml(m.note || '')}</span>
+      ${m.note ? `<span class="m-note">${escapeHtml(m.note)}</span>` : ''}
     </button>`).join('');
 }
 
