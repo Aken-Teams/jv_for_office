@@ -18,7 +18,9 @@
  * it checks that the markup is well-formed and every coordinate is a real
  * number, which is the difference between a chart and a blank rectangle.
  */
-import { chartSvg, svgProblem, CHART_TYPES } from '../src/taskpane/hosts/svgchart.js';
+import fs from 'node:fs';
+import { chartSvg, svgProblem, CHART_TYPES, CHART_DATA_KEYS, chartData }
+  from '../src/taskpane/hosts/svgchart.js';
 
 /** 一套完整的配色，新圖表都吃得到——缺欄位的 fallback 由上面的 loop 驗。 */
 const TH = { ink: '#3D3D3D', strong: '#1A3A5C', second: '#2E6DA4', accent: '#C0392B',
@@ -70,7 +72,7 @@ const SHAPES = [
  * covering the shapes that ARE awkward for it.
  */
 const SHAPE_FUZZ = CHART_TYPES.filter(
-  (t) => !['timeline', 'radar', 'map', 'scatter', 'box', 'gantt'].includes(t));
+  (t) => !['timeline', 'radar', 'map', 'scatter', 'box', 'gantt', 'plot'].includes(t));
 
 for (const type of SHAPE_FUZZ) {
   let bad = 0;
@@ -585,6 +587,185 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('沒有 tasks 會說清楚格式', /YYYY-MM-DD/.test(threw), threw);
   try { chartSvg({ type: 'gantt', tasks: [{ name: 'x', start: '明天' }] }, TH); } catch (e) { threw = e.message; }
   ok('日期格式不對也會說清楚', /YYYY-MM-DD/.test(threw), threw);
+}
+
+/**
+ * 數學圖：y 對 x，兩條都是真的數值軸。
+ *
+ * ── 為什麼其他圖做不到 ──
+ * 這個模組在此之前每一種圖的 X 軸都是**分類軸**——位置是名字平均排開的，對季度和
+ * 產品是對的，對數學是錯的。N² 和 N log N 畫在平均刻度上，那張圖唯一要講的「差距
+ * 會越拉越開」正好被平均刻度藏起來。
+ */
+{
+  const TH = { ink: '#000', strong: '#1F3864', second: '#595959', accent: '#C0392B',
+    muted: '#595959', line: '#D9D9D9', tint: '#F2F2F2', bg: '#FFF' };
+  const N = [256, 1024, 4096, 16384, 65536];
+  const svg = chartSvg({ type: 'plot', title: 'FFT 與直接計算的運算量', width: 640,
+    log_x: true, log_y: true, x_axis: 'N（點數）', y_axis: '複數乘法次數',
+    curves: [
+      { name: '直接計算 N²', points: N.map((n) => [n, n * n]), dots: true },
+      { name: 'FFT N log N', points: N.map((n) => [n, n * Math.log2(n)]), dashed: true },
+    ] }, TH);
+  ok('數學圖畫得出乾淨的 SVG', !svgProblem(svg), svgProblem(svg));
+  ok('兩條曲線都畫了', (svg.match(/<path /g) || []).length === 2);
+  ok('兩條線就要有圖例', /直接計算/.test(svg) && /FFT/.test(svg));
+  ok('虛線畫成虛線', /stroke-dasharray/.test(svg));
+  // 數值軸不會自己說明自己，軸名在這裡比在分類圖上更要緊。
+  ok('軸名有標出來', /N（點數）/.test(svg) && /複數乘法次數/.test(svg));
+  ok('對數刻度要講明', (svg.match(/對數刻度/g) || []).length === 2);
+
+  // 刻度標的是真實數值，不是它的對數——寫 4.2 沒有人看得懂那是 16384。
+  const ticks = [...svg.matchAll(/font-size="11"[^>]*>([^<]+)</g)].map((m) => m[1]);
+  ok('刻度標的是真實數值不是對數', ticks.some((t) => /[k萬億]|\d{3}/.test(t)), ticks.join(' '));
+
+  // 對數軸碰到 0 或負數就不能畫，要先講而不是畫出 -Infinity。
+  let threw = '';
+  try {
+    chartSvg({ type: 'plot', log_y: true,
+      curves: [{ name: 'x', points: [[1, 0], [2, 5]] }] }, TH);
+  } catch (e) { threw = e.message; }
+  ok('log_y 遇到 0 會說清楚', /大於 0/.test(threw), threw);
+
+  try { chartSvg({ type: 'plot', curves: [] }, TH); } catch (e) { threw = e.message; }
+  ok('沒有 curves 會說清楚格式', /points/.test(threw), threw);
+  try {
+    chartSvg({ type: 'plot', curves: [{ name: 'a', points: [[1, 1]] }] }, TH);
+  } catch (e) { threw = e.message; }
+  ok('一個點不成一條線', /至少要兩個點/.test(threw), threw);
+
+  // 線性軸：資料靠近零就從零起，離零很遠就不要硬拉——跟散佈圖同一條規則。
+  const near = chartSvg({ type: 'plot', width: 400,
+    curves: [{ name: 'a', points: [[0, 1], [10, 9]] }] }, TH);
+  ok('線性軸資料靠近零時從零起', !svgProblem(near), svgProblem(near));
+}
+
+/**
+ * 一個系列不該有圖例，而且不該蓋在 X 軸標籤上。
+ *
+ * ── 回報的畫面 ──
+ * 一張長條圖的底部，「加速倍數」連同它的色塊壓在「N=1,024」和「N=4,096」上面。
+ *
+ * ── 真正的原因 ──
+ * `frame()` 在 `series.length > 1` 時才留圖例的空間，而 `legend()` 只要系列**有
+ * 名字**就畫——所以單一具名系列會拿到一個沒有地方放的圖例。那不是版面擠不下，是
+ * 兩個函式對「到底有沒有圖例」各說各話。
+ */
+{
+  const TH = { ink: '#000', strong: '#1F3864', muted: '#595959', line: '#D9D9D9',
+    tint: '#F2F2F2', bg: '#FFF' };
+  const one = chartSvg({ type: 'column', title: '加速倍數', width: 640,
+    categories: ['N=256', 'N=1,024', 'N=4,096'], values: [32, 102, 341],
+    series: ['ZZONLYZZ'] }, TH);
+  // 標題已經講完這張圖在講什麼了，再放一個色塊配同一句話只是噪音。
+  ok('單一系列不畫圖例', !/ZZONLYZZ/.test(one));
+
+  const two = chartSvg({ type: 'column', width: 640, categories: ['A', 'B'],
+    values: [[1, 2], [3, 4]], series: ['ZZAZZ', 'ZZBZZ'] }, TH);
+  ok('兩個系列照樣有圖例', /ZZAZZ/.test(two) && /ZZBZZ/.test(two));
+}
+
+/**
+ * 時間軸的標籤要留在畫布內，而且同一側不能疊。
+ *
+ * ── 回報的畫面 ──
+ * 一張傅立葉沿革的時間軸，第一個事件的字跑到畫面左邊外面，最後一個跑到右邊外面，
+ * 中間兩個互相壓在一起。
+ *
+ * ── 原因有兩層 ──
+ * 標籤一律置中在刻度上，而頭尾的刻度離邊只有 24 點——一句 12 個中文字的標籤是
+ * 150 點寬，有一半本來就在畫面外。第二層更難看出來：第一次修的時候用「平均間距
+ * × 1.7」當可用寬度，但時間軸的間距本來就不平均（1750、1805、1822 擠在 215 年
+ * 的前三分之一），平均值會承諾每個標籤兩倍於它實際擁有的空間。
+ *
+ * 所以這裡直接量：把每個 <text> 的左右邊界算出來，比對畫布和同側的鄰居。這種事
+ * 看程式碼看不出來，只有量過才知道。
+ */
+{
+  const TH = { ink: '#000', strong: '#1F3864', accent: '#C00', muted: '#595959',
+    line: '#D9D9D9', tint: '#F2F2F2', bg: '#FFF' };
+  // 使用者截圖裡的那份資料，連字數都一樣。
+  const events = [
+    { label: '白努利、尤拉研究三角級數', at: '1750' },
+    { label: '高斯使用快速演算法（未發表）', at: '1805' },
+    { label: '傅立葉《熱的解析理論》', at: '1822' },
+    { label: 'Danielson 與 Lanczos 提出 N log N 方法', at: '1942' },
+    { label: 'Cooley 與 Tukey 發表 FFT', at: '1965' },
+  ];
+  const measure = (txt, size) => [...txt]
+    .reduce((a, c) => a + (/[\u2E80-\uFF60]/.test(c) ? size : size * 0.55), 0);
+
+  // 三種寬度：Word 內文欄寬、投影片常用寬、以及窄到必須斷行的情況。
+  for (const W of [760, 640, 460]) {
+    const H = Math.round(W * 0.47);
+    const svg = chartSvg({ type: 'timeline', title: '傅立葉與 FFT 的發展',
+      events, width: W, height: H }, TH);
+    const boxes = [];
+    for (const m of svg.matchAll(
+      /<text x="([-\d.]+)" y="([-\d.]+)"[^>]*font-size="([\d.]+)"[^>]*text-anchor="(\w+)"[^>]*>([^<]*)</g)) {
+      const [, xs, ys, sz, anchor, txt] = m;
+      const x = Number(xs); const size = Number(sz);
+      const w = measure(txt, size);
+      const l = anchor === 'start' ? x : (anchor === 'end' ? x - w : x - w / 2);
+      boxes.push({ txt, size, l, r: l + w, y: Number(ys) });
+    }
+    ok(`${W} 點寬：有量到標籤`, boxes.length >= events.length * 2, boxes.length);
+
+    const out = boxes.filter((b) => b.l < -1 || b.r > W + 1 || b.y < 0 || b.y > H);
+    ok(`${W} 點寬：沒有字跑到畫布外`, !out.length,
+      out.map((b) => `${b.txt} ${b.l.toFixed(0)}~${b.r.toFixed(0)}`).join(' / '));
+
+    // 同一行（y 差 14 點以內）而且左右有交集，就是疊在一起。
+    const words = boxes.filter((b) => b.size > 12);
+    const hit = [];
+    for (let i = 0; i < words.length; i++) {
+      for (let j = i + 1; j < words.length; j++) {
+        const a = words[i]; const b = words[j];
+        if (Math.abs(a.y - b.y) < 14 && a.l < b.r && b.l < a.r) hit.push(`${a.txt}／${b.txt}`);
+      }
+    }
+    ok(`${W} 點寬：同側標籤沒有互疊`, !hit.length, hit.join(' / '));
+  }
+
+  // 放得下就不要斷行——第一版修完以後它連 760 點寬都還在斷，因為中點切法把一半
+  // 的間距讓給了根本不需要的鄰居。
+  const wide = chartSvg({ type: 'timeline', events, width: 760, height: 357 }, TH);
+  ok('空間夠就整句一行', /白努利、尤拉研究三角級數</.test(wide));
+
+  // 窄到真的放不下，就斷行而不是畫成一團。
+  const narrow = chartSvg({ type: 'timeline', events, width: 420, height: 220 }, TH);
+  ok('窄的時候改斷行', !/白努利、尤拉研究三角級數</.test(narrow)
+    && /白努利/.test(narrow) && /級數/.test(narrow));
+}
+
+/**
+ * 每一個渲染器會讀的欄位，CHART_DATA_KEYS 都要有。
+ *
+ * ── 這條測試擋的是什麼 ──
+ * `timeline` 曾經整個不能用：工具的列舉裡有它、說明裡有 `events` 的範例，但 host
+ * 組給 `chartSvg` 的物件是一個欄位一個欄位手寫的，漏了 `events`。接著 `plot`、
+ * `box`、`map`、`scatter` 在兩個 host 上又各漏一次。
+ *
+ * 症狀最惡劣的地方在於：模型送的參數是對的，渲染器卻回報「curves 是必要的」，而
+ * 兩邊都沒有指向那個漏抄的地方。所以改成一份清單，並且在這裡用原始碼反查——新增
+ * 圖表型別時漏掉欄位，這條會先紅。
+ */
+{
+  const src = fs.readFileSync(new URL('../src/taskpane/hosts/svgchart.js', import.meta.url), 'utf8');
+  const read = [...new Set([...src.matchAll(/spec\.([a-z_]+)/g)].map((m) => m[1]))];
+  // host 自己決定的那幾個不經過資料清單。
+  const own = new Set(['type', 'title', 'width', 'height', 'transparent']);
+  const missing = read.filter((k) => !own.has(k) && !CHART_DATA_KEYS.includes(k));
+  ok('渲染器讀的欄位都在 CHART_DATA_KEYS 裡', !missing.length, missing.join(', '));
+
+  // 反過來也要擋：清單裡列了沒人讀的欄位，host 會白抄，說明也會騙人。
+  const unread = CHART_DATA_KEYS.filter((k) => !read.includes(k));
+  ok('CHART_DATA_KEYS 沒有多餘的欄位', !unread.length, unread.join(', '));
+
+  const picked = chartData({ type: 'timeline', events: [1], curves: [2], width: 9, junk: 1 });
+  ok('chartData 只挑資料欄位',
+    picked.events && picked.curves && picked.width === undefined && picked.junk === undefined,
+    JSON.stringify(picked));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

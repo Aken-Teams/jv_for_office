@@ -170,12 +170,30 @@ function chrome(spec, f, theme) {
   return out;
 }
 
+/**
+ * Is a legend worth the space it takes?
+ *
+ * ── The bug this is the fix for ──
+ * `frame()` reserved legend room when `series.length > 1`, while `legend()`
+ * drew one whenever a series had a NAME — so a single named series got a legend
+ * with nowhere to put it, and it landed on top of the category labels. That is
+ * the overlapping 「加速倍數」 sitting across 「N=1,024」 and 「N=4,096」 in the
+ * report: not a layout that ran out of room, two functions disagreeing about
+ * whether there was a legend at all.
+ *
+ * One predicate now, used by both, so they cannot drift again. And the answer
+ * for one series is no: the chart's title already says what the bars are, and a
+ * legend that names the only thing on the chart is a swatch beside a restatement.
+ */
+function wantsLegend(series) {
+  return series.filter((s) => s && s.name).length >= 2;
+}
+
 function legend(series, f, theme) {
-  if (series.length < 2 && !series[0].name) return '';
+  if (!wantsLegend(series)) return '';
   // Centred as a block: a legend that starts at the left edge of a wide plot
   // reads as debris rather than as part of the chart.
   const items = series.filter((s) => s.name);
-  if (!items.length) return '';
   const w = items.map((s) => 14 + 6 + s.name.length * 12 + 18);
   let x = f.x + (f.w - w.reduce((a, b) => a + b, 0)) / 2;
   const y = f.H - 16;
@@ -192,7 +210,7 @@ function legend(series, f, theme) {
 function barChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const horizontal = spec.type === 'bar';
-  const f = frame(spec, { axis: true, legend: series.length > 1, wideLabels: horizontal });
+  const f = frame(spec, { axis: true, legend: wantsLegend(series), wideLabels: horizontal });
   const top = niceMax(Math.max(...series.flatMap((s) => s.data), 0));
   const TICKS = 4;
   let out = chrome(spec, f, theme);
@@ -256,7 +274,7 @@ function barChart(spec, theme) {
 
 function lineChart(spec, theme) {
   const { labels, series } = normalise(spec);
-  const f = frame(spec, { axis: true, legend: series.length > 1 });
+  const f = frame(spec, { axis: true, legend: wantsLegend(series) });
   const top = niceMax(Math.max(...series.flatMap((s) => s.data), 0));
   const TICKS = 4;
   let out = chrome(spec, f, theme);
@@ -527,7 +545,7 @@ function mixHex(a, b, t) {
  */
 function radarChart(spec, theme) {
   const { labels, series } = normalise(spec);
-  const f = frame(spec, { axis: false, legend: series.length > 1 });
+  const f = frame(spec, { axis: false, legend: wantsLegend(series) });
   let out = chrome(spec, f, theme);
 
   const n = labels.length;
@@ -618,6 +636,75 @@ function timelineChart(spec, theme) {
   const done = (spec.colors || [])[0] || theme.strong || SERIES[0];
   const mark = (spec.colors || [])[1] || theme.accent || SERIES[2];
 
+  /**
+   * How much horizontal room each label gets, and where it may sit.
+   *
+   * ── The two ways this overflowed ──
+   * 「跑版這塊要修正」, with a timeline whose first and last labels ran off the
+   * canvas and whose middle ones ran into each other. Both came from drawing
+   * every label centred on its mark at whatever width it happened to be:
+   *
+   *   · an edge mark is 24 points from the edge, so half of a 140-point label
+   *     is simply outside the picture;
+   *   · a 20-character Chinese label is 250 points wide, and five marks across
+   *     640 points are 128 apart.
+   *
+   * ── Why a per-label slot and not one shared width ──
+   * The obvious fix is `room = average gap × 2`, since alternating sides means
+   * a label's nearest same-side neighbour is two marks away. It is wrong for
+   * exactly the reason this chart exists: the gaps are NOT even. 1750, 1805 and
+   * 1822 put marks one and three only 72 years apart on a 215-year axis, so the
+   * average gap promises each of them twice the room it actually has, and the
+   * two labels above the line overlap while the average says they fit.
+   *
+   * So every label gets its own slot, bounded by the midpoint to its same-side
+   * neighbours and by the canvas at the ends. The label wraps to its slot and is
+   * then centred on its mark, nudged back inside if centring would cross a
+   * boundary. Nothing can reach into another label's slot, whatever the dates.
+   */
+  const X = items.map((_, i) => xOf(i));
+  const edgeL = f.x;
+  const edgeR = f.x + f.w;
+
+  /**
+   * Try the labels at their natural width first.
+   *
+   * Cutting every label down to the midpoint between its neighbours is safe but
+   * mean: it hands half the gap to a neighbour that may not want it, so a label
+   * breaks into two lines with 50 points of white space beside it. `packLabels`
+   * asks the real question instead — does this label need to reach further right
+   * than its neighbour needs to reach left? — and only when the answer is yes
+   * does anything get wrapped.
+   */
+  const natural = items.map((e) => Math.max(
+    textW(String(e.label ?? ''), 12.5),
+    e.note ? textW(String(e.note), 11) : 0,
+  ));
+  const layout = new Array(items.length);
+  for (const parity of [0, 1]) {
+    const side = items.map((_, i) => i).filter((i) => i % 2 === parity);
+    if (!side.length) continue;
+    const packed = packLabels(side.map((i) => X[i]), side.map((i) => natural[i]),
+      edgeL, edgeR, 12);
+    if (packed) {
+      // Half a point of slack: the packer measured the whole string at once and
+      // the wrapper adds up its pieces, so the same label can come out a
+      // rounding error wider and break into two lines for no visible reason.
+      side.forEach((i, k) => { layout[i] = { room: natural[i] + 0.5, cx: packed[k] }; });
+      continue;
+    }
+    // Too much text for the axis: fall back to fixed slots bounded by the
+    // midpoint to each same-side neighbour, and wrap into them. Nothing can
+    // reach into another label's slot after this, whatever the dates are.
+    for (const i of side) {
+      const prev = i >= 2 ? X[i - 2] : null;
+      const next = i + 2 < items.length ? X[i + 2] : null;
+      const lo = prev === null ? edgeL : (X[i] + prev) / 2;
+      const hi = next === null ? edgeR : (X[i] + next) / 2;
+      layout[i] = { room: Math.max(64, Math.min(hi - lo, f.w * 0.45)), lo, hi };
+    }
+  }
+
   items.forEach((e, i) => {
     const x = xOf(i);
     const hot = e.highlight === true;
@@ -628,17 +715,138 @@ function timelineChart(spec, theme) {
     out += `<circle cx="${n2(x)}" cy="${n2(y)}" r="${hot ? 8 : 6}" fill="${tone}"`
       + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="2.5"/>`;
 
+    const L = layout[i];
+    /**
+     * Where a block of text that wide ends up.
+     *
+     * A packed label already has its centre. A wrapped one is centred on its
+     * mark and then nudged back inside its slot — the mark cannot move, since
+     * its position IS the date, so the text slides along instead and stays
+     * beside its own stem rather than drifting onto a neighbour's.
+     */
+    const place = (w) => {
+      if (L.cx != null) return L.cx;
+      const half = w / 2;
+      const lo = Math.max(L.lo, edgeL);
+      const hi = Math.max(L.hi, lo);
+      if (w >= hi - lo) return lo + half;
+      return Math.min(Math.max(x, lo + half), hi - half);
+    };
+
     const ly = above ? y - stem - 8 : y + stem + 16;
-    out += text(x, ly, String(e.at ?? ''),
+    // The year stays over its own stem even when the label block has slid away:
+    // it is 24 points wide, it always fits, and it is what ties the text back to
+    // the mark.
+    const yw = textW(String(e.at ?? ''), 11) / 2;
+    out += text(Math.min(Math.max(x, edgeL + yw), edgeR - yw), ly, String(e.at ?? ''),
       { size: 11, bold: true, color: tone, anchor: 'middle' });
-    out += text(x, above ? ly - 16 : ly + 16, String(e.label ?? ''),
-      { size: 12.5, bold: true, color: theme.ink || '#3D3D3D', anchor: 'middle' });
+
+    // Labels run away from the axis: upward ones stack upward, downward ones
+    // downward, so neither grows back across the line.
+    const lines = wrapLabel(String(e.label ?? ''), L.room, 12.5);
+    const lx = place(Math.max(0, ...lines.map((ln) => textW(ln, 12.5))));
+    const step = 15;
+    let cursor = above ? ly - 16 : ly + 16;
+    for (const ln of (above ? lines.slice().reverse() : lines)) {
+      out += text(lx, cursor, ln,
+        { size: 12.5, bold: true, color: theme.ink || '#3D3D3D', anchor: 'middle' });
+      cursor += above ? -step : step;
+    }
     if (e.note) {
-      out += text(x, above ? ly - 32 : ly + 32, String(e.note),
-        { size: 11, color: theme.muted || '#8A93A0', anchor: 'middle' });
+      const nl = wrapLabel(String(e.note), L.room, 11).slice(0, 2);
+      const nx = place(Math.max(0, ...nl.map((ln) => textW(ln, 11))));
+      for (const ln of nl) {
+        out += text(nx, cursor, ln,
+          { size: 11, color: theme.muted || '#8A93A0', anchor: 'middle' });
+        cursor += above ? -13 : 13;
+      }
     }
   });
   return out;
+}
+
+/**
+ * Place labels at their preferred spots, pushed apart only as far as needed.
+ *
+ * Two sweeps, which is how every map label and axis tick is packed: left to
+ * right, each box shoved right until it clears the one before it; then right to
+ * left, each box shoved back left until it clears the canvas edge and the box
+ * after it. Whatever survives both sweeps is a layout with no overlap and no
+ * overflow. If something cannot survive them, the text genuinely does not fit at
+ * this width and `null` says so, which is the caller's signal to wrap instead of
+ * drawing the pile.
+ */
+function packLabels(spots, widths, lo, hi, gap) {
+  const n = spots.length;
+  const pos = spots.slice();
+  for (let i = 0; i < n; i++) {
+    const least = i === 0
+      ? lo + widths[i] / 2
+      : pos[i - 1] + widths[i - 1] / 2 + gap + widths[i] / 2;
+    pos[i] = Math.max(pos[i], least);
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    const most = i === n - 1
+      ? hi - widths[i] / 2
+      : pos[i + 1] - widths[i + 1] / 2 - gap - widths[i] / 2;
+    pos[i] = Math.min(pos[i], most);
+  }
+  for (let i = 0; i < n; i++) {
+    if (pos[i] - widths[i] / 2 < lo - 0.5) return null;
+    if (pos[i] + widths[i] / 2 > hi + 0.5) return null;
+    if (i && pos[i] - widths[i] / 2 < pos[i - 1] + widths[i - 1] / 2 + gap - 0.5) return null;
+  }
+  return pos;
+}
+
+/**
+ * How wide a string is, near enough to lay out against.
+ *
+ * A CJK glyph is square — as wide as the type is tall — while latin averages a
+ * bit over half that. There is no font metric available in an SVG string, so the
+ * same estimate has to be used by whatever measures and whatever places, or a
+ * label fits by one function's arithmetic and overflows by the other's.
+ */
+function textW(str, size) {
+  return [...String(str || '')].reduce((a, c) => a
+    + (/[\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60]/.test(c)
+      ? size : size * 0.55), 0);
+}
+
+/**
+ * Break a label into lines that fit the room it has.
+ *
+ * Breaks between Chinese characters anywhere and between Latin words only —
+ * splitting 「Lanczos」 across two lines reads as a typo, while Chinese has no
+ * word spaces and is broken at any character by every typesetter there is.
+ *
+ * Capped at three lines with an ellipsis: a label tall enough to reach the axis
+ * is a label that should have been shorter, and silently drawing it anyway is
+ * how a timeline turns into the pile of overlapping text this exists to stop.
+ */
+function wrapLabel(str, room, size) {
+  const text_ = String(str || '').trim();
+  if (!text_) return [];
+  // Latin runs stay whole; every other character is its own breakable unit.
+  const units = text_.match(/[A-Za-z0-9][A-Za-z0-9.'-]*|\s+|[\s\S]/g) || [];
+  const lines = [];
+  let line = '';
+  let w = 0;
+  for (const u of units) {
+    const uw = textW(u, size);
+    if (w + uw > room && line) {
+      lines.push(line.trim());
+      line = /^\s+$/.test(u) ? '' : u;
+      w = /^\s+$/.test(u) ? 0 : uw;
+    } else {
+      line += u;
+      w += uw;
+    }
+    if (lines.length === 3) break;
+  }
+  if (line.trim() && lines.length < 3) lines.push(line.trim());
+  if (lines.length === 3 && w > room) lines[2] = `${lines[2].slice(0, -1)}…`;
+  return lines;
 }
 
 /**
@@ -975,7 +1183,7 @@ function scatterChart(spec, theme) {
 function stackedChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const pct = spec.type === 'stacked100';
-  const f = frame(spec, { axis: true, legend: series.length > 1 });
+  const f = frame(spec, { axis: true, legend: wantsLegend(series) });
 
   const totals = labels.map((_, i) => series.reduce((a, sr) => a + Math.max(0, sr.data[i]), 0));
   const top = pct ? 100 : niceMax(Math.max(...totals, 0));
@@ -1374,13 +1582,132 @@ function fit(s, room) {
   return out + '…';
 }
 
+/**
+ * A function plot — y against x, on two numeric axes.
+ *
+ * ── Why the other charts could not do this ──
+ * 「可以加一些數學的圖嗎？例如線性圖之類的」, asked while writing a report about
+ * the Fourier transform. Every chart in this module until now has a CATEGORY
+ * axis: the x positions are names laid out evenly, which is right for quarters
+ * and products and wrong for mathematics. You cannot draw N² against N log N on
+ * an evenly spaced axis — the whole point of that figure is that the gap grows,
+ * and even spacing is exactly what hides it.
+ *
+ * So this one has a real x scale. Curves are given as points and drawn in the
+ * order supplied, which also makes it the right chart for a measured series, a
+ * fitted line, or anything where x is a quantity rather than a label.
+ *
+ * ── Log scales, because the interesting ones need them ──
+ * Algorithmic complexity, frequency response, signal power: the figures a
+ * technical document wants are usually several orders of magnitude tall, and on
+ * a linear axis they are a flat line with one spike. `log_y` (and `log_x`) turn
+ * those into the straight lines the reader is looking for.
+ */
+function plotChart(spec, theme) {
+  const raw = Array.isArray(spec.curves) ? spec.curves : [];
+  const curves = raw.map((c, i) => ({
+    name: String((c && c.name) || ''),
+    color: (spec.colors || [])[i] || SERIES[i % SERIES.length],
+    dashed: !!(c && c.dashed),
+    dots: (c && c.dots) === true,
+    points: (Array.isArray(c && c.points) ? c.points : [])
+      .map((pt) => (Array.isArray(pt) ? { x: Number(pt[0]), y: Number(pt[1]) } : { x: Number(pt && pt.x), y: Number(pt && pt.y) }))
+      .filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y)),
+  })).filter((c) => c.points.length >= 2);
+
+  if (!curves.length) {
+    throw new Error('curves 是必要的：[{ name: "N log N", points: [[256, 2048], [1024, 10240]] }]。'
+      + '每條線至少要兩個點，points 可以是 [x, y] 或 { x, y }。');
+  }
+
+  const logX = spec.log_x === true;
+  const logY = spec.log_y === true;
+  const all = curves.flatMap((c) => c.points);
+  // A log axis cannot show zero or negative values, so the data decides whether
+  // the request is possible rather than the renderer drawing -Infinity.
+  if (logX && all.some((p) => p.x <= 0)) throw new Error('log_x 需要所有 x 都大於 0。');
+  if (logY && all.some((p) => p.y <= 0)) throw new Error('log_y 需要所有 y 都大於 0。');
+
+  const tx = (v) => (logX ? Math.log10(v) : v);
+  const ty = (v) => (logY ? Math.log10(v) : v);
+  const xs = all.map((p) => tx(p.x));
+  const ys = all.map((p) => ty(p.y));
+  const pad = (lo, hi) => {
+    if (hi === lo) return [lo - 1, hi + 1];
+    const room = (hi - lo) * 0.06;
+    return [lo - room, hi + room];
+  };
+  // A linear y axis starts at zero when the data is near it — a bar-like reading
+  // of a curve that never approaches zero is misleading in the other direction,
+  // so the same 「is zero in sight」 test the scatter uses applies here.
+  const rawMinY = Math.min(...ys);
+  const rawMaxY = Math.max(...ys);
+  const [y0, y1] = logY
+    ? pad(rawMinY, rawMaxY)
+    : pad(rawMinY >= 0 && rawMinY < (rawMaxY - rawMinY) * 0.6 ? 0 : rawMinY, rawMaxY);
+  const [x0, x1] = pad(Math.min(...xs), Math.max(...xs));
+
+  const f = frame(spec, { axis: true, legend: wantsLegend(curves) });
+  let out = chrome(spec, f, theme);
+  const px = (v) => f.x + ((tx(v) - x0) / ((x1 - x0) || 1)) * f.w;
+  const py = (v) => f.y + f.h - ((ty(v) - y0) / ((y1 - y0) || 1)) * f.h;
+
+  /** A tick's label: the real value, not the logarithm of it. */
+  const back = (t, isLog) => (isLog ? 10 ** t : t);
+  for (let i = 0; i <= 4; i++) {
+    const gy = f.y + (f.h / 4) * i;
+    out += line(f.x, gy, f.x + f.w, gy, theme.line);
+    out += text(f.x - 8, gy, short(back(y1 - ((y1 - y0) / 4) * i, logY)),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+    const gx = f.x + (f.w / 4) * i;
+    out += line(gx, f.y, gx, f.y + f.h, theme.line);
+    out += text(gx, f.y + f.h + 18, short(back(x0 + ((x1 - x0) / 4) * i, logX)),
+      { size: 11, color: theme.muted, anchor: 'middle' });
+  }
+
+  for (const c of curves) {
+    const d = c.points
+      .map((pt, i) => `${i ? 'L' : 'M'}${n2(px(pt.x))},${n2(py(pt.y))}`)
+      .join('');
+    out += `<path d="${d}" fill="none" stroke="${c.color}" stroke-width="2.2"`
+      + ' stroke-linejoin="round" stroke-linecap="round"'
+      + (c.dashed ? ' stroke-dasharray="6 4"' : '') + '/>';
+    // Markers only when asked. On a smooth curve they are clutter; on a handful
+    // of measured points they are the data and the line is the interpolation.
+    if (c.dots) {
+      for (const pt of c.points) {
+        out += `<circle cx="${n2(px(pt.x))}" cy="${n2(py(pt.y))}" r="3.2" fill="${c.color}"`
+          + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="1.2"/>`;
+      }
+    }
+  }
+
+  /**
+   * Axis names matter more here than on a category chart.
+   *
+   * 「N」 and 「運算量」 are the difference between a figure and a squiggle — a
+   * category axis labels itself, a numeric one does not.
+   */
+  if (spec.x_axis) {
+    out += text(f.x + f.w, f.y + f.h + 34, String(spec.x_axis)
+      + (logX ? '（對數刻度）' : ''),
+    { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
+  }
+  if (spec.y_axis) {
+    out += text(f.x - 44, f.y - 8, String(spec.y_axis) + (logY ? '（對數刻度）' : ''),
+      { size: 11.5, bold: true, color: theme.strong });
+  }
+  out += legend(curves, f, theme);
+  return out;
+}
+
 const RENDER = {
   column: barChart, bar: barChart, line: lineChart, area: lineChart,
   pie: pieChart, donut: pieChart,
   waterfall: waterfallChart, funnel: funnelChart, radar: radarChart,
   timeline: timelineChart, map: mapChart,
   scatter: scatterChart, stacked: stackedChart, stacked100: stackedChart,
-  gantt: ganttChart,
+  gantt: ganttChart, plot: plotChart,
   box: boxChart,
 };
 export const CHART_TYPES = Object.keys(RENDER);
@@ -1392,6 +1719,42 @@ export const CHART_TYPES = Object.keys(RENDER);
  * `setSelectedDataAsync` with `Office.CoercionType.XmlSvg`, which is what puts
  * it on the slide as a vector object.
  */
+/**
+ * Every field a renderer reads off the spec.
+ *
+ * ── Why this list has to exist ──
+ * Each host built its own object to hand to `chartSvg`, naming the fields one by
+ * one. Every new chart type therefore needed the same field added in three
+ * places, and the place that got forgotten was always a host — so the tool
+ * advertised `type: "plot"` in its enum, described `curves` in its own
+ * documentation, and then dropped `curves` on the floor on the way here. The
+ * renderer saw a spec with no data and said 「curves 是必要的」 about an argument
+ * the model had in fact supplied. `timeline` shipped broken exactly this way
+ * once already, and `plot`, `box`, `map` and `scatter` were broken this way
+ * again on both hosts.
+ *
+ * A host now copies these keys wholesale. Adding a chart type means adding its
+ * field here, in the module that reads it, and the hosts follow for free.
+ *
+ * `width`, `height`, `type` and `title` are deliberately absent: a host decides
+ * those itself from the slide or the text column, rather than passing them on.
+ */
+export const CHART_DATA_KEYS = [
+  'categories', 'values', 'series', 'colors', 'labels', 'data_labels',
+  'events', 'total', 'points', 'boxes', 'map', 'area',
+  'curves', 'x_axis', 'y_axis', 'log_x', 'log_y',
+  'center', 'center_label', 'tasks', 'today',
+];
+
+/** Pick the data fields out of a tool's arguments, leaving its own options behind. */
+export function chartData(args = {}) {
+  const out = {};
+  for (const k of CHART_DATA_KEYS) {
+    if (args[k] !== undefined) out[k] = args[k];
+  }
+  return out;
+}
+
 export function chartSvg(spec = {}, theme = {}) {
   const type = String(spec.type || 'column').toLowerCase();
   const render = RENDER[type];

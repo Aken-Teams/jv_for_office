@@ -32,7 +32,7 @@ import { equationOoxml, xmlImbalance } from './omml.js';
 // Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the
 // first time somebody asks for a diagram.
 import { renderMermaid, svgToPng } from './mermaid.js';
-import { chartSvg } from './svgchart.js';
+import { chartSvg, chartData } from './svgchart.js';
 
 /** Cheap and synchronous; Office.js answers from a local table. */
 export function hasApi(version) {
@@ -1312,22 +1312,44 @@ async function insertToc(args) {
      * to 更新目錄.
      */
     let how = 'field';
+    // Declared out here because the result message reports it too — a flag read
+    // in two scopes should be defined in the outer one, not recomputed.
+    const breaks = args.page_break !== false;
     const result = await withTracking(ctx, { track: false }, async () => {
-      // The field needs a paragraph of its own to live in; the heading, when
-      // there is one, goes immediately above it.
+      /**
+       * The field needs a paragraph of its own; the heading goes above it, and
+       * the whole thing gets a page to itself.
+       *
+       * ── Why the page breaks ──
+       * 「目錄應該要在新的一頁，不要像這樣直接接續，很奇怪」. A contents page that
+       * starts three lines under the end of the cover text is not a contents
+       * page, it is a list someone pasted in — and the body that then runs on
+       * from the last entry makes it worse, because there is no edge anywhere
+       * telling you the front matter stopped.
+       *
+       * Two breaks, before and after, which is what every real document does.
+       * The one at the start is skipped when the TOC is already the first thing
+       * in the file: a page break before page one just adds a blank page.
+       */
       const makeHost = () => {
-        if (!anchor) {
-          const host = ctx.document.body.insertParagraph('', 'Start');
-          if (heading) {
-            const h = host.insertParagraph(heading, 'Before');
-            h.styleBuiltIn = 'TOCHeading';
-          }
-          return host;
-        }
-        const host = anchor.insertParagraph('', where);
+        const put = (text, at, node) => (node
+          ? node.insertParagraph(text, at)
+          : ctx.document.body.insertParagraph(text, at));
+
+        const host = anchor ? anchor.insertParagraph('', where) : put('', 'Start');
+        let topmost = host;
         if (heading) {
           const h = host.insertParagraph(heading, 'Before');
           h.styleBuiltIn = 'TOCHeading';
+          topmost = h;
+        }
+        if (breaks) {
+          // Before: only when something precedes it. `anchor` being absent means
+          // this is going to the very top of the document.
+          if (anchor) topmost.insertBreak('Page', 'Before');
+          // After: the body starts on a fresh page whatever the contents page
+          // happens to end on.
+          host.insertBreak('Page', 'After');
         }
         return host;
       };
@@ -1368,6 +1390,10 @@ async function insertToc(args) {
       const lines = heading
         ? [{ level: 0, text: heading }, ...entries]
         : entries.slice();
+      // The fallback gets its own page too — a text contents page running into
+      // the body is the same problem, and arguably worse, because it has no
+      // page numbers to mark where it ends either.
+      let lastPut = null;
       for (let i = lines.length - 1; i >= 0; i--) {
         const e = lines[i];
         const q = anchor
@@ -1375,7 +1401,11 @@ async function insertToc(args) {
           : ctx.document.body.insertParagraph(e.text, 'Start');
         q.styleBuiltIn = e.level === 0 ? 'TOCHeading' : `TOC${e.level}`;
         q.alignment = 'Left';
+        // Reverse order, so the first one created is the LAST line of the list.
+        if (!lastPut) lastPut = q;
+        if (i === 0 && anchor && breaks) q.insertBreak('Page', 'Before');
       }
+      if (lastPut && breaks) lastPut.insertBreak('Page', 'After');
       await ctx.sync();
       return null;
     });
@@ -1391,7 +1421,7 @@ async function insertToc(args) {
      */
     const found = `收錄 ${entries.length} 個標題（${entries.filter((e) => e.level === 1).length} 個第一層）`;
     if (how === 'field') {
-      return `已插入目錄欄位，${found}。\n`
+      return `已插入目錄欄位，${found}${breaks ? '，獨立成一頁' : ''}。\n`
         + '【要告訴使用者】請按一次「參考資料 → 更新目錄」，項目和頁碼才會出現——'
         + 'Office.js 讀不到分頁，所以欄位要由 Word 自己算一次。'
         + '算過之後它就是一個真正的目錄：之後標題有增減，再按一次更新就會同步。'
@@ -1843,7 +1873,7 @@ async function insertChart(args) {
   // Charts that take their data some other way say so themselves; the rest need
   // categories and numbers, and saying it here gives a better message than the
   // renderer's.
-  const SELF_SHAPED = ['timeline', 'map', 'scatter', 'box'];
+  const SELF_SHAPED = ['timeline', 'map', 'scatter', 'box', 'plot'];
   if (!SELF_SHAPED.includes(type) && (!cats.length || !values)) {
     throw new Error('需要 categories（分類名稱）和 values（數字）。例如 '
       + 'categories=["Q1","Q2"], values=[120,140]；多個數列就給二維陣列，'
@@ -1855,16 +1885,16 @@ async function insertChart(args) {
 
   const width = Math.max(240, Math.min(Number(args.width) || TEXT_COLUMN_PT, 900));
   const svg = chartSvg({
+    // Everything the renderers read, copied wholesale — see CHART_DATA_KEYS for
+    // why this is a list and not a dozen hand-written lines.
+    ...chartData(args),
     type,
     title: String(args.title || ''),
+    // These two are resolved above: `series` arrives in either shape and comes
+    // out as a list of names, so the raw argument must not win.
     categories: cats,
     values,
     series: names,
-    events: args.events,
-    total: args.total,
-    points: args.points,
-    map: args.map,
-    data_labels: args.data_labels,
     width,
     height: args.height === undefined ? undefined : Number(args.height),
   }, DOC_CHART_INK);
@@ -2398,18 +2428,32 @@ async function normalizeLayout(args) {
  * That fallback is exactly the "letters are one font, characters are another"
  * look this is meant to remove.
  */
+/**
+ * Headings are black now, in every theme that had them blue.
+ *
+ * ── Why the colour went ──
+ * 「我改變想法，我認為預設標題也不要藍色，用黑色好了」. It was Word's own blue
+ * ramp — #2E74B5 and friends — which reads as native because it IS native, and
+ * that was the argument for it. But a report is black text on white paper, and
+ * a heading is already a heading: it is bigger, it is bold, and it sits in its
+ * own space. Colour adds nothing that size and weight were not already saying,
+ * and it is the first thing to look wrong in print or in a photocopy.
+ *
+ * Same decision as the tables and the cover. The accent still exists — it is
+ * just spent on the one or two things that need pointing at, not on structure.
+ */
 const THEMES = {
   formal: {
     label: '公文體',
     font: '標楷體', titleSize: 26, headingSize: 14, bodySize: 12,
-    titleColor: '#000000', headingColor: '#1B3A5C', bodyColor: '#333333',
+    titleColor: '#000000', headingColor: '#000000', bodyColor: '#333333',
     lineSpacing: 18, spaceAfter: 12, sectionBefore: 20,
     titleAlign: 'Centered', bodyAlign: 'Justified', firstLineIndent: 24,
   },
   modern: {
     label: '商務簡潔',
     font: '微軟正黑體', titleSize: 24, headingSize: 14, bodySize: 11,
-    titleColor: '#2D2D2D', headingColor: '#2B6CB0', bodyColor: '#444444',
+    titleColor: '#1A1A1A', headingColor: '#000000', bodyColor: '#444444',
     lineSpacing: 15, spaceAfter: 10, sectionBefore: 18,
     titleAlign: 'Left', bodyAlign: 'Left', firstLineIndent: 0,
   },
@@ -2426,7 +2470,7 @@ const THEMES = {
   spec: {
     label: '規格書',
     font: '微軟正黑體', titleSize: 26, headingSize: 16, bodySize: 12,
-    titleColor: '#000000', headingColor: '#2E74B5', bodyColor: '#333333',
+    titleColor: '#000000', headingColor: '#000000', bodyColor: '#333333',
     lineSpacing: 16, spaceAfter: 8, sectionBefore: 16,
     titleAlign: 'Centered', bodyAlign: 'Left', firstLineIndent: 0,
   },
@@ -2436,7 +2480,7 @@ const THEMES = {
   business: {
     label: '商務表單',
     font: '微軟正黑體', titleSize: 20, headingSize: 13, bodySize: 10,
-    titleColor: '#16314F', headingColor: '#1F3864', bodyColor: '#6B7C90',
+    titleColor: '#000000', headingColor: '#000000', bodyColor: '#444444',
     lineSpacing: 13, spaceAfter: 4, sectionBefore: 10,
     titleAlign: 'Centered', bodyAlign: 'Left', firstLineIndent: 0,
   },

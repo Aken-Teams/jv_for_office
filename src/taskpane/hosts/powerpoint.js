@@ -66,7 +66,7 @@ import { makeScriptGuard } from './guard.js';
 // time somebody asks for a diagram.
 import { renderMermaid } from './mermaid.js';
 // Pure string work — no canvas, no DOM. See svgchart.js for why vector.
-import { chartSvg, CHART_TYPES } from './svgchart.js';
+import { chartSvg, CHART_TYPES, chartData } from './svgchart.js';
 import { ornamentSvg } from './svgart.js';
 
 // ── Capability gates ─────────────────────────────────────────────────────────
@@ -4044,26 +4044,20 @@ async function addChart(args) {
   }
   const th = theme(args.theme);
   const svg = chartSvg({
+    /**
+     * Every data field, copied wholesale.
+     *
+     * This used to name them one at a time, and the list was wrong twice:
+     * `timeline` shipped unable to receive its own `events`, and `plot`, `box`,
+     * `map` and `scatter` were all in the tool's enum while their data fields
+     * were being dropped here. A chart type that cannot be given its data is
+     * worse than one that is missing — the agent passes the right arguments,
+     * the renderer reports them as absent, and nothing points at this function.
+     */
+    ...chartData(args),
     type: args.type,
     title: args.title,
-    categories: args.categories,
-    values: args.values,
-    series: args.series,
-    // timeline takes `events` and waterfall takes `total`; neither was being
-    // forwarded, so `ppt_add_chart({type:'timeline'})` died inside normalise()
-    // with 「values 是必要的」 every single time. The tool advertised a chart type
-    // it could not draw, and the agent — correctly — reported it as unsupported.
-    events: args.events,
-    total: args.total,
-    // A Gantt carries its rows in `tasks`, not in categories/values — the same
-    // omission that broke `timeline` above, caught before it shipped this time.
-    tasks: args.tasks,
-    today: args.today,
     colors: args.colors || [th.strong, th.second, th.accent],
-    data_labels: args.data_labels,
-    area: args.area,
-    center: args.center,
-    center_label: args.center_label,
     width: num(args.width, 760),
     // A Gantt's height follows its row count, so it is left for the renderer to
     // decide unless somebody asked for one.
