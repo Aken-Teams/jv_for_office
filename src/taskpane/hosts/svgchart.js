@@ -2913,6 +2913,43 @@ export const CHART_TYPES = Object.keys(RENDER);
  * `width`, `height`, `type` and `title` are deliberately absent: a host decides
  * those itself from the slide or the text column, rather than passing them on.
  */
+/**
+ * Named palettes, because one palette is not a design decision.
+ *
+ * ── Why this exists ──
+ * 「配色可能也要多元一點……至少圖表的顏色就不用都用黑色、灰色了」. The greys were
+ * right for TABLES — a black header band with white text, grey and white rows,
+ * because a table is read and a stripe that competes with the text is a defect.
+ * They were never right for charts: a chart's colours ARE its data, and a
+ * two-series chart in navy and grey says one of those series matters less.
+ *
+ * Six palettes, each coherent rather than six arbitrary hues. Picking one is a
+ * sentence in the tool description, not a hex code the model has to invent —
+ * models invent `#FF0000`.
+ */
+export const PALETTES = {
+  // The default: a business report that is not afraid of colour.
+  classic: ['#1F3864', '#2E75B6', '#ED7D31', '#70AD47', '#7030A0', '#A5A5A5'],
+  // Cool and quiet — technical reports, specifications.
+  cool: ['#1F4E79', '#2E75B6', '#41A5C4', '#8FAADC', '#B4C7E7', '#D6DCE4'],
+  // Warm — marketing, customer-facing summaries.
+  warm: ['#C55A11', '#ED7D31', '#F4B183', '#BF8F00', '#FFD966', '#D0A68B'],
+  // One hue, light to dark: ordered categories, or a chart that must not imply
+  // that its categories are different KINDS of thing.
+  mono: ['#13294B', '#1F4E79', '#2E75B6', '#6FA8DC', '#A8C6E8', '#D6E3F0'],
+  // Earthy — ESG, sustainability, anything agricultural.
+  earth: ['#4E6E58', '#7E9C68', '#A8B87C', '#C2A878', '#8C6D4F', '#5B4636'],
+  // Greys only. Kept because it is right for print-only documents and for the
+  // ones that are photocopied, which in a factory is most of them.
+  mono_grey: ['#000000', '#404040', '#666666', '#8C8C8C', '#BFBFBF', '#D9D9D9'],
+};
+
+/** The colours a chart should use, given what the caller asked for. */
+export function paletteOf(name) {
+  const key = String(name || '').toLowerCase().replace(/[\s-]/g, '_');
+  return PALETTES[key] || null;
+}
+
 export const CHART_DATA_KEYS = [
   'categories', 'values', 'series', 'colors', 'labels', 'data_labels',
   'events', 'total', 'points', 'boxes', 'map', 'area',
@@ -2921,6 +2958,7 @@ export const CHART_DATA_KEYS = [
   // 學術那組
   'bins', 'normal', 'matrix', 'rows', 'cols', 'scale', 'show_values', 'groups', 'box',
   'baseline', 'summary', 'sets', 'overlaps', 'error', 'error_label', 'fit', 'fit_band',
+  'palette',
 ];
 
 /** Pick the data fields out of a tool's arguments, leaving its own options behind. */
@@ -2962,12 +3000,24 @@ export function chartSvg(spec = {}, theme = {}) {
     ground: theme.ground || '#F7F9FB',
     bg: theme.bg || '#FFFFFF',
   };
+  /**
+   * A named palette becomes the colours, unless the caller named colours.
+   *
+   * Resolved here rather than in each host so 「palette: 'warm'」 means the same
+   * thing wherever it is passed, and so a renderer never has to know that
+   * palettes exist.
+   */
+  const picked = paletteOf(spec.palette);
+  const withColors = (picked && !(Array.isArray(spec.colors) && spec.colors.length))
+    ? { ...spec, colors: picked }
+    : spec;
+
   const W = Number(spec.width) || 760;
   // A renderer may ask for a height when the caller did not give one — see
   // ganttChart.preferredHeight, where the row count decides it.
   const H = Number(spec.height)
     || (typeof render.preferredHeight === 'function' ? render.preferredHeight(spec) : 380);
-  const body = render({ ...spec, type, width: W, height: H }, t);
+  const body = render({ ...withColors, type, width: W, height: H }, t);
 
   // width/height in points AND a viewBox: PowerPoint sizes the inserted object
   // from the attributes, and without them it lands at some default and has to be

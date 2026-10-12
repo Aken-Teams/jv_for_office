@@ -68,7 +68,9 @@ if (!fs.existsSync(serverDir)) {
 const ACADEMIC = ['bins', 'normal', 'matrix', 'rows', 'cols', 'scale', 'show_values',
   'groups', 'box', 'baseline', 'summary', 'sets', 'overlaps',
   // 誤差棒和迴歸線不是新圖種，是加在既有圖上的——但同樣只開在 Word。
-  'error', 'error_label', 'fit', 'fit_band'];
+  'error', 'error_label', 'fit', 'fit_band',
+  // 配色也是先開在 Word——簡報的配色跟著版式走，不是一個參數。
+  'palette'];
 const CASES = [
   // 甘特圖在 Word 是獨立的 word_insert_gantt，所以 word_insert_chart 不收 tasks。
   { file: 'wordToolSpec.ts', tool: 'word_insert_chart', skip: ['tasks', 'today'],

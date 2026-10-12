@@ -74,6 +74,8 @@ const BASE_TOOLS = [
   'word_insert_cover',
   'word_insert_block',
   'word_insert_layout',
+  // 側欄版面：設計感履歷那種左深右淺，理由見 insertSidebar。
+  'word_insert_sidebar',
   'word_insert_chart',
   'word_insert_diagram',
   // 時程表自己畫，不走 mermaid——理由見 insertGantt。
@@ -1871,9 +1873,22 @@ const CHART_LABEL = {
   forest: '森林', survival: '存活曲線', venn: '范氏',
 };
 
+/**
+ * A document's chart ink.
+ *
+ * ── Why `second` is no longer grey ──
+ * 「至少圖表的顏色就不用都用黑色、灰色了，圖表顏色可以多元」. The greys were a
+ * decision about TABLES — a black header band, grey and white rows — and they
+ * leaked into the charts, where they are wrong for a reason that matters: a
+ * chart's colours are part of its data, and a second series in grey reads as
+ * the less important one whether or not it is.
+ *
+ * Structural ink stays black and grey: the axis, the gridlines, the tick labels
+ * are furniture and should not compete. The SERIES colours come from a palette.
+ */
 const DOC_CHART_INK = {
-  ink: '#000000', strong: '#1F3864', second: '#595959', accent: '#C0392B',
-  muted: '#595959', line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFFFFF',
+  ink: '#000000', strong: '#1F3864', second: '#2E75B6', accent: '#ED7D31',
+  muted: '#595959', line: '#D9D9D9', tint: '#E8EEF7', ground: '#F7F7F7', bg: '#FFFFFF',
 };
 
 async function insertChart(args) {
@@ -1916,6 +1931,15 @@ async function insertChart(args) {
 
   const width = Math.max(240, Math.min(Number(args.width) || TEXT_COLUMN_PT, 900));
   const svg = chartSvg({
+    /**
+     * A palette by default, not by request.
+     *
+     * Left to itself the renderer falls back to its own five colours, which is
+     * a deck palette rather than a document one. Naming the default here means
+     * a chart nobody styled still arrives coherent, and `palette: "mono_grey"`
+     * is there for the documents that really are printed in black and white.
+     */
+    palette: 'classic',
     // Everything the renderers read, copied wholesale — see CHART_DATA_KEYS for
     // why this is a list and not a dozen hand-written lines.
     ...chartData(args),
@@ -2354,6 +2378,269 @@ async function insertForm(args) {
       + '所以列高一致、欄位對齊，列印出來就是傳統表單的樣子。'
       + trackingNote(result);
   });
+}
+
+/**
+ * A page with a coloured sidebar — the layout every designed CV uses.
+ *
+ * ── Why this and not a template ──
+ * 「對於多元的版面是缺乏的」, with a designer's CV as the example: a dark column
+ * down the left holding contact details and skill bars, the main column holding
+ * the history. Everything this add-in could draw until now ran full width, so
+ * that page was simply not reachable — not because Word cannot do it, but
+ * because nothing here asked it to.
+ *
+ * It is one table, one row, two cells. That matters: a sidebar built out of
+ * text boxes or a background image would look the same on screen and come apart
+ * the moment somebody typed into it, and the text inside a picture cannot be
+ * edited at all. Here every word stays a Word word.
+ *
+ * ── What it deliberately does not try to be ──
+ * The circular photo, the watercolour border, the brush-stroke title — those are
+ * ARTWORK, not layout. They belong in a template somebody made in a drawing
+ * program, and the honest answer is to start from that file and let the add-in
+ * fill the text in. This draws the things that are geometry: columns, bands,
+ * rules, bars.
+ */
+const SIDE_INK = {
+  fill: '#1F3864',
+  text: '#FFFFFF',
+  rule: '#FFFFFF',
+  mainText: '#000000',
+  meta: '#595959',
+};
+
+/**
+ * Skill bars, drawn rather than approximated with characters.
+ *
+ * 「████░░」 in a monospaced run is what this looks like without a renderer, and
+ * on a CV that reads as a fallback. One picture per group keeps it to a single
+ * image in the cell instead of one per skill.
+ */
+export function barsSvgFor(items, width = 126, theme = { text: '#FFFFFF', accent: '#FFFFFF' }) {
+  return barsSvg(items, width, theme);
+}
+
+function barsSvg(items, width, theme) {
+  const rowH = 22;
+  const labelW = Math.min(width * 0.52,
+    Math.max(40, ...items.map((b) => textWidth(b.label) * 5.4 + 8)));
+  const barW = width - labelW - 6;
+  const H = items.length * rowH;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}"`
+    + ` viewBox="0 0 ${width} ${H}">`;
+  items.forEach((b, i) => {
+    const y = i * rowH;
+    out += `<text x="0" y="${y + rowH / 2 + 4}" font-family='${FONT_STACK}' font-size="10.5"`
+      + ` fill="${theme.text}">${xmlEscape(b.label)}</text>`;
+    out += `<rect x="${labelW}" y="${y + rowH / 2 - 3}" width="${barW}" height="6" rx="3"`
+      + ` fill="${theme.text}" fill-opacity="0.25"/>`;
+    out += `<rect x="${labelW}" y="${y + rowH / 2 - 3}" width="${Math.max(3, barW * b.value)}"`
+      + ` height="6" rx="3" fill="${theme.accent || theme.text}"/>`;
+  });
+  return `${out}</svg>`;
+}
+
+const FONT_STACK = '"Microsoft JhengHei", "PingFang TC", sans-serif';
+
+/** Normalise one column's blocks into something the writer can walk. */
+function sidebarBlocks(raw) {
+  return (Array.isArray(raw) ? raw : []).filter((b) => b && typeof b === 'object').map((b) => {
+    if (b.heading !== undefined) return { kind: 'heading', text: String(b.heading) };
+    if (b.title !== undefined) {
+      return { kind: 'title', text: String(b.title), sub: String(b.subtitle ?? '') };
+    }
+    if (Array.isArray(b.bars)) {
+      return {
+        kind: 'bars',
+        items: b.bars.filter(Boolean).map((x) => ({
+          label: String(x.label ?? ''),
+          // Accepts 0–1 and 0–100, because both are what people write.
+          value: Math.max(0, Math.min(1, Number(x.value) > 1 ? Number(x.value) / 100 : Number(x.value) || 0)),
+        })).filter((x) => x.label),
+      };
+    }
+    if (Array.isArray(b.entries)) {
+      return {
+        kind: 'entries',
+        items: b.entries.filter(Boolean).map((e) => ({
+          title: String(e.title ?? ''),
+          meta: String(e.meta ?? ''),
+          detail: String(e.detail ?? ''),
+        })),
+      };
+    }
+    if (Array.isArray(b.lines)) return { kind: 'lines', items: b.lines.map(String) };
+    if (b.text !== undefined) return { kind: 'lines', items: [String(b.text)] };
+    return null;
+  }).filter(Boolean);
+}
+
+async function insertSidebar(args) {
+  const side = String(args.side || 'left').toLowerCase() === 'right' ? 'right' : 'left';
+  const aside = sidebarBlocks(args.sidebar);
+  const main = sidebarBlocks(args.main);
+  if (!aside.length && !main.length) {
+    throw new Error('sidebar 和 main 至少要給一邊：'
+      + '[{ title: "王小明", subtitle: "資深製程工程師" }, { heading: "聯絡方式" }, '
+      + '{ lines: ["0912-345-678", "name@example.com"] }, '
+      + '{ bars: [{ label: "Python", value: 0.9 }] }, '
+      + '{ entries: [{ title: "製程工程師", meta: "強茂　2019–2024", detail: "負責…" }] }]。');
+  }
+  const fill = String(args.fill || SIDE_INK.fill);
+  const onDark = String(args.text_color || SIDE_INK.text);
+  const accent = String(args.accent || onDark);
+
+  // Bar pictures are rendered before Word.run: a canvas has no business inside
+  // an Office batch.
+  const asideW = Math.max(90, Math.min(Number(args.width) || 150, 240));
+  const pics = new Map();
+  for (const [where, blocks, w, tone] of [
+    ['a', aside, asideW - 24, { text: onDark, accent }],
+    ['m', main, 300, { text: SIDE_INK.mainText, accent: fill }],
+  ]) {
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i].kind !== 'bars' || !blocks[i].items.length) continue;
+      try {
+        pics.set(`${where}${i}`, await svgToPng(barsSvg(blocks[i].items, w, tone)));
+      } catch { /* a bar that will not draw becomes its label alone */ }
+    }
+  }
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, optIn(args), async () => {
+      const table = args.paragraph && items.length
+        ? items[resolveRange(items, args).from - 1]
+          .insertTable(1, 2, String(args.at) === 'before' ? 'Before' : 'After', [['', '']])
+        : ctx.document.body.insertTable(1, 2, 'End', [['', '']]);
+      table.styleBuiltIn = DEFAULT_TABLE_STYLE;
+      table.headerRowCount = 0;
+      table.styleBandedRows = false;
+      table.styleFirstColumn = false;
+      try {
+        const border = table.getBorder('All');
+        border.type = 'None';
+      } catch { /* a visible grid is survivable; a missing sidebar is not */ }
+      table.load('width');
+      await ctx.sync();
+
+      const total = Number(table.width) > 0 ? Number(table.width) : TEXT_COLUMN_PT;
+      const asideAt = side === 'left' ? 0 : 1;
+
+      for (const at of [0, 1]) {
+        const isAside = at === asideAt;
+        const cell = table.getCell(0, at);
+        cell.verticalAlignment = 'Top';
+        cell.columnWidth = isAside ? asideW : total - asideW;
+        if (isAside) cell.shadingColor = fill;
+        cell.setCellPadding('Left', isAside ? 14 : 16);
+        cell.setCellPadding('Right', isAside ? 14 : 8);
+        cell.setCellPadding('Top', 14);
+        cell.setCellPadding('Bottom', 14);
+
+        const blocks = isAside ? aside : main;
+        const ink = isAside ? onDark : SIDE_INK.mainText;
+        const quiet = isAside ? onDark : SIDE_INK.meta;
+        const key = isAside ? 'a' : 'm';
+
+        /**
+         * Written as OOXML in one go.
+         *
+         * A cell's paragraphs inserted one call at a time is a sync per
+         * paragraph, and on a CV with twenty lines that is twenty round trips
+         * to Word. One fragment is one.
+         */
+        const parts = [];
+        const line = (text, o) => parts.push(sideParaOoxml(text, o));
+
+        blocks.forEach((b, i) => {
+          if (b.kind === 'title') {
+            line(b.text, { size: isAside ? 18 : 24, bold: true, color: ink, spaceAfter: 2 });
+            if (b.sub) line(b.sub, { size: isAside ? 10 : 12, color: quiet, spaceAfter: 10 });
+            return;
+          }
+          if (b.kind === 'heading') {
+            // A rule under the heading rather than a colour: on a dark column a
+            // coloured heading disappears, and this is what the CVs do anyway.
+            line(b.text, { size: 12, bold: true, color: ink, caps: true, spaceBefore: 12, spaceAfter: 4, rule: isAside ? accent : fill });
+            return;
+          }
+          if (b.kind === 'lines') {
+            for (const t of b.items) line(t, { size: 10.5, color: ink, spaceAfter: 2 });
+            return;
+          }
+          if (b.kind === 'entries') {
+            for (const e of b.items) {
+              line(e.title, { size: 12, bold: true, color: ink, spaceBefore: 8, spaceAfter: 1 });
+              if (e.meta) line(e.meta, { size: 10, color: quiet, spaceAfter: 2 });
+              if (e.detail) line(e.detail, { size: 10.5, color: ink, spaceAfter: 4 });
+            }
+            return;
+          }
+          if (b.kind === 'bars' && !pics.has(`${key}${i}`)) {
+            for (const x of b.items) line(x.label, { size: 10.5, color: ink, spaceAfter: 2 });
+          }
+        });
+
+        if (parts.length) {
+          cell.body.insertOoxml(OOXML_HEAD + parts.join('') + OOXML_TAIL, 'Replace');
+        }
+        await ctx.sync();
+
+        // The bar pictures go in afterwards, each after the paragraph that was
+        // standing in for it.
+        for (let i = 0; i < blocks.length; i++) {
+          const png = pics.get(`${key}${i}`);
+          if (!png) continue;
+          const para = cell.body.insertParagraph('', 'End');
+          const pic = para.insertInlinePictureFromBase64(png.data, 'Replace');
+          pic.width = (isAside ? asideW - 28 : 300);
+          pic.height = Math.round(pic.width * (png.height / png.width));
+        }
+      }
+
+      await ctx.sync();
+      return null;
+    });
+
+    return `已建立側欄版面：${side === 'left' ? '左' : '右'}側 ${asideW} 點寬的`
+      + `色塊欄（${fill}），右邊是正文欄。\n`
+      + '整頁是一個表格、框線關掉，所以看起來是版面而不是表格——'
+      + '而且**每一個字都還是 Word 的字，可以直接改**，不是一張圖。\n'
+      + '圓形照片、花邊、書法標題那些是美術素材不是版面，畫不出來；'
+      + '那種需求請拿現成的範本檔，再讓我把文字填進去。'
+      + trackingNote(result);
+  });
+}
+
+/**
+ * One line of a sidebar, as OOXML.
+ *
+ * Written here rather than through `bodyParagraphOoxml` because a CV line needs
+ * things a body paragraph never does: a size and colour per line, tight spacing
+ * above and below, and a rule under a section heading. Patching those into a
+ * fragment built for something else is how the two drift apart.
+ */
+function sideParaOoxml(text, o = {}) {
+  const pPr = ['<w:pStyle w:val="Normal"/>'];
+  pPr.push(`<w:spacing w:before="${tw(o.spaceBefore || 0)}" w:after="${tw(o.spaceAfter || 2)}"`
+    + ' w:line="240" w:lineRule="auto"/>');
+  if (o.align) pPr.push(`<w:jc w:val="${JC[o.align] || 'left'}"/>`);
+  if (o.rule) {
+    pPr.push('<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="3" '
+      + `w:color="${String(o.rule).replace('#', '')}"/></w:pBdr>`);
+  }
+  const rPr = [];
+  if (o.bold) rPr.push('<w:b/>');
+  if (o.color) rPr.push(`<w:color w:val="${String(o.color).replace('#', '')}"/>`);
+  if (o.size) rPr.push(`<w:sz w:val="${Math.round(o.size * 2)}"/><w:szCs w:val="${Math.round(o.size * 2)}"/>`);
+  // Letter-spacing on a section heading: 「CONTACT」 with air between the
+  // letters is the whole visual signature of these layouts.
+  if (o.caps) rPr.push('<w:spacing w:val="30"/>');
+  return `<w:p><w:pPr>${pPr.join('')}</w:pPr>`
+    + (text ? `<w:r><w:rPr>${rPr.join('')}</w:rPr><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>` : '')
+    + '</w:p>';
 }
 
 // ── Equations ─────────────────────────────────────────────────────────────────
@@ -4144,6 +4431,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_break':
       case 'word_insert_cover':
       case 'word_insert_block':
+      case 'word_insert_sidebar':
       case 'word_insert_layout':
       case 'word_insert_chart':
       case 'word_insert_diagram':
@@ -4189,6 +4477,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_cover: insertCover,
           word_insert_block: insertBlock,
           word_insert_layout: insertLayout,
+          word_insert_sidebar: insertSidebar,
           word_insert_chart: insertChart,
           word_insert_diagram: insertDiagram,
           word_insert_gantt: insertGantt,
@@ -4286,6 +4575,7 @@ export const meta = {
     word_insert_cover: t('正在製作封面…'),
     word_insert_block: t('正在排版資訊區塊…'),
     word_insert_layout: t('正在並排區塊…'),
+    word_insert_sidebar: t('正在排側欄版面…'),
     word_insert_chart: t('正在繪製圖表…'),
     word_insert_diagram: t('正在畫流程圖…'),
     word_insert_gantt: t('正在畫時程圖…'),
