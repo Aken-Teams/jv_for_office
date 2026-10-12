@@ -7,6 +7,52 @@
        applyHostText() rewrites everything marked data-h. The Excel wording left
        in the markup is the default, not the truth. -->
   <title>JVision</title>
+  <!--
+    Content Security Policy — the one thing that actually stops a script from
+    phoning home.
+
+    ── Why this and not a JS sandbox ──
+    `excel_run_script` / `word_run_script` build the script with `new Function`,
+    so its body runs in the global scope and can reach `window`, `fetch` and
+    `localStorage` — where the session token lives. The Proxy guard wraps the
+    Office objects; it cannot wrap the realm. And no in-JS sandbox closes this:
+    `[].constructor.constructor('return fetch')()` walks straight back out of a
+    `with`-scoped shim. The only boundary the script cannot argue with is the
+    one the browser enforces on the network.
+
+    `connect-src` is therefore the whole point of this header: a script may read
+    the token, and may not send it anywhere.
+
+    ── The deployment decision this needs ──
+    `apiBase` is read from config.json at RUNTIME; a meta CSP is parsed once,
+    statically. They cannot both be true, so the origin is written here as a
+    placeholder and substituted when the page is served:
+
+      · dev: tools/dev-server.mjs rewrites it from config.json on the way out
+      · deploy: whatever serves this file must do the same substitution, or
+        hard-code the origin here before shipping
+
+    Leave %API_ORIGIN% unsubstituted and the pane cannot reach its own server —
+    loudly, in the console, which is the right failure for this.
+
+    ── Verify before trusting it ──
+    This has not been run inside Word or Excel. Office.js is loaded from
+    Microsoft's CDN and the host WebView makes its own requests; if something
+    stops working, this header is the first suspect. Removing this one comment
+    block restores the previous behaviour exactly.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self' https://appsforoffice.microsoft.com https://*.office.com https://*.officeapps.live.com 'unsafe-eval';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data: blob:;
+    font-src 'self' data:;
+    connect-src 'self' %API_ORIGIN% https://appsforoffice.microsoft.com https://*.office.com https://*.officeapps.live.com;
+    frame-src 'self';
+    base-uri 'none';
+    form-action 'none';
+    object-src 'none';
+  " />
   <!-- Office.js must come from Microsoft's CDN — it is version-matched to the host
        at runtime and cannot be self-hosted reliably. It is a classic script, so it
        finishes executing before the deferred module below calls Office.onReady. -->

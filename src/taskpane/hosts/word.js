@@ -59,6 +59,7 @@ const BASE_TOOLS = [
   'word_get_overview',
   'word_get_selection',
   'word_read_range',
+  'word_read_table',
   'word_search',
   'word_write_range',
   'word_insert_text',
@@ -77,6 +78,7 @@ const BASE_TOOLS = [
   // 側欄版面：設計感履歷那種左深右淺，理由見 insertSidebar。
   'word_insert_sidebar',
   'word_insert_calendar',
+  'word_fill_table',
   'word_insert_chart',
   'word_insert_diagram',
   // 時程表自己畫，不走 mermaid——理由見 insertGantt。
@@ -385,6 +387,44 @@ async function getOverview(args) {
     if (pics.items.length) {
       parts.push(`圖片：${pics.items.length} 張（要看內容用 word_read_image，index 從 1 起算）`);
     }
+
+    /**
+     * Tables, because 「AI 要把原本檔案全部看一次，上面有甚麼都要看」.
+     *
+     * ── What was missing ──
+     * This reported the title, the paragraph count, the outline and the
+     * pictures, and said nothing at all about tables. A model handed somebody's
+     * quotation template therefore saw a list of paragraphs: it could read the
+     * words 「客戶名稱」, and had no way to know they sat in row 2 column 1 of a
+     * table with an empty cell beside them. Filling in a form was guesswork
+     * dressed as a paragraph edit.
+     *
+     * Dimensions and the first column's labels are enough to recognise a form;
+     * the whole grid is `word_read_table`, which is a separate call because a
+     * forty-row table would drown everything else in here.
+     */
+    const tbl = ctx.document.body.tables;
+    tbl.load('items/rowCount/values');
+    await ctx.sync();
+    if (tbl.items.length) {
+      const lines = tbl.items.slice(0, 12).map((t, i) => {
+        const values = Array.isArray(t.values) ? t.values : [];
+        const cols = values.length ? Math.max(...values.map((r) => r.length)) : 0;
+        // The first cell of each row, which on a form IS the field list.
+        const labels = values.slice(0, 6)
+          .map((r) => String(r[0] ?? '').replace(/\s+/g, ' ').trim())
+          .filter(Boolean);
+        const blanks = values.flat().filter((v) => !String(v ?? '').trim()).length;
+        return `  表格 ${i + 1}：${t.rowCount} 列 × ${cols} 欄`
+          + (blanks ? `，${blanks} 格是空的` : '')
+          + (labels.length ? `　｜　${labels.join('、')}${values.length > 6 ? '…' : ''}` : '');
+      });
+      parts.push('');
+      parts.push(`表格：${tbl.items.length} 張\n${lines.join('\n')}`
+        + (tbl.items.length > 12 ? `\n  （另外還有 ${tbl.items.length - 12} 張）` : '')
+        + '\n  要看完整內容用 word_read_table，要填內容用 word_fill_table。');
+    }
+
     parts.push('');
     parts.push(outline.length
       ? `章節大綱（段落編號＋標題）：\n${outline.join('\n')}`
@@ -2967,6 +3007,153 @@ export function yearCalendarSvgFor(year, opts = {}) {
   });
 }
 
+/**
+ * Reading and filling a table that was already in the document.
+ *
+ * ── Why these two exist ──
+ * 「我想說現在 AI 也會先看整個文件再做」 — it does read the document, and that was
+ * not the gap. The gap was that every tool here could only touch a table it had
+ * just created itself: thirty-three tools, and every single `getCell` call sat
+ * inside `insertTable`, `insertForm`, `insertCalendar`. Somebody opening their
+ * company's quotation template and asking for it to be filled in had two
+ * options — count paragraphs until they hit the right cell, or ask the model to
+ * write Office.js by hand through `word_run_script`.
+ *
+ * ── Addressed two ways, on purpose ──
+ * By row and column, which is exact and which nothing but a machine would use;
+ * and by LABEL, which is how a person describes the same thing: 「客戶名稱那一格
+ * 旁邊」. The label form is the one that makes filling a template work, because
+ * the model is reading the document, not holding a coordinate system.
+ */
+function tableGrid(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((r) => (Array.isArray(r) ? r.map((v) => String(v ?? '')) : []));
+}
+
+async function pickTable(ctx, args) {
+  const tables = ctx.document.body.tables;
+  tables.load('items/rowCount/values');
+  await ctx.sync();
+  if (!tables.items.length) throw new Error('這份文件裡沒有表格。');
+  const n = Math.round(Number(args.table) || 1);
+  if (!(n >= 1 && n <= tables.items.length)) {
+    throw new Error(`table 要是 1 到 ${tables.items.length}（這份文件有 ${tables.items.length} 張表格）。`);
+  }
+  return { table: tables.items[n - 1], index: n, count: tables.items.length };
+}
+
+async function readTable(args) {
+  return Word.run(async (ctx) => {
+    const { table, index, count } = await pickTable(ctx, args);
+    const grid = tableGrid(table.values);
+    const cols = grid.length ? Math.max(...grid.map((r) => r.length)) : 0;
+
+    // Row and column numbers in the output, because the next call is going to
+    // be a write and it has to be able to say where.
+    const head = ['      ', ...Array.from({ length: cols }, (_, c) => `欄${c + 1}`)];
+    const body = grid.map((row, r) => [`列${r + 1}`, ...Array.from({ length: cols },
+      (_, c) => (String(row[c] ?? '').replace(/\s+/g, ' ').trim() || '（空）'))]);
+    const lines = [head, ...body].map((r) => r.join('\t')).join('\n');
+
+    const blanks = grid.flat().filter((v) => !String(v).trim()).length;
+    return `表格 ${index}／共 ${count} 張，${grid.length} 列 × ${cols} 欄`
+      + (blanks ? `，其中 ${blanks} 格是空的。` : '。')
+      + `\n\n${lines}\n\n`
+      + '要填內容用 word_fill_table：可以給 row/col，也可以給 fields '
+      + '（例如 { "客戶名稱": "強茂" }，它會找到那一格並寫進**右邊**那一格）。';
+  });
+}
+
+/** Normalise for matching: whitespace, full-width punctuation and colons go. */
+function labelKey(text) {
+  return String(text ?? '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[：:：*＊]/g, '')
+    .trim();
+}
+
+async function fillTable(args) {
+  const cells = (Array.isArray(args.cells) ? args.cells : [])
+    .map((c) => ({
+      row: Math.round(Number(c && c.row)),
+      col: Math.round(Number(c && c.col)),
+      text: String((c && c.text) ?? ''),
+    }))
+    .filter((c) => c.row >= 1 && c.col >= 1);
+  const fields = (args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields))
+    ? Object.entries(args.fields).map(([k, v]) => [String(k), String(v ?? '')])
+    : [];
+  if (!cells.length && !fields.length) {
+    throw new Error('要給 cells 或 fields 其中一種。'
+      + 'cells: [{ row: 2, col: 2, text: "強茂" }]（列和欄從 1 起算）；'
+      + 'fields: { "客戶名稱": "強茂" }（找到寫著「客戶名稱」的那一格，填進它右邊那一格）。');
+  }
+
+  return Word.run(async (ctx) => {
+    const { table, index } = await pickTable(ctx, args);
+    const grid = tableGrid(table.values);
+    const cols = grid.length ? Math.max(...grid.map((r) => r.length)) : 0;
+
+    const result = await withTracking(ctx, optIn(args), async () => {
+      const wrote = [];
+      const missed = [];
+
+      const put = (r, c, text) => {
+        if (r < 1 || r > grid.length || c < 1 || c > cols) {
+          missed.push(`列 ${r} 欄 ${c} 超出 ${grid.length}×${cols}`);
+          return;
+        }
+        table.getCell(r - 1, c - 1).value = text;
+        wrote.push(`列 ${r} 欄 ${c}`);
+      };
+
+      for (const c of cells) put(c.row, c.col, c.text);
+
+      /**
+       * A label's answer goes to its RIGHT, or underneath it.
+       *
+       * Right first because that is how every form in a Chinese-language office
+       * is laid out; underneath as the fallback, which is what a table with a
+       * header row is. Only an EMPTY cell is written to — overwriting something
+       * somebody already typed is not filling in a form, and the one case where
+       * that is wanted can say so with row/col.
+       */
+      for (const [label, text] of fields) {
+        const key = labelKey(label);
+        let hit = null;
+        for (let r = 0; r < grid.length && !hit; r++) {
+          for (let c = 0; c < cols; c++) {
+            if (labelKey(grid[r][c]) !== key) continue;
+            if (c + 1 < cols && !String(grid[r][c + 1] ?? '').trim()) { hit = [r + 1, c + 2]; break; }
+            if (r + 1 < grid.length && !String(grid[r + 1][c] ?? '').trim()) { hit = [r + 2, c + 1]; break; }
+            // Found the label but both neighbours are taken: say so rather than
+            // writing over one of them.
+            missed.push(`「${label}」找到了，但右邊和下面都已經有內容`);
+            hit = 'taken';
+            break;
+          }
+        }
+        if (hit === 'taken') continue;
+        if (!hit) { missed.push(`找不到「${label}」這一格`); continue; }
+        put(hit[0], hit[1], text);
+      }
+
+      await ctx.sync();
+      return { wrote, missed };
+    });
+
+    const { wrote, missed } = result.value || { wrote: [], missed: [] };
+    if (!wrote.length) {
+      throw new Error(`表格 ${index} 一格都沒填到。${missed.join('；')}\n`
+        + '先用 word_read_table 看一次實際的列欄和每格現有的文字。');
+    }
+    return `已在表格 ${index} 填了 ${wrote.length} 格（${wrote.slice(0, 8).join('、')}`
+      + `${wrote.length > 8 ? '…' : ''}）。`
+      + (missed.length ? `\n沒填到的：${missed.join('；')}` : '')
+      + trackingNote(result);
+  });
+}
+
 // ── Equations ─────────────────────────────────────────────────────────────────
 
 /**
@@ -4741,6 +4928,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_read_image':    return await readImage(a);
       case 'word_get_selection': return { ok: true, content: await getSelection() };
       case 'word_read_range':    return { ok: true, content: await readRange(a) };
+      case 'word_read_table':    return { ok: true, content: await readTable(a) };
       case 'word_search':        return { ok: true, content: await search(a) };
 
       case 'word_write_range':
@@ -4755,6 +4943,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_break':
       case 'word_insert_cover':
       case 'word_insert_block':
+      case 'word_fill_table':
       case 'word_insert_calendar':
       case 'word_insert_sidebar':
       case 'word_insert_layout':
@@ -4804,6 +4993,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_layout: insertLayout,
           word_insert_sidebar: insertSidebar,
           word_insert_calendar: insertCalendar,
+          word_fill_table: fillTable,
           word_insert_chart: insertChart,
           word_insert_diagram: insertDiagram,
           word_insert_gantt: insertGantt,
@@ -4840,7 +5030,12 @@ export async function executeTool(tool, args, opts = {}) {
     let msg = `${code}${(e && e.message) || String(e)}`;
     if (tool === 'word_run_script' && e instanceof ReferenceError) {
       msg += '。這段程式可以用的名稱只有：context（= ctx）、document、body、Word、log、store。'
-        + '沒有 Office Scripts 的 ExcelScript，也沒有 require / import / fetch。';
+        + '沒有 Office Scripts 的 ExcelScript，也沒有 require 和 import。'
+        // 不要再寫「沒有 fetch / document」。它們其實在——腳本是用 new Function
+        // 建的，函式本體跑在全域範圍，拿得到 window 上的任何東西。對模型講不準確的
+        // 話，比不講更糟：它會據此推論這個環境是封閉的，然後寫出依賴那個前提的程式。
+        + '（fetch 和 document 這個環境是有的，但這支工具不是拿來上網或改網頁的——'
+        + '要讀寫文件請用其他工具。）';
     }
     return { ok: false, error: msg, snapshot };
   }
@@ -4903,6 +5098,8 @@ export const meta = {
     word_insert_layout: t('正在並排區塊…'),
     word_insert_sidebar: t('正在排側欄版面…'),
     word_insert_calendar: t('正在排月曆…'),
+    word_fill_table: t('正在填表格…'),
+    word_read_table: t('正在看表格…'),
     word_insert_chart: t('正在繪製圖表…'),
     word_insert_diagram: t('正在畫流程圖…'),
     word_insert_gantt: t('正在畫時程圖…'),

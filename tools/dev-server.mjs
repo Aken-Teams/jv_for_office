@@ -63,13 +63,51 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+/**
+ * The origin the pane is allowed to talk to, from config.json.
+ *
+ * Read per request rather than once at boot: config.json is edited while the
+ * dev server is running, and a CSP that still names yesterday's port fails in a
+ * way that looks like the server is down.
+ */
+function apiOrigin() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+    const u = new URL(String(cfg.apiBase || ''));
+    return u.origin;
+  } catch {
+    return 'http://localhost:12054';
+  }
+}
+
 const server = https.createServer(await devCerts.getHttpsServerOptions(), (req, res) => {
   const urlPath = decodeURIComponent(new URL(req.url, `https://localhost:${PORT}`).pathname);
   const rel = urlPath === '/' ? '/src/taskpane/taskpane.html' : urlPath;
   const file = path.join(ROOT, rel);
 
-  // Path traversal guard: a dev server still shouldn't hand out the whole disk.
-  if (!file.startsWith(ROOT)) { res.writeHead(403).end('Forbidden'); return; }
+  /**
+   * Path guard.
+   *
+   * ── Two holes this closes ──
+   * `file.startsWith(ROOT)` passes for a SIBLING directory whose name starts
+   * with the same letters: with ROOT at `…/jv_for_office`, a request for
+   * `../jv_for_office_private/keys.txt` resolves to a path that starts with
+   * ROOT and is served. Comparing against `ROOT + sep` is the whole fix.
+   *
+   * And nothing stopped `/.env` — which in this repo is where the API
+   * credentials live. A dev server on localhost is still a server, and the pane
+   * runs inside Office's WebView where any page can reach it.
+   */
+  const rootWithSep = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
+  if (file !== ROOT && !file.startsWith(rootWithSep)) {
+    res.writeHead(403).end('Forbidden');
+    return;
+  }
+  // Dotfiles and the git directory are never web assets.
+  if (rel.split(/[\\/]/).some((seg) => seg.startsWith('.') && seg !== '.' && seg !== '..')) {
+    res.writeHead(403).end('Forbidden');
+    return;
+  }
 
   const ua = (req.headers['user-agent'] || '').slice(0, 70);
   const stamp = new Date().toISOString().slice(11, 23);
@@ -80,14 +118,28 @@ const server = https.createServer(await devCerts.getHttpsServerOptions(), (req, 
       res.writeHead(404).end('Not found');
       return;
     }
-    log(`${stamp}  200  ${rel}  ${data.length}B  [${ua}]`);
+    /**
+     * Fill in the CSP's API origin on the way out.
+     *
+     * The policy in taskpane.html carries `%API_ORIGIN%` because a meta CSP is
+     * static while `apiBase` is read from config.json at runtime. Serving the
+     * page is the moment both are known, so this is where they meet. A deploy
+     * that serves these files some other way has to do the same substitution —
+     * see the comment on the meta tag.
+     */
+    let body = data;
+    if (path.extname(file).toLowerCase() === '.html') {
+      body = Buffer.from(String(data).replaceAll('%API_ORIGIN%', apiOrigin()), 'utf8');
+    }
+
+    log(`${stamp}  200  ${rel}  ${body.length}B  [${ua}]`);
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       // The pane is edited constantly during development and Excel's WebView
       // caches aggressively — without this you debug against stale code.
       'Cache-Control': 'no-store',
     });
-    res.end(data);
+    res.end(body);
   });
 });
 

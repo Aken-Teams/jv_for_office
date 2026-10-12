@@ -3092,7 +3092,12 @@ export async function executeTool(tool, args, opts = {}) {
     // that cannot tell the difference just rewrites the same script again.
     if (tool === 'excel_run_script' && e instanceof ReferenceError) {
       msg += '。這段程式可以用的名稱只有：context（= ctx）、workbook、Excel、log、store。'
-        + '沒有 Office Scripts 的 ExcelScript，也沒有 require / import / fetch / document。';
+        + '沒有 Office Scripts 的 ExcelScript，也沒有 require 和 import。'
+        // 不要再寫「沒有 fetch / document」。它們其實在——腳本是用 new Function
+        // 建的，函式本體跑在全域範圍，拿得到 window 上的任何東西。對模型講不準確的
+        // 話，比不講更糟：它會據此推論這個環境是封閉的，然後寫出依賴那個前提的程式。
+        + '（fetch 和 document 這個環境是有的，但這支工具不是拿來上網或改網頁的——'
+        + '要讀寫文件請用其他工具。）';
     }
     // A failed script may still have written something before it threw.
     await finishWorkbookSnapshot(scriptSnapshot);
