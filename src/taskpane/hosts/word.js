@@ -4035,7 +4035,31 @@ async function insertCover(args) {
         const paras = ctx.document.body.paragraphs;
         paras.load('items');
         await ctx.sync();
-        const anchor = paras.items[Math.min(lines.length - 1, paras.items.length - 1)];
+        /**
+         * 錨點不能用「第幾段」算出來。
+         *
+         * ── 症狀 ──
+         * `[GeneralException] GeneralException`，而且只在**文件已經有東西**的時候
+         * 發生——空白文件上做封面是好的。
+         *
+         * ── 原因 ──
+         * `body.paragraphs.items` **把表格儲存格裡的段落也算進去**。封面是插在
+         * 最前面的，所以在空文件上「第 lines.length - 1 段」剛好是封面的最後一段；
+         * 可是文件裡只要已經有一張表，同一個索引就會落到**表格內部的某一格**裡，
+         * 而對著表格裡的段落呼叫 `insertTable` 正是 Word 會丟 GeneralException 的
+         * 動作之一。
+         *
+         * 所以改成：從那個位置往回找，第一個不在表格裡的段落才拿來當錨點。
+         */
+        const inTable = paras.items.map((q) => {
+          const t = q.parentTableOrNullObject;
+          t.load('isNullObject');
+          return t;
+        });
+        await ctx.sync();
+        let at = Math.min(lines.length - 1, paras.items.length - 1);
+        while (at > 0 && inTable[at] && inTable[at].isNullObject === false) at -= 1;
+        const anchor = paras.items[at];
         const table = anchor.insertTable(rows.length, 2, 'After', rows);
         table.styleBuiltIn = String(args.table_style || DEFAULT_TABLE_STYLE).replace(/\s+/g, '');
         table.headerRowCount = 0;
@@ -5039,6 +5063,26 @@ export async function executeTool(tool, args, opts = {}) {
   } catch (e) {
     const code = e && e.code ? `[${e.code}] ` : '';
     let msg = `${code}${(e && e.message) || String(e)}`;
+    /**
+     * Office 的例外要連「是哪一行炸的」一起講。
+     *
+     * ── 為什麼 ──
+     * 「[GeneralException] GeneralException」是 Office.js 最常見也最沒用的錯誤：
+     * 訊息把類別名稱重複了一次，然後什麼都沒說。但例外物件上掛著 `debugInfo`，
+     * 裡面的 `errorLocation` 是**出事的那個 API 呼叫的名字**（像是
+     * `Paragraph.insertTable`），`message` 常常也比外層那句具體。
+     *
+     * 這段資訊原本被丟掉，於是每一次追查都變成在原始碼裡猜哪一行——這一輪就是
+     * 這樣燒掉的。它同時要給模型看（它才知道換哪一種做法）和給人看（hover 上去
+     * 會顯示這整句）。
+     */
+    const info = e && e.debugInfo;
+    if (info) {
+      const where = info.errorLocation ? `在 ${info.errorLocation}` : '';
+      const detail = info.message && info.message !== (e && e.message) ? info.message : '';
+      const extra = [where, detail].filter(Boolean).join('：');
+      if (extra) msg += `（${extra}）`;
+    }
     if (tool === 'word_run_script' && e instanceof ReferenceError) {
       msg += '。這段程式可以用的名稱只有：context（= ctx）、document、body、Word、log、store。'
         + '沒有 Office Scripts 的 ExcelScript，也沒有 require 和 import。'
