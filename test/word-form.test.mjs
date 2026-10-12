@@ -100,7 +100,7 @@ function fakeTable(rowCount, cols, log, opts = {}) {
 function fakeWord(opts = {}) {
   const log = {
     tables: [], padding: [], borders: [], merges: [], heights: [], extraParas: [],
-    paras: [], syncs: 0,
+    paras: [], deleted: [], syncs: 0,
   };
   const makeTable = (r, c, loc, values) => {
     const t = fakeTable(r, c, log, opts);
@@ -127,14 +127,33 @@ function fakeWord(opts = {}) {
           };
         },
         paragraphs: {
-          items: Array.from({ length: 4 }, () => ({
-            insertTable: makeTable,
-            insertOoxml: () => {},
-            insertParagraph: () => ({ styleBuiltIn: '' }),
-          })),
+          get items() {
+            const made = log.paras.map((q) => ({
+              text: String(q.text ?? ''),
+              insertTable: makeTable,
+              insertOoxml: () => {},
+              insertParagraph: () => ({ styleBuiltIn: '' }),
+              delete: () => log.deleted.push(`para:${q.text}`),
+            }));
+            return [...made, ...Array.from({ length: 4 }, () => ({
+              text: '',
+              insertTable: makeTable,
+              insertOoxml: () => {},
+              insertParagraph: () => ({ styleBuiltIn: '' }),
+              delete: () => log.deleted.push('para:'),
+            }))];
+          },
           load() {},
         },
         getOoxml: () => ({ value: '<xml/>' }),
+        /**
+         * 續接時會去找「文件裡最後一張表」把它拆掉。假物件要記得自己建過哪些表，
+         * 不然那段會丟例外、被 catch 吃掉，然後測試看到的是兩張表而不是一張。
+         */
+        tables: {
+          get items() { return log.tables.map(() => ({ delete: () => log.deleted.push('table') })); },
+          load() {},
+        },
         load() {},
       },
     },
@@ -288,6 +307,56 @@ function fakeWord(opts = {}) {
   const bad = await executeTool('word_insert_form', { fields: [] });
   const msg = String(bad && bad.error);
   ok('沒有欄位會說清楚怎麼給', /section/.test(msg) && /lines/.test(msg), msg);
+}
+
+// ── 分成好幾次送，還是一張表 ────────────────────────────────────────────────
+{
+  /**
+   * 「還不錯，只是他會重複好幾個」。
+   *
+   * 模型會把一張表單拆成好幾次呼叫送過來——一次基本資料、一次任職資料、一次緊急
+   * 聯絡人——而每一次都開一張新表，於是文件裡出現一張完整的表單、一條孤伶伶的
+   * 「基本資料」灰帶、一張只有兩個欄位的殘表，然後又一張完整的。
+   *
+   * 工具說明裡早就寫了「一個陣列給完」，它照樣拆。規則擋不住的事情要用機制擋：
+   * 上一筆寫入也是表單的話，這一次就把它拆掉重建，合成同一張。
+   */
+  const log = fakeWord();
+  await executeTool('word_insert_form', {
+    title: '員工履歷表',
+    fields: [{ section: '基本資料' }, { label: '中文姓名' }, { label: '英文姓名' }],
+  });
+  const first = log.tables.length;
+  const res = await executeTool('word_insert_form', {
+    fields: [{ section: '任職資料' }, { label: '到職日期' }, { label: '所屬部門' }],
+  });
+  ok('第二次是接上去，不是另開一張',
+    res && res.ok && /同一張表單/.test(String(res.content)), JSON.stringify(res).slice(0, 140));
+  ok('把前一張拆掉了', log.deleted.includes('table'), JSON.stringify(log.deleted));
+
+  // 重建出來的那張要同時有兩段的欄位。
+  const built = log.tables[log.tables.length - 1];
+  const flat = built.values.flat().join('|');
+  ok('合併後兩段都在', /基本資料/.test(flat) && /任職資料/.test(flat) && /所屬部門/.test(flat), flat);
+  // 兩條區段帶 + 兩列各兩組欄位 = 四列。多一列代表有一列是空的。
+  ok('列數是兩段加起來', built.rows === 4, `${built.rows} 列`);
+  ok('第一次只有一張表', first === 1, `${first}`);
+
+  // 標題不可以再印一次——截圖裡出現過「員工履歷表員工履歷表」。
+  ok('舊標題被收走了', log.deleted.includes('para:員工履歷表'),
+    JSON.stringify(log.deleted));
+}
+
+// ── 中間插了別的東西就不再續接 ──────────────────────────────────────────────
+{
+  const log = fakeWord();
+  await executeTool('word_insert_form', { fields: [{ label: '姓名' }] });
+  await executeTool('word_insert_text', { text: '以下為附註' });
+  const res = await executeTool('word_insert_form', { fields: [{ label: '電話' }] });
+  ok('中間有別的寫入就重新開一張',
+    res && res.ok && !/同一張表單/.test(String(res.content)),
+    String(res && res.content).slice(0, 60));
+  ok('沒有去刪別人的東西', !log.deleted.includes('table'), JSON.stringify(log.deleted));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -2069,18 +2069,95 @@ function formLabelWidth(rows, totalPt, pairs) {
   return Math.min(widest, (totalPt / pairs) * 0.42);
 }
 
+/**
+ * The form the previous call built, so this one can continue it.
+ *
+ * ── The bug this exists for ──
+ * 「還不錯，只是他會重複好幾個」. A form arrives from the model in pieces — one
+ * call for 基本資料, another for 任職資料, another for 緊急聯絡人 — and each call
+ * started a fresh table. The document came out with a complete form followed by
+ * a lone grey 「基本資料」 band, followed by a two-field stub, followed by the
+ * form again.
+ *
+ * Telling the model 「give me all the fields in one call」 is already in the tool
+ * description and it still split them, which is the usual outcome: a rule the
+ * model has to remember across a long generation is not a mechanism. So the
+ * tool takes the pieces. If the LAST thing written to this document was also a
+ * form, this call rebuilds that form with its rows plus the new ones — one
+ * table, however many calls it arrived in.
+ *
+ * The window is deliberately one write wide. Anything else touching the
+ * document — a paragraph, a heading, a chart — ends the form, because at that
+ * point the next form is a different form.
+ */
+let openForm = null;
+let writeSeq = 0;
+
+/** Called by executeTool: every write advances the clock, and most end a form. */
+export function noteFormWrite(tool) {
+  writeSeq += 1;
+  if (tool !== 'word_insert_form') openForm = null;
+  return writeSeq;
+}
+
+/**
+ * Take out what the previous call put in.
+ *
+ * The table is the last one in the body — we created it a moment ago. The title
+ * and the note are matched by their exact text, and only the last occurrence,
+ * so a form whose note happens to repeat a sentence from the body above cannot
+ * take that sentence with it.
+ */
+async function removeOpenForm(ctx, prev) {
+  const tables = ctx.document.body.tables;
+  tables.load('items');
+  const paras = ctx.document.body.paragraphs;
+  paras.load('items/text');
+  await ctx.sync();
+
+  const last = tables.items[tables.items.length - 1];
+  if (last) last.delete();
+
+  for (const text of [prev.title, prev.note]) {
+    if (!text) continue;
+    for (let i = paras.items.length - 1; i >= 0; i--) {
+      if (String(paras.items[i].text || '').trim() === String(text).trim()) {
+        paras.items[i].delete();
+        break;
+      }
+    }
+  }
+  await ctx.sync();
+}
+
 async function insertForm(args) {
-  const fields = Array.isArray(args.fields) ? args.fields : [];
+  const given = Array.isArray(args.fields) ? args.fields : [];
+  /**
+   * Continuing, or starting over?
+   *
+   * `writeSeq` was advanced by executeTool before this ran, so the previous
+   * write is exactly one behind. Same document, one step back, and the previous
+   * write was also a form — that is a continuation and nothing else is.
+   */
+  const key = docKeyHint();
+  const carry = (openForm && openForm.key === key && openForm.seq === writeSeq - 1)
+    ? openForm
+    : null;
+  const fields = carry ? [...carry.fields, ...given] : given;
   if (!fields.length) {
     throw new Error('fields 是必要的：[{ label: "中文姓名" }, { label: "出生日期", value: "　年　月　日" }, '
       + '{ section: "學歷" }, { label: "自傳", lines: 8 }]。'
       + 'section 會畫成整列的區段帶，span: true 讓這一欄佔滿整列，lines 給多行的填寫空間。');
   }
-  const pairs = Math.max(1, Math.min(Number(args.columns) || 2, 3));
+  const title = args.title !== undefined ? String(args.title) : (carry ? carry.title : '');
+  const note = args.note !== undefined ? String(args.note) : (carry ? carry.note : '');
+  const pairs = Math.max(1, Math.min(
+    Number(args.columns) || (carry ? carry.pairs : 0) || 2, 3));
   const rows = formRows(fields, pairs);
   if (!rows.length) throw new Error('fields 裡沒有任何可以畫的欄位。');
   const cols = pairs * 2;
-  const rowH = Math.max(14, Math.min(Number(args.row_height) || 24, 80));
+  const rowH = Math.max(14, Math.min(
+    Number(args.row_height) || (carry ? carry.rowH : 0) || 24, 80));
 
   // The text each cell starts with, laid out as the grid Word wants.
   const grid = rows.map((r) => {
@@ -2093,6 +2170,11 @@ async function insertForm(args) {
   return Word.run(async (ctx) => {
     const items = await addressedParagraphs(ctx, args);
     const result = await withTracking(ctx, optIn(args), async () => {
+      // The previous piece comes out before the whole form goes back in. Doing
+      // it inside withTracking keeps the removal and the rebuild in one
+      // undoable step — 「復原上一步」 should not leave half a form behind.
+      if (carry) await removeOpenForm(ctx, carry);
+
       /**
        * The title belongs to the form, so this draws it.
        *
@@ -2104,11 +2186,11 @@ async function insertForm(args) {
        * lines tall.
        */
       let head = null;
-      if (args.title) {
-        head = args.paragraph && items.length
+      if (title) {
+        head = args.paragraph && items.length && !carry
           ? items[resolveRange(items, args).from - 1]
-            .insertParagraph(String(args.title), String(args.at) === 'before' ? 'Before' : 'After')
-          : ctx.document.body.insertParagraph(String(args.title), 'End');
+            .insertParagraph(title, String(args.at) === 'before' ? 'Before' : 'After')
+          : ctx.document.body.insertParagraph(title, 'End');
         head.styleBuiltIn = 'Title';
         head.alignment = 'Centered';
         try {
@@ -2243,9 +2325,9 @@ async function insertForm(args) {
        * field's writing space they would be instructions sitting where the
        * answer goes.
        */
-      if (args.note) {
+      if (note) {
         try {
-          const foot = table.insertParagraph(String(args.note), 'After');
+          const foot = table.insertParagraph(note, 'After');
           foot.styleBuiltIn = 'Normal';
           foot.alignment = 'Left';
           foot.font.size = 9;
@@ -2257,8 +2339,16 @@ async function insertForm(args) {
       return null;
     });
 
+    openForm = { key, fields, title, note, pairs, rowH, seq: writeSeq };
+
     const sections = rows.filter((r) => r.kind === 'section').length;
     const count = fields.filter((f) => f && f.label !== undefined).length;
+    if (carry) {
+      return `已接到同一張表單上，現在共 ${count} 個欄位`
+        + `${sections ? `、${sections} 個區段` : ''}，${rows.length} 列。`
+        + '分成幾次送沒關係——只要中間沒有別的寫入，它們會合併成同一張表，'
+        + '不會變成好幾張。' + trackingNote(result);
+    }
     return `已插入表單，${count} 個欄位${sections ? `、${sections} 個區段` : ''}，共 ${rows.length} 列。`
       + '標籤欄淡灰、填寫欄留白，整張是一個表格——不是一節一張表，'
       + '所以列高一致、欄位對齊，列印出來就是傳統表單的樣子。'
@@ -4070,6 +4160,9 @@ export async function executeTool(tool, args, opts = {}) {
         // first — including the ones that did not need a click. Tracked changes
         // cover a rewrite, but they do not cover a style sweep, and 「復原上一步」
         // has to mean the same thing whichever tool ran.
+        // The form clock: a second word_insert_form right after the first
+        // continues it; anything else ends it. See openForm.
+        noteFormWrite(tool);
         snapshot = await captureDocument();
         /**
          * Styles first, content second.
