@@ -404,7 +404,17 @@ async function getOverview(args) {
      * forty-row table would drown everything else in here.
      */
     const tbl = ctx.document.body.tables;
-    tbl.load('items/rowCount/values');
+    /**
+     * `items/values,items/rowCount`，不是 `items/rowCount/values`。
+     *
+     * Office.js 的 load 路徑是用斜線表示**巢狀**的：`items/rowCount/values` 的意思
+     * 是「items 的 rowCount 的 values」——而 rowCount 是一個數字，沒有 values。
+     * 所以 values 從來沒被載入過，讀它就丟 PropertyNotLoaded，整個 try 區塊被吃掉，
+     * `word_get_overview` 直接變成失敗。
+     *
+     * 多個屬性要用逗號分開、每一個都自己帶 `items/` 前綴。
+     */
+    tbl.load('items/values,items/rowCount');
     await ctx.sync();
     if (tbl.items.length) {
       const lines = tbl.items.slice(0, 12).map((t, i) => {
@@ -3032,7 +3042,8 @@ function tableGrid(values) {
 
 async function pickTable(ctx, args) {
   const tables = ctx.document.body.tables;
-  tables.load('items/rowCount/values');
+  // 同上：逗號分隔，每個屬性各自帶 items/ 前綴。
+  tables.load('items/values,items/rowCount');
   await ctx.sync();
   if (!tables.items.length) throw new Error('這份文件裡沒有表格。');
   const n = Math.round(Number(args.table) || 1);

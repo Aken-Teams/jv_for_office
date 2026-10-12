@@ -33,9 +33,28 @@ const QUOTE = [
 
 function fakeWord(grids = [QUOTE]) {
   const log = { writes: [], syncs: 0 };
+  /**
+   * 假的表格要會丟 PropertyNotLoaded。
+   *
+   * 原本 `values` 永遠都在、`load()` 是空的，所以
+   * `tables.load('items/rowCount/values')` 這個**錯誤的路徑**照樣過關——而真的
+   * Office 會丟「無法使用屬性 'values'」，把整個 word_get_overview 變成失敗。
+   * 測試綠燈、功能全壞，而且連 Claude 那條路一起壞。
+   *
+   * 斜線在 Office.js 的 load 路徑裡是**巢狀**的意思，多個屬性要用逗號分開。所以
+   * 這裡只認得真正載入了 values 的那幾種寫法。
+   */
   const tables = grids.map((g) => ({
     rowCount: g.length,
-    values: g.map((r) => r.slice()),
+    _loaded: false,
+    get values() {
+      if (!this._loaded) {
+        throw new Error("[PropertyNotLoaded] 無法使用屬性 'values'。在讀取屬性值之前，"
+          + '呼叫包含物件上的 load 方法。');
+      }
+      return this._grid;
+    },
+    _grid: g.map((r) => r.slice()),
     getCell: (r, c) => ({
       set value(v) { log.writes.push({ r: r + 1, c: c + 1, v }); },
       body: { font: {}, insertParagraph: () => ({ font: {} }) },
@@ -47,6 +66,12 @@ function fakeWord(grids = [QUOTE]) {
     getBorder: () => ({}),
     load() {},
   }));
+  /** 集合的 load：只有真的指名 values 的路徑才算數。 */
+  const loadTables = (what) => {
+    if (/(^|,)\s*items\/values(\s|,|$)/.test(String(what))) {
+      for (const t of tables) t._loaded = true;
+    }
+  };
   const ctx = {
     document: {
       changeTrackingMode: 'Off',
@@ -55,7 +80,7 @@ function fakeWord(grids = [QUOTE]) {
       load() {},
       body: {
         text: '報價單',
-        tables: { items: tables, load() {} },
+        tables: { items: tables, load: loadTables },
         inlinePictures: { items: [], load() {} },
         paragraphs: { items: [], load() {} },
         getOoxml: () => ({ value: '<xml/>' }),
