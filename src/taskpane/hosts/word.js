@@ -65,6 +65,8 @@ const BASE_TOOLS = [
   'word_delete_range',
   'word_format_range',
   'word_insert_table',
+  // 表單不是表格：履歷、申請單、簽核單是另一種東西，理由見 insertForm。
+  'word_insert_form',
   'word_insert_toc',
   'word_manage_list',
   'word_header_footer',
@@ -593,7 +595,30 @@ async function insertText(args) {
         if (at === 'start' || (at === 'before' && !args.paragraph)) {
           ctx.document.body.insertOoxml(ooxml, 'Start');
         } else if (!useAnchor) {
-          ctx.document.body.insertOoxml(ooxml, 'End');
+          /**
+           * Appended onto a paragraph of its own, never onto the body's end.
+           *
+           * ── The bug this is the fix for ──
+           * `body.insertOoxml(fragment, 'End')` does not start a new paragraph:
+           * the fragment's FIRST paragraph is merged into whatever paragraph the
+           * document currently ends with, and the merged paragraph keeps one
+           * side's formatting. In a form that produced
+           *
+           *   「請由最高學歷依序往下填寫。「狀態」填畢業、肄業或在學。工作經歷」
+           *
+           * — a hint and the next section's heading welded into one paragraph,
+           * rendered at heading size across two centred lines. Same cause as the
+           * declaration that ended up inside the last checkbox of a list.
+           *
+           * It only showed up some of the time because an insert that lands
+           * right after a TABLE merges into the empty paragraph Word leaves
+           * there, which looks exactly like working correctly.
+           *
+           * An empty paragraph first, then Replace, gives the fragment a
+           * boundary of its own. Nothing can be absorbed into the text above it.
+           */
+          const slot = ctx.document.body.insertParagraph('', 'End');
+          slot.insertOoxml(ooxml, 'Replace');
         } else {
           const { from } = resolveRange(items, args);
           items[from - 1].insertOoxml(ooxml, at === 'before' ? 'Before' : 'After');
@@ -1944,6 +1969,303 @@ async function insertChart(args) {
 }
 
 
+/**
+ * A form — the other kind of document Word is used for.
+ *
+ * ── Why the report table could not do this ──
+ * 「企業內部那種履歷文件他做得不夠好……表格還超大，都沒有特別排版設計過，因為
+ * 傳統企業履歷都是用比較特殊和完整的設計」. Everything this add-in drew until now
+ * was a REPORT table: a black header band, striped body rows, column widths
+ * computed from the data, one table per section with a heading above it. Point
+ * that at an employee record form and you get what the screenshots showed —
+ * every section its own black-headed table, rows twice as tall as they need to
+ * be, and fields left as empty boxes whenever a row ran out of pairs.
+ *
+ * A form is a different object. It is one grid, not several; it is read by
+ * label, not by column; its rows are tight because somebody has to write on it;
+ * and the sections are bands INSIDE the grid rather than headings above it. That
+ * is what every 履歷表, 請購單, 出差申請單 in a Taiwanese company looks like, and
+ * none of it falls out of a report table with different colours.
+ *
+ * ── The three things it has to get right ──
+ *   · a field that needs the whole width takes the whole width, by merging —
+ *     the alternative is the row of empty boxes beside 「戶籍地址」
+ *   · a label column is as wide as its labels and no wider, so the writing
+ *     space is where the writing goes
+ *   · rows are a stated height, not however tall an empty paragraph happens
+ *     to be
+ */
+const FORM_INK = {
+  label: '#F2F2F2',
+  section: '#D9D9D9',
+  value: '#FFFFFF',
+  text: '#000000',
+  border: '#808080',
+  hair: '#BFBFBF',
+};
+
+/** A form's rows, flattened into one grid of `cols` label/value pairs. */
+function formRows(fields, pairs) {
+  const width = pairs * 2;
+  const rows = [];
+  let row = null;
+  const flush = () => {
+    if (!row) return;
+    /**
+     * A half-empty last row is merged, not padded.
+     *
+     * 「電子郵件」 ended a row by itself and the two cells beside it were drawn as
+     * empty boxes — which on a form reads as two fields somebody forgot to
+     * label. The leftover width belongs to the field that is there.
+     */
+    if (row.cells.length < width) {
+      const last = row.cells[row.cells.length - 1];
+      if (last) last.to = width - 1;
+      while (row.cells.length < width) row.cells.push(null);
+    }
+    rows.push(row);
+    row = null;
+  };
+
+  for (const f of fields) {
+    if (!f || typeof f !== 'object') continue;
+    if (f.section !== undefined) {
+      flush();
+      rows.push({ kind: 'section', text: String(f.section), cells: [] });
+      continue;
+    }
+    if (f.label === undefined && f.value === undefined) continue;
+
+    const label = String(f.label ?? '');
+    const value = String(f.value ?? '');
+    const lines = Math.max(1, Math.min(Number(f.lines) || 1, 24));
+    const wide = f.span === true || lines > 1;
+
+    if (wide) flush();
+    if (!row) row = { kind: 'fields', cells: [] };
+    const at = row.cells.length;
+    row.cells.push({ kind: 'label', text: label, at, to: at });
+    row.cells.push({ kind: 'value', text: value, at: at + 1, to: wide ? width - 1 : at + 1, lines });
+    if (wide || row.cells.length >= width) flush();
+  }
+  flush();
+  return rows;
+}
+
+/** How wide the label columns have to be for the labels they hold. */
+function formLabelWidth(rows, totalPt, pairs) {
+  /**
+   * `textWidth` counts CHARACTER units — a CJK glyph is 2, latin is 1 — because
+   * the report table only ever needs them in proportion to each other. A form
+   * needs real points, so they are converted: half a unit is roughly half an
+   * 11-point CJK glyph. Mixing the two scales is how the label column came out
+   * at its 28-point floor no matter what the labels said.
+   */
+  const widest = Math.max(30, ...rows.flatMap((r) => r.cells
+    .filter((c) => c && c.kind === 'label')
+    .map((c) => textWidth(c.text) * 5.6 + 14)));
+  // Never more than a third of a pair's share: a form whose labels take most of
+  // the page has nowhere left to write.
+  return Math.min(widest, (totalPt / pairs) * 0.42);
+}
+
+async function insertForm(args) {
+  const fields = Array.isArray(args.fields) ? args.fields : [];
+  if (!fields.length) {
+    throw new Error('fields 是必要的：[{ label: "中文姓名" }, { label: "出生日期", value: "　年　月　日" }, '
+      + '{ section: "學歷" }, { label: "自傳", lines: 8 }]。'
+      + 'section 會畫成整列的區段帶，span: true 讓這一欄佔滿整列，lines 給多行的填寫空間。');
+  }
+  const pairs = Math.max(1, Math.min(Number(args.columns) || 2, 3));
+  const rows = formRows(fields, pairs);
+  if (!rows.length) throw new Error('fields 裡沒有任何可以畫的欄位。');
+  const cols = pairs * 2;
+  const rowH = Math.max(14, Math.min(Number(args.row_height) || 24, 80));
+
+  // The text each cell starts with, laid out as the grid Word wants.
+  const grid = rows.map((r) => {
+    const line = new Array(cols).fill('');
+    if (r.kind === 'section') line[0] = r.text;
+    else for (const c of r.cells) if (c) line[c.at] = c.text;
+    return line;
+  });
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, optIn(args), async () => {
+      /**
+       * The title belongs to the form, so this draws it.
+       *
+       * A form's title is centred and sits directly on top of the grid with no
+       * gap — that is what makes it read as one object rather than a heading
+       * that happens to have a table under it. Leaving it to a separate
+       * `word_insert_text` call would also mean the model choosing a style, and
+       * the styles it chooses for form titles are the ones that came out three
+       * lines tall.
+       */
+      let head = null;
+      if (args.title) {
+        head = args.paragraph && items.length
+          ? items[resolveRange(items, args).from - 1]
+            .insertParagraph(String(args.title), String(args.at) === 'before' ? 'Before' : 'After')
+          : ctx.document.body.insertParagraph(String(args.title), 'End');
+        head.styleBuiltIn = 'Title';
+        head.alignment = 'Centered';
+        try {
+          head.spaceAfter = 6;
+          head.font.size = 20;
+          head.font.bold = true;
+          head.font.color = FORM_INK.text;
+        } catch { /* the style alone is enough */ }
+        await ctx.sync();
+      }
+
+      let table;
+      if (head) {
+        table = head.insertTable(grid.length, cols, 'After', grid);
+      } else if (args.paragraph && items.length) {
+        const { from } = resolveRange(items, args);
+        table = items[from - 1].insertTable(grid.length, cols,
+          String(args.at) === 'before' ? 'Before' : 'After', grid);
+      } else {
+        table = ctx.document.body.insertTable(grid.length, cols, 'End', grid);
+      }
+      table.styleBuiltIn = DEFAULT_TABLE_STYLE;
+      table.headerRowCount = 0;
+      table.styleBandedRows = false;
+      table.styleFirstColumn = false;
+      table.load('width');
+      await ctx.sync();
+
+      /**
+       * Hairlines, not the report table's heavy rules.
+       *
+       * A form is a grid somebody writes inside; the lines are there to say
+       * where the boxes are, not to be looked at.
+       */
+      try {
+        const all = table.getBorder('All');
+        all.type = 'Single';
+        all.color = FORM_INK.hair;
+        all.width = 1;
+        const out = table.getBorder('Outside');
+        out.type = 'Single';
+        out.color = FORM_INK.border;
+        out.width = 1;
+      } catch { /* a Word without border control still gets the shading */ }
+
+      const total = Number(table.width) > 0 ? Number(table.width) : TEXT_COLUMN_PT;
+      const labelW = formLabelWidth(rows, total, pairs);
+      const valueW = (total - labelW * pairs) / pairs;
+
+      /**
+       * Merging is attempted and never required.
+       *
+       * `mergeCells` is WordApi 1.4. Where it is missing the extra cells stay,
+       * and they are painted as part of the value — a slightly divided writing
+       * box, which is still a form. Refusing to draw anything would not be.
+       */
+      const merged = [];
+      rows.forEach((r, i) => {
+        if (r.kind === 'section') { merged.push([i, 0, cols - 1]); return; }
+        for (const c of r.cells) {
+          if (c && c.to > c.at) merged.push([i, c.at, c.to]);
+        }
+      });
+      let canMerge = true;
+      for (const [r, from, to] of merged) {
+        try { table.mergeCells(r, from, r, to); } catch { canMerge = false; break; }
+      }
+      if (canMerge && merged.length) await ctx.sync();
+
+      // Painting runs after the merge: a merged row has fewer cells than the
+      // grid did, and addressing the old ones would throw.
+      rows.forEach((r, i) => {
+        const paint = (c, fill, bold, width) => {
+          const cell = table.getCell(i, c);
+          cell.shadingColor = fill;
+          cell.verticalAlignment = 'Center';
+          cell.setCellPadding('Left', 6);
+          cell.setCellPadding('Right', 6);
+          // Tight top and bottom: this is the difference between a form that
+          // fits on two pages and the five-page one the screenshots showed.
+          cell.setCellPadding('Top', 2);
+          cell.setCellPadding('Bottom', 2);
+          const font = cell.body.font;
+          font.color = FORM_INK.text;
+          font.bold = bold;
+          if (width) cell.columnWidth = width;
+          return cell;
+        };
+
+        if (r.kind === 'section') {
+          paint(0, FORM_INK.section, true);
+          return;
+        }
+        let c = 0;
+        for (const cell of r.cells) {
+          if (!cell) { if (!canMerge) c += 1; continue; }
+          if (cell.kind === 'label') {
+            const node = paint(c, FORM_INK.label, true, labelW);
+            try { node.body.paragraphs.getFirst().alignment = 'Centered'; } catch { /* ok */ }
+          } else {
+            const node = paint(c, FORM_INK.value, false,
+              cell.to > cell.at ? undefined : valueW);
+            // Room to write: a field asking for eight lines gets eight, rather
+            // than one line that the writer has to overflow.
+            for (let k = 1; k < cell.lines; k++) node.body.insertParagraph('', 'End');
+          }
+          c += 1;
+          if (!canMerge && cell.to > cell.at) c += cell.to - cell.at;
+        }
+      });
+
+      /**
+       * A stated row height.
+       *
+       * Word sizes a row to its tallest cell, and an empty cell holding one
+       * empty paragraph is about eleven points of text plus whatever padding is
+       * set — which is why the generated form had rows twice the height of the
+       * writing they were for. Word treats this as a MINIMUM, so a field that
+       * asked for eight lines still gets eight.
+       */
+      table.rows.load('items');
+      await ctx.sync();
+      try {
+        for (const row of table.rows.items) row.preferredHeight = rowH;
+      } catch { /* a Word without row heights still gets the rest */ }
+
+      /**
+       * The note goes UNDER the form, small and grey.
+       *
+       * Filling rules and the personal-data declaration are the two things every
+       * company form carries, and they belong below the grid — written into a
+       * field's writing space they would be instructions sitting where the
+       * answer goes.
+       */
+      if (args.note) {
+        try {
+          const foot = table.insertParagraph(String(args.note), 'After');
+          foot.styleBuiltIn = 'Normal';
+          foot.alignment = 'Left';
+          foot.font.size = 9;
+          foot.font.color = '#595959';
+        } catch { /* a Word that will not take it keeps the form */ }
+      }
+
+      await ctx.sync();
+      return null;
+    });
+
+    const sections = rows.filter((r) => r.kind === 'section').length;
+    const count = fields.filter((f) => f && f.label !== undefined).length;
+    return `已插入表單，${count} 個欄位${sections ? `、${sections} 個區段` : ''}，共 ${rows.length} 列。`
+      + '標籤欄淡灰、填寫欄留白，整張是一個表格——不是一節一張表，'
+      + '所以列高一致、欄位對齊，列印出來就是傳統表單的樣子。'
+      + trackingNote(result);
+  });
+}
+
 // ── Equations ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1984,7 +2306,10 @@ async function insertEquation(args) {
         mathPara = items[from - 1];
         mathPara.insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
       } else {
-        ctx.document.body.insertOoxml(ooxml, 'End');
+        // Its own paragraph first — see insertText for why appending OOXML to
+        // the body's end welds it onto whatever was already there.
+        mathPara = ctx.document.body.insertParagraph('', 'End');
+        mathPara.insertOoxml(ooxml, 'Replace');
       }
       await ctx.sync();
 
@@ -3052,7 +3377,9 @@ async function insertBlock(args) {
           const { from } = resolveRange(items, args);
           items[from - 1].insertOoxml(ooxml, String(args.at) === 'before' ? 'Before' : 'After');
         } else {
-          ctx.document.body.insertOoxml(ooxml, 'End');
+          // Its own paragraph first — see insertText. A 「note」 block appended
+          // to the body's end was being merged into the sentence above it.
+          ctx.document.body.insertParagraph('', 'End').insertOoxml(ooxml, 'Replace');
         }
       };
 
@@ -3719,6 +4046,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_text':
       case 'word_delete_range':
       case 'word_format_range':
+      case 'word_insert_form':
       case 'word_insert_table':
       case 'word_insert_toc':
       case 'word_manage_list':
@@ -3760,6 +4088,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_delete_range: deleteRange,
           word_format_range: formatRange,
           word_insert_table: insertTable,
+          word_insert_form: insertForm,
           word_insert_toc: insertToc,
           word_manage_list: manageList,
           word_header_footer: headerFooter,
@@ -3856,6 +4185,7 @@ export const meta = {
     word_delete_range: t('等待你確認刪除…'),
     word_format_range: t('正在套用格式…'),
     word_insert_table: t('正在插入表格…'),
+    word_insert_form: t('正在插入表單…'),
     word_insert_toc: t('正在建立目錄…'),
     word_manage_list: t('正在整理清單…'),
     word_header_footer: t('正在設定頁首頁尾…'),
@@ -3888,6 +4218,7 @@ export const meta = {
     word_write_range: t('正在草擬改寫內容…'),
     word_insert_text: t('正在草擬要插入的內容…'),
     word_insert_table: t('正在整理表格…'),
+    word_insert_form: t('正在排表單欄位…'),
     word_insert_chart: t('正在設計圖表…'),
     word_insert_diagram: t('正在設計流程圖…'),
     word_insert_gantt: t('正在排時程…'),

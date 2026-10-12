@@ -123,7 +123,19 @@ function fakeWord() {
       body: {
         insertTable: makeTable,
         insertOoxml: (xml) => log.ooxml.push({ xml, loc: 'End' }),
-        insertParagraph: () => ({}),
+        /**
+         * 新段落也要能收 OOXML。
+         *
+         * 因為 `body.insertOoxml(..., 'End')` 會把片段的第一段黏進文件最後一段，
+         * 所以寫入改成「先開一個空段落，再 Replace」。假的 body 如果回一個什麼
+         * 都不會的空物件，那條路就會丟 TypeError——而更糟的情況是它悄悄吞掉，
+         * 測試照樣綠燈，功能其實壞的。
+         */
+        insertParagraph: () => ({
+          insertOoxml: (xml) => log.ooxml.push({ xml, loc: 'End' }),
+          styleBuiltIn: '',
+          insertBreak: () => {},
+        }),
         /**
          * 不能是空的。
          *
