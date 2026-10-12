@@ -156,8 +156,50 @@ const CV = {
   // 長條本身在瀏覽器裡才畫得出來，這裡只驗 SVG 的算式沒有 NaN。
   const svg = barsSvgFor([{ label: 'SPC', value: 0.9 }, { label: 'Python', value: 0.7 }]);
   ok('長條的 SVG 沒有 NaN', !/NaN|undefined/.test(svg), svg.slice(0, 160));
-  const widths = [...svg.matchAll(/<rect[^>]*width="([\d.]+)"/g)].map((m) => Number(m[1]));
-  ok('九成的長條比七成的長', widths[1] > widths[3], widths.join(' '));
+  /**
+   * 圖自己要帶底色。
+   *
+   * 「專業技能下方那 2 個白色方塊是甚麼？」——那就是這兩張圖。轉點陣圖是畫在白色
+   * 畫布上的，所以給深色欄用的白字就變成白底白字，只剩淡色長條看得見。圖沒有自己
+   * 的底色，它放到深色欄上就會是一塊白補丁。
+   */
+  ok('長條圖自己帶底色', /<rect x="0" y="0"[^>]*fill="#1F3864"/.test(svg), svg.slice(0, 200));
+  ok('底色跟欄位一樣深，字才看得見',
+    /fill="#FFFFFF">SPC/.test(svg), (/fill="(#[0-9A-F]{6})">SPC/i.exec(svg) || [])[1]);
+  // 只看「填滿的那一截」——底色和軌道也是 rect，照順序數會跟著實作漂。
+  const fills = [...svg.matchAll(/<rect[^>]*width="([\d.]+)"[^>]*fill="#FFFFFF"\/>/g)]
+    .map((m) => Number(m[1]));
+  ok('九成的長條比七成的長', fills.length === 2 && fills[0] > fills[1], fills.join(' '));
+
+  /**
+   * 長標籤要換成上下排，不是壓在長條上。
+   *
+   * 「Figma / 原型設計」在 122 點寬的欄位裡跟長條並排是放不下的，第一版沒有截斷
+   * 也沒有換排，就直接畫過整條軌道穿出去。截斷會藏掉技能名稱、把長條縮短會讓
+   * 「日文 / 日常會話」只剩一小截——兩個都不對，因為真正的問題是這該換一種排法。
+   */
+  const longOne = barsSvgFor([{ label: 'Figma / 原型設計', value: 0.85 },
+    { label: '使用者研究', value: 0.9 }], 126);
+  const barX = Number((/<rect x="([\d.]+)"[^>]*fill-opacity/.exec(longOne) || [0, '0'])[1]);
+  ok('標籤長就改成上下排', barX === 0, `長條起點 ${barX}`);
+
+  const widthOf = (t, size) => [...t]
+    .reduce((a, c) => a + (/[⺀-｠]/.test(c) ? size : size * 0.55), 0);
+  const words = [...longOne.matchAll(/font-size="([\d.]+)"[^>]*>([^<]*)</g)]
+    .map((m) => widthOf(m[2], Number(m[1])));
+  const canvas = Number(/width="([\d.]+)"/.exec(longOne)[1]);
+  ok('字沒有跑出畫布', Math.max(...words) <= canvas + 0.5,
+    `${Math.max(...words).toFixed(0)} vs ${canvas}`);
+
+  const boxes = [...longOne.matchAll(/<rect x="([\d.]+)"[^>]*width="([\d.]+)"/g)]
+    .map((m) => Number(m[1]) + Number(m[2]));
+  ok('長條沒有跑出畫布', Math.max(...boxes) <= canvas + 0.5,
+    `${Math.max(...boxes).toFixed(0)} vs ${canvas}`);
+
+  // 短標籤就該維持並排，不要為了長的那個把全部都拉開。
+  const shortOnes = barsSvgFor([{ label: 'SPC', value: 0.9 }, { label: 'SQL', value: 0.6 }], 126);
+  const sx = Number((/<rect x="([\d.]+)"[^>]*fill-opacity/.exec(shortOnes) || [0, '0'])[1]);
+  ok('短標籤維持並排', sx > 0, `長條起點 ${sx}`);
 }
 
 // ── 右側欄 ──────────────────────────────────────────────────────────────────

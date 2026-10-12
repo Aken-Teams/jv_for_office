@@ -76,6 +76,7 @@ const BASE_TOOLS = [
   'word_insert_layout',
   // 側欄版面：設計感履歷那種左深右淺，理由見 insertSidebar。
   'word_insert_sidebar',
+  'word_insert_calendar',
   'word_insert_chart',
   'word_insert_diagram',
   // 時程表自己畫，不走 mermaid——理由見 insertGantt。
@@ -2417,29 +2418,98 @@ const SIDE_INK = {
  * on a CV that reads as a fallback. One picture per group keeps it to a single
  * image in the cell instead of one per skill.
  */
-export function barsSvgFor(items, width = 126, theme = { text: '#FFFFFF', accent: '#FFFFFF' }) {
+export function barsSvgFor(items, width = 126,
+  theme = { text: '#FFFFFF', accent: '#FFFFFF', bg: '#1F3864' }) {
   return barsSvg(items, width, theme);
 }
 
 function barsSvg(items, width, theme) {
-  const rowH = 22;
-  const labelW = Math.min(width * 0.52,
-    Math.max(40, ...items.map((b) => textWidth(b.label) * 5.4 + 8)));
-  const barW = width - labelW - 6;
-  const H = items.length * rowH;
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}"`
-    + ` viewBox="0 0 ${width} ${H}">`;
+  const size = 10.5;
+  const pad = 2;
+  const w = Math.max(60, width);
+
+  /**
+   * Beside the label, or under it.
+   *
+   * ── 跑版 ──
+   * 「使用者研究」 is five characters and fits next to its bar in a 122-point
+   * column. 「Figma / 原型設計」 is not, and the first version drew it at x=0 with
+   * no truncation, so it ran straight through the track and out the other side.
+   * Clipping the text would have hidden half of a skill's name; shrinking the
+   * bar would have made 「日文 / 日常會話」 a five-point stub.
+   *
+   * Neither is the answer, because the question is which of the two LAYOUTS
+   * this is. A sidebar wide enough for the longest label takes them side by
+   * side; one that is not stacks the bar under the label — which is what a CV
+   * does in a narrow column, and it reads better anyway.
+   *
+   * Decided from the longest label, so a list never ends up half one way and
+   * half the other.
+   */
+  const widest = Math.max(0, ...items.map((b) => textW10(b.label, size)));
+  const stacked = widest > w * 0.46;
+  const labelW = stacked ? w : Math.min(w * 0.46, widest + 8);
+  const barX = stacked ? 0 : labelW;
+  const barW = Math.max(18, w - barX - pad);
+  const rowH = stacked ? 27 : 20;
+  const H = items.length * rowH + 2;
+
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${n2w(w)}" height="${H}"`
+    + ` viewBox="0 0 ${n2w(w)} ${H}">`
+    /**
+     * The picture paints its own background.
+     *
+     * ── 「專業技能下方那 2 個白色方塊是甚麼？」 ──
+     * They were these bars. `svgToPng` rasterises onto a WHITE canvas — it has
+     * to, because a transparent PNG in a Word paragraph picks up whatever is
+     * behind it and usually that is nothing. So a figure drawn in white type
+     * for a dark sidebar arrived as white type on white paper: two blank boxes
+     * on the navy column with only the pale bars showing.
+     */
+    + `<rect x="0" y="0" width="${n2w(w)}" height="${H}" fill="${theme.bg || '#FFFFFF'}"/>`;
+
   items.forEach((b, i) => {
-    const y = i * rowH;
-    out += `<text x="0" y="${y + rowH / 2 + 4}" font-family='${FONT_STACK}' font-size="10.5"`
-      + ` fill="${theme.text}">${xmlEscape(b.label)}</text>`;
-    out += `<rect x="${labelW}" y="${y + rowH / 2 - 3}" width="${barW}" height="6" rx="3"`
-      + ` fill="${theme.text}" fill-opacity="0.25"/>`;
-    out += `<rect x="${labelW}" y="${y + rowH / 2 - 3}" width="${Math.max(3, barW * b.value)}"`
+    const top = i * rowH;
+    const label = fitLabel(b.label, labelW - (stacked ? 2 : 8), size);
+    const ty = stacked ? top + size : top + rowH / 2 + size * 0.36;
+    out += `<text x="0" y="${n2w(ty)}" font-family='${FONT_STACK}' font-size="${size}"`
+      + ` fill="${theme.text}">${xmlEscape(label)}</text>`;
+
+    const by = stacked ? top + rowH - 8 : top + rowH / 2 - 3;
+    out += `<rect x="${n2w(barX)}" y="${n2w(by)}" width="${n2w(barW)}" height="6" rx="3"`
+      + ` fill="${theme.text}" fill-opacity="0.22"/>`;
+    out += `<rect x="${n2w(barX)}" y="${n2w(by)}" width="${n2w(Math.max(4, barW * b.value))}"`
       + ` height="6" rx="3" fill="${theme.accent || theme.text}"/>`;
   });
   return `${out}</svg>`;
 }
+
+/** Points, at the size it will be drawn — `textWidth` counts character units. */
+function textW10(text, size) {
+  return textWidth(text) * (size / 2);
+}
+
+/**
+ * Cut a label to the room it has.
+ *
+ * A separate ellipsis to the chart module's: this one measures at the size the
+ * label is actually drawn at, and it is the last line of defence rather than
+ * the layout — by the time it fires, `stacked` has already given the label a
+ * line of its own, so anything still too long is a genuinely enormous name.
+ */
+function fitLabel(text, room, size) {
+  const str = String(text ?? '');
+  if (textW10(str, size) <= room) return str;
+  let out = '';
+  for (const ch of str) {
+    if (textW10(out + ch, size) > room - size * 0.8) break;
+    out += ch;
+  }
+  return `${out}…`;
+}
+
+const n2w = (v) => Math.round(Number(v) * 100) / 100;
+
 
 const FONT_STACK = '"Microsoft JhengHei", "PingFang TC", sans-serif';
 
@@ -2496,8 +2566,8 @@ async function insertSidebar(args) {
   const asideW = Math.max(90, Math.min(Number(args.width) || 150, 240));
   const pics = new Map();
   for (const [where, blocks, w, tone] of [
-    ['a', aside, asideW - 24, { text: onDark, accent }],
-    ['m', main, 300, { text: SIDE_INK.mainText, accent: fill }],
+    ['a', aside, asideW - 24, { text: onDark, accent, bg: fill }],
+    ['m', main, 300, { text: SIDE_INK.mainText, accent: fill, bg: '#FFFFFF' }],
   ]) {
     for (let i = 0; i < blocks.length; i++) {
       if (blocks[i].kind !== 'bars' || !blocks[i].items.length) continue;
@@ -2641,6 +2711,260 @@ function sideParaOoxml(text, o = {}) {
   return `<w:p><w:pPr>${pPr.join('')}</w:pPr>`
     + (text ? `<w:r><w:rPr>${rPr.join('')}</w:rPr><w:t xml:space="preserve">${xmlEscape(text)}</w:t></w:r>` : '')
     + '</w:p>';
+}
+
+/**
+ * A calendar — a year on one page, or a month you can write in.
+ *
+ * ── Why two of them and not one ──
+ * They are different objects. A year calendar is READ: twelve grids of small
+ * numbers, and what matters is that the columns line up and the weekends stand
+ * out. A month calendar is WRITTEN IN: seven columns of boxes with room under
+ * each date, and what matters is that the boxes are big enough.
+ *
+ * So the year is drawn — one picture, because twelve tables side by side in
+ * Word is twelve chances for a column to drift, and nobody edits the date 17 —
+ * and the month is a real table, because somebody is going to type in it.
+ *
+ * ── What is NOT in here ──
+ * Public holidays. They differ by country, they move every year, and a
+ * calendar that quietly marks the wrong day off is worse than one that marks
+ * none. They are passed in.
+ */
+const CAL_INK = {
+  ink: '#000000',
+  rest: '#C00000',
+  muted: '#808080',
+  line: '#D9D9D9',
+  head: '#F2F2F2',
+  bg: '#FFFFFF',
+};
+
+const WEEKDAY_TW = ['日', '一', '二', '三', '四', '五', '六'];
+
+/**
+ * The weeks of one month, as rows of day numbers.
+ *
+ * Built from `new Date(y, m, 1)` rather than from arithmetic on day counts,
+ * because that is the one piece of date handling the platform is guaranteed to
+ * get right — leap years included.
+ */
+function monthGrid(year, month, weekStart) {
+  const first = new Date(year, month - 1, 1);
+  const days = new Date(year, month, 0).getDate();
+  const lead = (first.getDay() - weekStart + 7) % 7;
+  const weeks = [];
+  let row = new Array(lead).fill(null);
+  for (let d = 1; d <= days; d++) {
+    row.push(d);
+    if (row.length === 7) { weeks.push(row); row = []; }
+  }
+  if (row.length) { while (row.length < 7) row.push(null); weeks.push(row); }
+  return weeks;
+}
+
+/** Which dates the caller marked, as a 「月-日」 set plus their labels. */
+function restDays(raw) {
+  const marks = new Map();
+  for (const h of (Array.isArray(raw) ? raw : [])) {
+    const date = String((h && h.date) || h || '');
+    const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(date.trim());
+    if (!m) continue;
+    marks.set(`${Number(m[2])}-${Number(m[3])}`, String((h && h.label) || ''));
+  }
+  return marks;
+}
+
+/** A year on one page, drawn. */
+function yearCalendarSvg(year, opts) {
+  const { weekStart, marks, accent, saturday } = opts;
+  const cols = 3;
+  const rows = 4;
+  const cellW = 26;
+  const cellH = 17;
+  const gridW = cellW * 7;
+  const gapX = 22;
+  const gapY = 20;
+  const monthH = 22 + cellH * 7;
+  const W = cols * gridW + (cols - 1) * gapX + 8;
+  const top = 34;
+  const H = top + rows * monthH + (rows - 1) * gapY + 6;
+
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"`
+    + ` viewBox="0 0 ${W} ${H}">`
+    + `<rect x="0" y="0" width="${W}" height="${H}" fill="${CAL_INK.bg}"/>`;
+  const txt = (x, y, t, o = {}) => `<text x="${n2w(x)}" y="${n2w(y)}"`
+    + ` font-family='${FONT_STACK}' font-size="${o.size || 10}"`
+    + (o.bold ? ' font-weight="600"' : '')
+    + ` fill="${o.color || CAL_INK.ink}" text-anchor="${o.anchor || 'middle'}">`
+    + `${xmlEscape(t)}</text>`;
+
+  out += txt(4, 22, `${year}`, { size: 22, bold: true, color: accent, anchor: 'start' });
+  out += txt(W - 4, 22, '年度行事曆', { size: 11, color: CAL_INK.muted, anchor: 'end' });
+
+  for (let i = 0; i < 12; i++) {
+    const gx = (i % cols) * (gridW + gapX) + 4;
+    const gy = top + Math.floor(i / cols) * (monthH + gapY);
+    out += txt(gx, gy + 11, `${i + 1} 月`, { size: 12, bold: true, color: accent, anchor: 'start' });
+    out += `<line x1="${n2w(gx)}" y1="${n2w(gy + 16)}" x2="${n2w(gx + gridW)}"`
+      + ` y2="${n2w(gy + 16)}" stroke="${accent}" stroke-width="1"/>`;
+
+    for (let c = 0; c < 7; c++) {
+      const wd = (weekStart + c) % 7;
+      // Sunday is red on every Chinese-language calendar there is; Saturday is
+      // optional because a five-day week and a six-day week are both normal.
+      const off = wd === 0 || (saturday && wd === 6);
+      out += txt(gx + c * cellW + cellW / 2, gy + 30, WEEKDAY_TW[wd],
+        { size: 9.5, bold: true, color: off ? accent : CAL_INK.muted });
+    }
+
+    const weeks = monthGrid(year, i + 1, weekStart);
+    weeks.forEach((week, r) => {
+      week.forEach((d, c) => {
+        if (d === null) return;
+        const wd = (weekStart + c) % 7;
+        const marked = marks.has(`${i + 1}-${d}`);
+        const off = marked || wd === 0 || (saturday && wd === 6);
+        out += txt(gx + c * cellW + cellW / 2, gy + 30 + (r + 1) * cellH, String(d),
+          { size: 10, bold: marked, color: off ? CAL_INK.rest : CAL_INK.ink });
+      });
+    });
+  }
+  return `${out}</svg>`;
+}
+
+async function insertCalendar(args) {
+  const now = new Date();
+  const year = Math.round(Number(args.year) || now.getFullYear());
+  if (!(year >= 1900 && year <= 2200)) throw new Error('year 要是 1900 到 2200 之間的西元年。');
+  const weekStart = String(args.week_start || 'sunday').toLowerCase() === 'monday' ? 1 : 0;
+  const marks = restDays(args.holidays);
+  const accent = String(args.accent || '#1F3864');
+  const saturday = args.saturday_off !== false;
+  const month = args.month === undefined ? null
+    : Math.round(Number(args.month));
+  if (month !== null && !(month >= 1 && month <= 12)) throw new Error('month 要是 1 到 12。');
+
+  /**
+   * A year is one picture; a month is a table.
+   *
+   * The split is not about effort — it is about what each one is for. Nobody
+   * edits a year calendar, and twelve grids drawn by Word's table engine drift
+   * out of alignment the first time somebody changes the page margins. A month
+   * calendar is written in, so every box has to be a real cell.
+   */
+  if (month === null) {
+    const svg = yearCalendarSvg(year, { weekStart, marks, accent, saturday });
+    const png = await svgToPng(svg);
+    const width = Math.max(240, Math.min(Number(args.width) || TEXT_COLUMN_PT, 900));
+
+    return Word.run(async (ctx) => {
+      const items = await addressedParagraphs(ctx, args);
+      const result = await withTracking(ctx, optIn(args), async () => {
+        const anchor = args.paragraph && items.length
+          ? items[resolveRange(items, args).from - 1]
+            .insertParagraph('', String(args.at) === 'before' ? 'Before' : 'After')
+          : ctx.document.body.insertParagraph('', 'End');
+        anchor.alignment = 'Centered';
+        const pic = anchor.insertInlinePictureFromBase64(png.data, 'Replace');
+        pic.width = width;
+        pic.height = Math.round(width * (png.height / png.width));
+        await ctx.sync();
+        return null;
+      });
+      return `已插入 ${year} 年的年曆，12 個月排成 3×4，寬 ${width} 點。`
+        + `週起始是星期${weekStart ? '一' : '日'}，`
+        + `星期日${saturday ? '和星期六' : ''}標紅`
+        + (marks.size ? `，另外標了 ${marks.size} 天假日` : '，沒有標任何假日——國定假日每年都在動，要標就把日期給我')
+        + '。\n年曆是一張圖：十二個格子要對齊，交給 Word 的表格引擎排，'
+        + '任何人動一次邊界就會跑掉。要能在格子裡寫字的請改用單月（給 month）。'
+        + trackingNote(result);
+    });
+  }
+
+  // ── One month, as a table somebody can write in ──
+  const weeks = monthGrid(year, month, weekStart);
+  const lines = Math.max(0, Math.min(Number(args.lines) || 2, 8));
+  const head = Array.from({ length: 7 }, (_, c) => WEEKDAY_TW[(weekStart + c) % 7]);
+  const grid = [head, ...weeks.map((w) => w.map((d) => (d === null ? '' : String(d))))];
+
+  return Word.run(async (ctx) => {
+    const items = await addressedParagraphs(ctx, args);
+    const result = await withTracking(ctx, optIn(args), async () => {
+      const table = args.paragraph && items.length
+        ? items[resolveRange(items, args).from - 1]
+          .insertTable(grid.length, 7, String(args.at) === 'before' ? 'Before' : 'After', grid)
+        : ctx.document.body.insertTable(grid.length, 7, 'End', grid);
+      table.styleBuiltIn = DEFAULT_TABLE_STYLE;
+      table.headerRowCount = 1;
+      table.styleBandedRows = false;
+      table.styleFirstColumn = false;
+      try {
+        const border = table.getBorder('All');
+        border.type = 'Single';
+        border.color = CAL_INK.line;
+        border.width = 1;
+      } catch { /* the shading still reads as a calendar */ }
+      await ctx.sync();
+
+      for (let r = 0; r < grid.length; r++) {
+        for (let c = 0; c < 7; c++) {
+          const cell = table.getCell(r, c);
+          const wd = (weekStart + c) % 7;
+          const off = wd === 0 || (saturday && wd === 6);
+          cell.verticalAlignment = 'Top';
+          cell.setCellPadding('Left', 4);
+          cell.setCellPadding('Right', 4);
+          cell.setCellPadding('Top', 3);
+          cell.setCellPadding('Bottom', 3);
+          const font = cell.body.font;
+          if (r === 0) {
+            cell.shadingColor = CAL_INK.head;
+            font.bold = true;
+            font.color = off ? CAL_INK.rest : CAL_INK.ink;
+            continue;
+          }
+          const day = weeks[r - 1][c];
+          cell.shadingColor = CAL_INK.bg;
+          font.color = (day !== null && (off || marks.has(`${month}-${day}`)))
+            ? CAL_INK.rest : CAL_INK.ink;
+          if (day === null) continue;
+          const label = marks.get(`${month}-${day}`);
+          // The holiday's name under its number, then the writing space — a
+          // planner with no room to write is a picture of a planner.
+          if (label) {
+            const p2 = cell.body.insertParagraph(label, 'End');
+            try { p2.font.size = 8; p2.font.color = CAL_INK.rest; } catch { /* ok */ }
+          }
+          for (let k = 0; k < lines; k++) cell.body.insertParagraph('', 'End');
+        }
+      }
+      await ctx.sync();
+      return null;
+    });
+
+    return `已插入 ${year} 年 ${month} 月的月曆，${weeks.length} 週 × 7 天，`
+      + `每格留了 ${lines} 行可以寫字。`
+      + `週起始是星期${weekStart ? '一' : '日'}，星期日${saturday ? '和星期六' : ''}是紅的`
+      + (marks.size ? `，假日名稱寫在日期底下` : '')
+      + '。\n這是真的表格，格子裡可以直接打字。'
+      + trackingNote(result);
+  });
+}
+
+/** Exposed for tests: the grid arithmetic is the part that can be wrong. */
+export function calendarGridFor(year, month, weekStart = 0) {
+  return monthGrid(year, month, weekStart);
+}
+
+/** Exposed for tests: measuring a drawn calendar needs the drawing. */
+export function yearCalendarSvgFor(year, opts = {}) {
+  return yearCalendarSvg(year, {
+    weekStart: opts.weekStart || 0,
+    marks: restDays(opts.holidays),
+    accent: opts.accent || '#1F3864',
+    saturday: opts.saturday !== false,
+  });
 }
 
 // ── Equations ─────────────────────────────────────────────────────────────────
@@ -4431,6 +4755,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_insert_break':
       case 'word_insert_cover':
       case 'word_insert_block':
+      case 'word_insert_calendar':
       case 'word_insert_sidebar':
       case 'word_insert_layout':
       case 'word_insert_chart':
@@ -4478,6 +4803,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_block: insertBlock,
           word_insert_layout: insertLayout,
           word_insert_sidebar: insertSidebar,
+          word_insert_calendar: insertCalendar,
           word_insert_chart: insertChart,
           word_insert_diagram: insertDiagram,
           word_insert_gantt: insertGantt,
@@ -4576,6 +4902,7 @@ export const meta = {
     word_insert_block: t('正在排版資訊區塊…'),
     word_insert_layout: t('正在並排區塊…'),
     word_insert_sidebar: t('正在排側欄版面…'),
+    word_insert_calendar: t('正在排月曆…'),
     word_insert_chart: t('正在繪製圖表…'),
     word_insert_diagram: t('正在畫流程圖…'),
     word_insert_gantt: t('正在畫時程圖…'),
