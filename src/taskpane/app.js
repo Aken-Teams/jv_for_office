@@ -3644,7 +3644,38 @@ function renderCharCount(el) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+/**
+ * The CSP has to have been filled in by whoever served this page.
+ *
+ * ── The failure this turns into a sentence ──
+ * `taskpane.html` ships a Content-Security-Policy whose `connect-src` carries a
+ * `%API_ORIGIN%` placeholder, because a meta CSP is static while the API
+ * address is read from config.json at runtime. Whoever serves the file has to
+ * substitute it.
+ *
+ * When nobody does, the policy contains a token that is not a valid source, so
+ * every request to the API is blocked — and the pane does not look broken. It
+ * looks like features went missing: the model picker hides itself because the
+ * list came back empty, the data sources are gone, and the first message simply
+ * fails. The cause is three layers away from any of those symptoms.
+ *
+ * So it is checked once, at boot, and said out loud.
+ */
+function checkCspSubstituted() {
+  const meta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+  if (!meta || !/%API_ORIGIN%/.test(meta.getAttribute('content') || '')) return;
+  const bar = document.createElement('div');
+  bar.setAttribute('role', 'alert');
+  bar.style.cssText = 'padding:10px 12px;background:#FDECEA;color:#7A1C12;'
+    + 'font-size:12.5px;line-height:1.6;border-bottom:1px solid #F3B8B0;';
+  bar.textContent = '這個頁面的安全性設定沒有填好（CSP 的 %API_ORIGIN% 沒有被置換），'
+    + '所以所有對伺服器的連線都會被瀏覽器擋掉——登入、模型清單、送出訊息都不會動。'
+    + '開發環境請重新啟動 npm run dev；部署環境請讓送出這個檔案的那一端做同樣的置換。';
+  document.body.insertBefore(bar, document.body.firstChild);
+}
+
 Office.onReady(async (info) => {
+  checkCspSubstituted();
   // Everything below needs a host module, so this is the first thing that
   // happens and nothing else runs if it fails. Word never loads Excel's module
   // and Excel never loads Word's — see hosts/index.js.
