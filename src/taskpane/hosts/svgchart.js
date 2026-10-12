@@ -30,7 +30,7 @@
  * way it is silently dropped by canvas.
  */
 
-import { MAPS } from './mapdata.js';
+import { MAPS, regionKey } from './mapdata.js';
 
 const xmlEscape = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -75,6 +75,86 @@ function niceMax(v) {
   return step * mag;
 }
 
+/**
+ * A zero-based axis whose intermediate ticks are round too.
+ *
+ * `niceMax` fixes the TOP of the axis and the chart then cuts it into four, so a
+ * column chart topping out at 228 got an axis reading 0 / 62.5 / 125 / 187.5 /
+ * 250. The top was tidy and every line between it was not, which is the half of
+ * the problem nobody notices until the chart is printed and somebody tries to
+ * read a bar against 「187.5 萬顆」.
+ *
+ * Zero always stays on the axis — these are bars, and a bar chart that does not
+ * start at zero lies about the ratio between its bars.
+ */
+function zeroTicks(max) {
+  const sc = niceScale(0, niceMax(max));
+  const ticks = sc.ticks.filter((t) => t >= 0);
+  return { top: sc.hi, ticks: ticks.length >= 2 ? ticks : [0, niceMax(max)] };
+}
+
+/**
+ * An axis that stops on round numbers.
+ *
+ * ── What this is the fix for ──
+ * Looking at every chart at once, the ones with a non-zero baseline all read
+ * like this: 「235.72　241.61　247.5　253.39　259.28」 along the bottom of a
+ * scatter, 「0.87　0.98　1.09　1.19　1.3」 up the side of a box plot. The numbers
+ * are correct — the data's range divided into four — and nobody can do
+ * arithmetic against them. A reader looking at 247.5 cannot tell at a glance
+ * whether a point sits at 250.
+ *
+ * `niceMax` already did this for axes that start at zero. This does it for the
+ * ones that cannot: pick a step from 1 / 2 / 2.5 / 5 × a power of ten, then
+ * widen the domain to land on it. Widening is the part that matters — stopping
+ * the ticks at round numbers while the axis still ends at 259.28 just moves the
+ * ragged number somewhere else.
+ */
+function niceScale(lo, hi, want = 5) {
+  const a = Number(lo);
+  const b = Number(hi);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) {
+    const c = Number.isFinite(a) ? a : 0;
+    return { lo: c - 1, hi: c + 1, ticks: [c - 1, c, c + 1] };
+  }
+  const raw = (b - a) / Math.max(2, want - 1);
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const start = Math.floor(a / step) * step;
+  const end = Math.ceil(b / step) * step;
+  const ticks = [];
+  // Rounded at each step: adding 0.1 to itself thirty times does not stay on
+  // 3, and a tick labelled 2.9999999999999996 is its own kind of broken.
+  for (let i = 0; start + step * i <= end + step * 1e-6; i++) {
+    ticks.push(Number((start + step * i).toPrecision(12)));
+  }
+  return { lo: start, hi: end, step, ticks };
+}
+
+/**
+ * Ticks for a log axis: the powers, not the midpoints.
+ *
+ * A log axis divided into four equal parts lands on 49.87 and 159.79, which look
+ * like data and are not. The domain is left alone here — a log axis padded to
+ * the next decade can waste most of its width — and only the tick POSITIONS are
+ * chosen, at 1, 2 and 5 times each power of ten, thinned to decades when the
+ * range is tall enough that it would otherwise be a picket fence.
+ */
+function logTicks(lo, hi) {
+  const decades = Math.log10(hi) - Math.log10(lo);
+  const mantissas = decades >= 3.5 ? [1] : (decades >= 1.5 ? [1, 3] : [1, 2, 5]);
+  const out = [];
+  for (let k = Math.floor(Math.log10(lo)); k <= Math.ceil(Math.log10(hi)); k++) {
+    for (const m of mantissas) {
+      const v = m * 10 ** k;
+      if (v >= lo && v <= hi) out.push(Number(v.toPrecision(12)));
+    }
+  }
+  // A range so narrow that no round number falls inside it still needs an axis.
+  return out.length >= 2 ? out : [lo, hi];
+}
+
 const FONT = '"Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", sans-serif';
 
 /**
@@ -93,6 +173,9 @@ function text(x, y, s, o = {}) {
     + (o.bold ? ' font-weight="600"' : '')
     + ` text-anchor="${o.anchor || 'start'}"`
     + (o.baseline ? ` dominant-baseline="${o.baseline}"` : '')
+    // Rotated about its own anchor, which is what a vertical axis name needs:
+    // it keeps the centring arithmetic in ordinary coordinates.
+    + (o.rotate ? ` transform="rotate(${n2(o.rotate)} ${n2(x)} ${n2(y)})"` : '')
     + `>${xmlEscape(s)}</text>`;
 }
 const rect = (x, y, w, h, fill, extra = '') =>
@@ -153,11 +236,26 @@ function frame(spec, opts) {
     }));
     return Math.min(Math.round(widest) + 16, Math.round((Number(spec.width) || 760) / 3));
   };
+  /**
+   * Axis names need their own room, not somebody else's.
+   *
+   * ── What this is the fix for ──
+   * They used to be squeezed into the existing margins: the Y name at
+   * `f.x - 44, f.y - 6`, which is the corner where the chart title and the
+   * topmost tick label already are, and the X name on the row the legend sits
+   * on. On a 450-point document column all three collided — 「乘法次數（對數刻度）」
+   * printed across both the title and 「3185萬」.
+   *
+   * A numeric axis is unreadable without its name, so the name is not the thing
+   * that gives way. Twenty points on the left, sixteen at the bottom, and only
+   * when there is actually a name to put there.
+   */
   const pad = {
     top: spec.title ? 44 : 16,
     right: 20,
-    bottom: opts.legend ? 52 : 34,
-    left: opts.axis ? (opts.wideLabels ? Math.max(56, labelRoom()) : 56) : 16,
+    bottom: (opts.legend ? 52 : 34) + (spec.x_axis ? 16 : 0),
+    left: (opts.axis ? (opts.wideLabels ? Math.max(56, labelRoom()) : 56) : 16)
+      + (spec.y_axis ? 20 : 0),
   };
   return { W, H, pad, x: pad.left, y: pad.top, w: W - pad.left - pad.right, h: H - pad.top - pad.bottom };
 }
@@ -211,20 +309,19 @@ function barChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const horizontal = spec.type === 'bar';
   const f = frame(spec, { axis: true, legend: wantsLegend(series), wideLabels: horizontal });
-  const top = niceMax(Math.max(...series.flatMap((s) => s.data), 0));
-  const TICKS = 4;
+  const { top, ticks } = zeroTicks(Math.max(...series.flatMap((s) => s.data), 0));
   let out = chrome(spec, f, theme);
 
   // Gridlines behind everything, in the tint colour — visible enough to read a
   // value against, faint enough not to compete with the bars.
-  for (let i = 0; i <= TICKS; i++) {
-    const v = (top / TICKS) * i;
+  for (const v of ticks) {
+    const at = v / (top || 1);
     if (horizontal) {
-      const x = f.x + (f.w / TICKS) * i;
+      const x = f.x + f.w * at;
       out += line(x, f.y, x, f.y + f.h, theme.line);
       out += text(x, f.y + f.h + 18, short(v), { size: 11, color: theme.muted, anchor: 'middle' });
     } else {
-      const y = f.y + f.h - (f.h / TICKS) * i;
+      const y = f.y + f.h - f.h * at;
       out += line(f.x, y, f.x + f.w, y, theme.line);
       out += text(f.x - 8, y, short(v), { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
     }
@@ -275,14 +372,13 @@ function barChart(spec, theme) {
 function lineChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const f = frame(spec, { axis: true, legend: wantsLegend(series) });
-  const top = niceMax(Math.max(...series.flatMap((s) => s.data), 0));
-  const TICKS = 4;
+  const { top, ticks } = zeroTicks(Math.max(...series.flatMap((s) => s.data), 0));
   let out = chrome(spec, f, theme);
 
-  for (let i = 0; i <= TICKS; i++) {
-    const y = f.y + f.h - (f.h / TICKS) * i;
+  for (const v of ticks) {
+    const y = f.y + f.h - f.h * (v / (top || 1));
     out += line(f.x, y, f.x + f.w, y, theme.line);
-    out += text(f.x - 8, y, short((top / TICKS) * i),
+    out += text(f.x - 8, y, short(v),
       { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
   }
 
@@ -612,70 +708,51 @@ function radarChart(spec, theme) {
  * alternating halves the density for free, and it is what every printed timeline
  * does for the same reason.
  */
-function timelineChart(spec, theme) {
-  const f = frame(spec, { axis: false, legend: false });
-  let out = chrome(spec, f, theme);
-
-  const items = (Array.isArray(spec.events) ? spec.events : []).filter(Boolean);
-  if (!items.length) throw new Error('events 是必要的：[{ label, at, note }]。');
-
-  const y = f.y + f.h / 2;
+/**
+ * Where every mark and every label goes.
+ *
+ * Separated from the drawing because the HEIGHT depends on the answer: how tall
+ * a timeline needs to be is decided by how many lines its labels wrapped to, and
+ * that cannot be known without doing the layout. Computing it twice from two
+ * copies of the rules is how the two disagree.
+ *
+ * ── The two ways the labels used to overflow ──
+ * 「跑版這塊要修正」, with a timeline whose first and last labels ran off the
+ * canvas and whose middle ones ran into each other. Both came from drawing every
+ * label centred on its mark at whatever width it happened to be:
+ *
+ *   · an edge mark is 24 points from the edge, so half of a 140-point label is
+ *     simply outside the picture;
+ *   · a 20-character Chinese label is 250 points wide, and five marks across 640
+ *     points are 128 apart.
+ *
+ * ── Why a per-label slot and not one shared width ──
+ * The obvious fix is `room = average gap × 2`, since alternating sides means a
+ * label's nearest same-side neighbour is two marks away. It is wrong for exactly
+ * the reason this chart exists: the gaps are NOT even. 1750, 1805 and 1822 put
+ * marks one and three only 72 years apart on a 215-year axis, so the average gap
+ * promises each of them twice the room it actually has, and the two labels above
+ * the line overlap while the average says they fit.
+ *
+ * So the labels are packed at their natural width first, and only when that
+ * genuinely does not fit does each fall back to a slot bounded by the midpoint
+ * to its same-side neighbours, and wrap into it.
+ */
+function timelinePlan(items, f) {
   const x0 = f.x + 24;
   const x1 = f.x + f.w - 24;
   // Numbers place marks proportionally; anything else falls back to even spacing,
   // which is honest — we cannot invent a scale we were not given.
   const nums = items.map((e) => Number(e.at));
   const scaled = nums.every((v) => Number.isFinite(v)) && new Set(nums).size > 1;
-  const lo = scaled ? Math.min(...nums) : 0;
-  const hi = scaled ? Math.max(...nums) : 1;
-  const xOf = (i) => (scaled
-    ? x0 + ((nums[i] - lo) / (hi - lo)) * (x1 - x0)
-    : x0 + (items.length === 1 ? (x1 - x0) / 2 : ((x1 - x0) / (items.length - 1)) * i));
+  const lo0 = scaled ? Math.min(...nums) : 0;
+  const hi0 = scaled ? Math.max(...nums) : 1;
+  const X = items.map((_, i) => (scaled
+    ? x0 + ((nums[i] - lo0) / (hi0 - lo0)) * (x1 - x0)
+    : x0 + (items.length === 1 ? (x1 - x0) / 2 : ((x1 - x0) / (items.length - 1)) * i)));
 
-  out += line(x0 - 12, y, x1 + 12, y, theme.line || '#E4E8EC', 3);
-  const done = (spec.colors || [])[0] || theme.strong || SERIES[0];
-  const mark = (spec.colors || [])[1] || theme.accent || SERIES[2];
-
-  /**
-   * How much horizontal room each label gets, and where it may sit.
-   *
-   * ── The two ways this overflowed ──
-   * 「跑版這塊要修正」, with a timeline whose first and last labels ran off the
-   * canvas and whose middle ones ran into each other. Both came from drawing
-   * every label centred on its mark at whatever width it happened to be:
-   *
-   *   · an edge mark is 24 points from the edge, so half of a 140-point label
-   *     is simply outside the picture;
-   *   · a 20-character Chinese label is 250 points wide, and five marks across
-   *     640 points are 128 apart.
-   *
-   * ── Why a per-label slot and not one shared width ──
-   * The obvious fix is `room = average gap × 2`, since alternating sides means
-   * a label's nearest same-side neighbour is two marks away. It is wrong for
-   * exactly the reason this chart exists: the gaps are NOT even. 1750, 1805 and
-   * 1822 put marks one and three only 72 years apart on a 215-year axis, so the
-   * average gap promises each of them twice the room it actually has, and the
-   * two labels above the line overlap while the average says they fit.
-   *
-   * So every label gets its own slot, bounded by the midpoint to its same-side
-   * neighbours and by the canvas at the ends. The label wraps to its slot and is
-   * then centred on its mark, nudged back inside if centring would cross a
-   * boundary. Nothing can reach into another label's slot, whatever the dates.
-   */
-  const X = items.map((_, i) => xOf(i));
   const edgeL = f.x;
   const edgeR = f.x + f.w;
-
-  /**
-   * Try the labels at their natural width first.
-   *
-   * Cutting every label down to the midpoint between its neighbours is safe but
-   * mean: it hands half the gap to a neighbour that may not want it, so a label
-   * breaks into two lines with 50 points of white space beside it. `packLabels`
-   * asks the real question instead — does this label need to reach further right
-   * than its neighbour needs to reach left? — and only when the answer is yes
-   * does anything get wrapped.
-   */
   const natural = items.map((e) => Math.max(
     textW(String(e.label ?? ''), 12.5),
     e.note ? textW(String(e.note), 11) : 0,
@@ -693,9 +770,6 @@ function timelineChart(spec, theme) {
       side.forEach((i, k) => { layout[i] = { room: natural[i] + 0.5, cx: packed[k] }; });
       continue;
     }
-    // Too much text for the axis: fall back to fixed slots bounded by the
-    // midpoint to each same-side neighbour, and wrap into them. Nothing can
-    // reach into another label's slot after this, whatever the dates are.
     for (const i of side) {
       const prev = i >= 2 ? X[i - 2] : null;
       const next = i + 2 < items.length ? X[i + 2] : null;
@@ -704,9 +778,54 @@ function timelineChart(spec, theme) {
       layout[i] = { room: Math.max(64, Math.min(hi - lo, f.w * 0.45)), lo, hi };
     }
   }
+  return { X, layout, x0, x1 };
+}
+
+/**
+ * How much room the labels need above the axis, and below it.
+ *
+ * The two are not equal — the side with a two-line label needs fifteen points
+ * more than the side without one — so a timeline that simply centres its axis
+ * either overflows the tall side or wastes the difference on the short one. The
+ * first version did the former: the top label landed on the chart title.
+ */
+function timelineArms(items, layout) {
+  const linesOn = (parity) => Math.max(1, ...items.map((e, i) => (i % 2 === parity
+    ? wrapLabel(String(e.label ?? ''), layout[i].room, 12.5).length
+      + (e.note ? Math.min(2, wrapLabel(String(e.note), layout[i].room, 11).length) : 0)
+    : 1)));
+  // stem + the year + the label block.
+  const arm = (parity) => 26 + 24 + linesOn(parity) * 15;
+  return { above: arm(0), below: arm(1) };
+}
+
+function timelineChart(spec, theme) {
+  const f = frame(spec, { axis: false, legend: false });
+  let out = chrome(spec, f, theme);
+
+  const items = (Array.isArray(spec.events) ? spec.events : []).filter(Boolean);
+  if (!items.length) throw new Error('events 是必要的：[{ label, at, note }]。');
+
+  const { X, layout, x0, x1 } = timelinePlan(items, f);
+  /**
+   * The axis sits where the labels need it, not in the middle.
+   *
+   * Any slack beyond what the two sides need is split evenly, so a timeline
+   * given a taller box than it asked for still looks composed rather than
+   * pinned to the top.
+   */
+  const arms = timelineArms(items, layout);
+  const slack = Math.max(0, f.h - arms.above - arms.below);
+  const y = f.y + arms.above + slack / 2;
+  const edgeL = f.x;
+  const edgeR = f.x + f.w;
+
+  out += line(x0 - 12, y, x1 + 12, y, theme.line || '#E4E8EC', 3);
+  const done = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const mark = (spec.colors || [])[1] || theme.accent || SERIES[2];
 
   items.forEach((e, i) => {
-    const x = xOf(i);
+    const x = X[i];
     const hot = e.highlight === true;
     const tone = hot ? mark : done;
     const above = i % 2 === 0;
@@ -814,6 +933,30 @@ function textW(str, size) {
 }
 
 /**
+ * How tall a timeline wants to be.
+ *
+ * ── Why it has to say ──
+ * In the default 380-point frame it drew one line across the middle with a
+ * third of the picture empty above and a third empty below. A figure that is
+ * sixty percent white space does not read as 「a timeline」, it reads as a
+ * picture that failed to load — which is exactly what a reader concludes when
+ * one appears in a report.
+ *
+ * It is a stack with a known height: the axis in the middle, and on each side a
+ * stem, a year, and however many lines the labels wrapped to. Measuring that is
+ * the whole calculation; the only unknown is the wrapping, and that is settled
+ * by laying the labels out for real at this width.
+ */
+timelineChart.preferredHeight = (spec) => {
+  const items = (Array.isArray(spec.events) ? spec.events : []).filter(Boolean);
+  if (!items.length) return 200;
+  const f = frame({ ...spec, height: 300 }, { axis: false, legend: false });
+  const { layout } = timelinePlan(items, f);
+  const arms = timelineArms(items, layout);
+  return Math.round(f.pad.top + f.pad.bottom + arms.above + arms.below);
+};
+
+/**
  * Break a label into lines that fit the room it has.
  *
  * Breaks between Chinese characters anywhere and between Latin words only —
@@ -893,7 +1036,7 @@ function mapChart(spec, theme) {
    * world map with one or two unrecognised names stays a world map.
    */
   const hits = (m) => (Array.isArray(spec.categories) ? spec.categories : [])
-    .filter((c) => MAPS[m][String(c)]).length;
+    .filter((c) => regionKey(m, c)).length;
   let which = asked;
   const total = (Array.isArray(spec.categories) ? spec.categories : []).length;
   if (total && hits(asked) === 0) {
@@ -919,22 +1062,42 @@ function mapChart(spec, theme) {
    * from the outside that looked like the feature was missing.
    */
   const highlight = cats.length > 0 && !nums.some((v) => Number.isFinite(Number(v)));
+  /**
+   * Names are resolved to this file's spelling once, here.
+   *
+   * 「新竹市」 and 「新竹」 are the same place, and the legend should say whichever
+   * the user wrote while the shading looks up whichever the geometry uses. Both
+   * are kept: `values` is keyed by the geometry's name so the drawing can find
+   * it, `asWritten` remembers what was asked for so the legend prints it back.
+   */
+  const asWritten = new Map();
   const values = new Map();
+  const marked = new Set();
+  const unknown = [];
   cats.forEach((c, i) => {
+    const key = regionKey(which, c);
+    if (!key) { unknown.push(c); return; }
+    if (!asWritten.has(key)) asWritten.set(key, c);
     const v = Number(nums[i]);
-    if (Number.isFinite(v)) values.set(c, v);
+    if (Number.isFinite(v)) values.set(key, v);
+    if (highlight) marked.add(key);
   });
-  const marked = new Set(highlight ? cats : []);
-  // Named but unknown is worth saying out loud: a typo in a region name would
-  // otherwise just be a country that never lights up.
-  // Deferred until the map is chosen — see below.
-
-  // Named but unknown is worth saying out loud: a typo in a region name would
-  // otherwise just be a country that never lights up.
-  const unknown = cats.filter((c) => !geo[c]);
 
   const f = frame(spec, { axis: false, legend: false });
   let out = chrome(spec, f, theme);
+
+  /**
+   * Antarctica, unless somebody asked for it.
+   *
+   * It is the width of the whole map and a quarter of its height, it is never
+   * the subject of a business chart, and including it squashes every inhabited
+   * country into the top two-thirds of the picture. Every published choropleth
+   * drops it for exactly this reason. Named explicitly, it comes back — a chart
+   * about research stations is a real chart.
+   */
+  const POLAR = new Set(['Antarctica', 'Fr. S. Antarctic Lands']);
+  const drawn = Object.entries(geo)
+    .filter(([name]) => !POLAR.has(name) || values.has(name) || marked.has(name));
 
   // The bounding box of everything being drawn, so a China map fills its box
   // instead of sitting in the middle of a world-sized one.
@@ -942,7 +1105,7 @@ function mapChart(spec, theme) {
   let y0 = 90;
   let x1 = -180;
   let y1 = -90;
-  for (const rings of Object.values(geo)) {
+  for (const [, rings] of drawn) {
     for (const r of rings) {
       for (const [lon, lat] of r) {
         if (lon < x0) x0 = lon;
@@ -964,12 +1127,10 @@ function mapChart(spec, theme) {
    * Proportional, with a floor that still fits 「United Sta…  1.4k」 and a
    * ceiling so a very wide chart does not grow a very wide list.
    */
-  const legendW = (values.size || marked.size)
-    ? Math.max(104, Math.min(150, Math.round(f.w * 0.24)))
-    : 0;
-  // Type shrinks with the column, or a narrow legend clips every name.
-  const legendSize = legendW < 128 ? 10.5 : 12;
-  const rowH = legendW < 128 ? 19 : 22;
+  const metrics = legendMetrics(f.w,
+    [...(marked.size ? marked : values.keys())].map((k) => asWritten.get(k) || k),
+    [...values.values()]);
+  const { legendW, legendSize, rowH } = metrics;
   // Room for the rows plus the two footnotes that may follow them.
   const maxRows = Math.max(3, Math.min(8, Math.floor((f.h - 44) / rowH)));
   const plotW = f.w - legendW;
@@ -996,7 +1157,7 @@ function mapChart(spec, theme) {
     return mixHex(empty, strong, t);
   };
 
-  for (const [name, rings] of Object.entries(geo)) {
+  for (const [name, rings] of drawn) {
     const fill = shade(values.get(name), name);
     const d = rings.map((r) => `M${r.map(([lon, lat]) => `${n2(px(lon))},${n2(py(lat))}`).join('L')}Z`)
       .join('');
@@ -1010,8 +1171,13 @@ function mapChart(spec, theme) {
    * Nobody reads a value off a shade, so the regions that were given one are
    * listed with it — largest first, because the question a map raises is always
    * 「誰最多」. Capped at eight: past that the list is the chart.
+   *
+   * It also carries the 「找不到」 line, which is why an all-unknown map still
+   * opens this block: if every name failed to match there is nothing to list and
+   * — without this — nothing to explain either, so the user gets a blank map and
+   * no reason for it. That is the one case where the note matters most.
    */
-  if (values.size || marked.size) {
+  if (values.size || marked.size || unknown.length) {
     const rows = marked.size
       // Highlight mode: the list is the names, in the order they were given —
       // that order is usually chronological or narrative, and re-sorting it
@@ -1031,12 +1197,17 @@ function mapChart(spec, theme) {
        * is tall, latin is roughly half that, so 「广东」 and 「Bangladesh」 both
        * get as many characters as actually fit.
        */
-      const room = (f.W - 16) - (lx + 17) - (v === null ? 4 : legendSize * 3.4);
-      let shown = name;
+      // Measured against the number that will actually be printed, not against
+      // a guess at how wide a number is.
+      const room = (f.W - 14) - (lx + 17) - (v === null ? 0 : metrics.numW + 8);
+      // Printed the way it was asked for: somebody who wrote 「新竹市」 should
+      // not have to work out why the legend says 「新竹」.
+      const label = asWritten.get(name) || name;
+      let shown = label;
       let used = 0;
-      for (let i = 0; i < name.length; i++) {
-        used += /[　-鿿＀-￯]/.test(name[i]) ? legendSize : legendSize * 0.55;
-        if (used > room) { shown = `${name.slice(0, Math.max(1, i - 1))}…`; break; }
+      for (let i = 0; i < label.length; i++) {
+        used += /[　-鿿＀-￯]/.test(label[i]) ? legendSize : legendSize * 0.55;
+        if (used > room) { shown = `${label.slice(0, Math.max(1, i - 1))}…`; break; }
       }
       out += text(lx + 17, ly + 6, shown,
         { size: legendSize, color: theme.ink || '#3D3D3D', baseline: 'middle' });
@@ -1065,6 +1236,85 @@ function mapChart(spec, theme) {
   }
   return out;
 }
+
+/**
+ * How wide the legend column has to be for the names it holds.
+ *
+ * ── Why this is measured and not a ratio ──
+ * It was a fraction of the canvas, which meant the column was the same width
+ * whether it held 「日本」 or 「United States of America」 — so on a document-width
+ * map the legend read 「Germa…」 and 「United St…」. A truncated country name
+ * looks like a defect in the chart, and it is: the chart had the information and
+ * threw it away to keep an arbitrary proportion.
+ *
+ * Measured against the longest name instead, with a ceiling — past a third of
+ * the canvas the list has won the picture, and a map whose geography is a
+ * sliver beside a list should have been a bar chart.
+ */
+function legendMetrics(fw, names, nums) {
+  const size = fw >= 520 ? 12 : 10.5;
+  const numW = nums.length ? Math.max(...nums.map((v) => textW(short(v), size))) : 0;
+  const nameW = names.length ? Math.max(...names.map((n) => textW(String(n), size))) : 0;
+  /**
+   * 35 points of furniture: the swatch and its gap (17), the gap before the
+   * number (8), and the margin the row sits in (10). The row drawing uses the
+   * same numbers — when it did not, the column was sized for one layout and the
+   * name was clipped by another, which is how 「United States」 came out as
+   * 「United St…」 in a legend with room to spare.
+   */
+  const want = nameW + numW + 35;
+  const legendW = Math.round(Math.max(110, Math.min(want, fw * 0.34)));
+  return { legendW, legendSize: size, numW, rowH: size >= 12 ? 22 : 19 };
+}
+
+/**
+ * How tall a map wants to be.
+ *
+ * ── Why it needs to say ──
+ * Every other chart fills whatever box it is given. A map cannot: its shape is
+ * fixed by the earth. A world map is two and a half times as wide as it is tall,
+ * so in the default 450 × 380 frame it drew a band across the middle with a
+ * third of the picture blank above it and a third blank below — in a document,
+ * that reads as a figure that failed to load.
+ *
+ * So the height follows the geography, with a floor set by the legend: the list
+ * of regions is part of the figure and must not be cut off to make the map fit.
+ */
+mapChart.preferredHeight = (spec) => {
+  const geo = MAPS[String(spec.map || 'world').toLowerCase()] || MAPS.world;
+  const named = new Set((Array.isArray(spec.categories) ? spec.categories : [])
+    .map((c) => regionKey(String(spec.map || 'world').toLowerCase(), c)).filter(Boolean));
+  let x0 = 180; let y0 = 90; let x1 = -180; let y1 = -90;
+  for (const [name, rings] of Object.entries(geo)) {
+    if ((name === 'Antarctica' || name === 'Fr. S. Antarctic Lands') && !named.has(name)) continue;
+    for (const r of rings) {
+      for (const [lon, lat] of r) {
+        if (lon < x0) x0 = lon;
+        if (lon > x1) x1 = lon;
+        if (lat < y0) y0 = lat;
+        if (lat > y1) y1 = lat;
+      }
+    }
+  }
+  const W = Number(spec.width) || 760;
+  const f = frame({ ...spec, height: 380 }, { axis: false, legend: false });
+  const vals = (Array.isArray(spec.values) ? spec.values : []).map(Number).filter(Number.isFinite);
+  const { legendW, rowH } = named.size
+    ? legendMetrics(f.w, [...named], vals)
+    : { legendW: 0, rowH: 0 };
+  const plotW = f.w - legendW;
+  const mapH = plotW * (((y1 - y0) || 1) / ((x1 - x0) || 1));
+  /**
+   * The legend's height has to agree with `maxRows`, which counts how many rows
+   * fit in `f.h - 44`. Ask for less than that and the chart quietly drops a
+   * region and prints 「另有 1 個未列出」 — the height it was given was the reason
+   * it could not list everything.
+   */
+  const rows = Math.min(8, named.size);
+  const legendH = rows ? rows * rowH + 44 : 0;
+  const body = Math.max(mapH, legendH);
+  return Math.round(Math.max(200, Math.min(f.pad.top + f.pad.bottom + body, W * 0.95)));
+};
 
 /**
  * A scatter — do these two numbers move together?
@@ -1114,18 +1364,21 @@ function scatterChart(spec, theme) {
     if (lo >= 0 && lo < spread * 0.6) return [0, niceMax(hi)];
     return [lo - spread * 0.12, hi + spread * 0.12];
   };
-  const [x0, x1] = range(xs);
-  const [y0, y1] = range(ys);
+  const xr = niceScale(...range(xs));
+  const yr = niceScale(...range(ys));
+  const [x0, x1] = [xr.lo, xr.hi];
+  const [y0, y1] = [yr.lo, yr.hi];
   const px = (v) => f.x + ((v - x0) / ((x1 - x0) || 1)) * f.w;
   const py = (v) => f.y + f.h - ((v - y0) / ((y1 - y0) || 1)) * f.h;
 
-  for (let i = 0; i <= 4; i++) {
-    const gy = f.y + (f.h / 4) * i;
+  for (const t of yr.ticks) {
+    const gy = py(t);
     out += line(f.x, gy, f.x + f.w, gy, theme.line);
-    out += text(f.x - 8, gy, short(y1 - ((y1 - y0) / 4) * i),
+    out += text(f.x - 8, gy, short(t),
       { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
-    const gx = f.x + (f.w / 4) * i;
-    out += text(gx, f.y + f.h + 18, short(x0 + ((x1 - x0) / 4) * i),
+  }
+  for (const t of xr.ticks) {
+    out += text(px(t), f.y + f.h + 18, short(t),
       { size: 11, color: theme.muted, anchor: 'middle' });
   }
 
@@ -1147,12 +1400,14 @@ function scatterChart(spec, theme) {
   // The axis names matter more here than on any other chart: a scatter without
   // them is two unlabelled numbers and nobody can read the claim off it.
   if (spec.x_axis) {
-    out += text(f.x + f.w, f.y + f.h + 32, String(spec.x_axis),
+    out += text(f.x + f.w, f.y + f.h + 34, String(spec.x_axis),
       { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
   }
   if (spec.y_axis) {
-    out += text(f.x - 44, f.y - 6, String(spec.y_axis),
-      { size: 11.5, bold: true, color: theme.strong });
+    // Along the axis, reading upwards — the one place a long name cannot run
+    // into the title, the ticks or the plot.
+    out += text(14, f.y + f.h / 2, String(spec.y_axis),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'middle', rotate: -90 });
   }
   if (groups.length > 1) {
     let lx = f.x;
@@ -1309,14 +1564,15 @@ function boxChart(spec, theme) {
   // Padded rather than zero-based: a distribution between 4.8 and 5.2 plotted
   // from zero is four identical lines.
   const pad = (hi - lo) * 0.12 || 1;
-  const y0 = lo - pad;
-  const y1 = hi + pad;
+  const yr = niceScale(lo - pad, hi + pad);
+  const y0 = yr.lo;
+  const y1 = yr.hi;
   const py = (v) => f.y + f.h - ((v - y0) / ((y1 - y0) || 1)) * f.h;
 
-  for (let i = 0; i <= 4; i++) {
-    const gy = f.y + (f.h / 4) * i;
+  for (const t of yr.ticks) {
+    const gy = py(t);
     out += line(f.x, gy, f.x + f.w, gy, theme.line);
-    out += text(f.x - 8, gy, short(y1 - ((y1 - y0) / 4) * i),
+    out += text(f.x - 8, gy, short(t),
       { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
   }
 
@@ -1424,7 +1680,25 @@ function ganttChart(spec, theme) {
       group: String((t && t.group) || ''),
       start,
       end,
-      done: Math.max(0, Math.min(1, Number(t && t.progress) || 0)),
+      /**
+       * Completion, read from the field the tool actually documents.
+       *
+       * It read `t.progress` while every description, schema and example said
+       * `done`. So the shading never appeared: a plan with 「done: 0.8」 drew an
+       * ordinary bar and the number was silently discarded. Both names are taken
+       * now — the documented one, and the one the code used to want.
+       */
+      done: Math.max(0, Math.min(1,
+        Number(t && (t.done !== undefined ? t.done : t.progress)) || 0)),
+      /**
+       * A milestone is a date, not a duration.
+       *
+       * 「設計審查」 and 「量產放行」 have no length — they happen or they do not.
+       * Without this they were drawn as one-day bars, which on a six-month axis
+       * is a two-pixel sliver that reads as a rendering fault. The schema has
+       * advertised `milestone` all along; this is the part that was missing.
+       */
+      milestone: (t && t.milestone) === true,
     };
   }).filter((t) => t.name && Number.isFinite(t.start) && Number.isFinite(t.end) && t.end >= t.start);
 
@@ -1491,9 +1765,26 @@ function ganttChart(spec, theme) {
     if (prev && prev.group === g) prev.to = i;
     else bands.push({ group: g, from: i, to: i });
   }
-  const tintFor = (i) => mixHex(theme.bg || '#FFFFFF',
-    (spec.colors || [])[i % ((spec.colors || []).length || 1)]
-      || SERIES[i % SERIES.length], 0.12);
+  /**
+   * The phase palette comes from the theme, not from this module's defaults.
+   *
+   * It used to take `SERIES`, so a Gantt in a black-and-white report arrived in
+   * navy, blue, RED and pale blue with pink section bands — in a document whose
+   * tables and headings had all been deliberately reduced to greys. Worse, red
+   * is the colour this chart uses for 「今天」, so a phase coloured red reads as
+   * a problem rather than as the third phase.
+   *
+   * So the ramp is the theme's own ink, and the accent is left out of it: in a
+   * schedule the accent means now.
+   */
+  const ramp = ((spec.colors || []).length ? spec.colors : [
+    theme.strong || SERIES[0],
+    theme.second || SERIES[1],
+    mixHex(theme.strong || SERIES[0], theme.bg || '#FFFFFF', 0.45),
+    mixHex(theme.second || SERIES[1], theme.bg || '#FFFFFF', 0.45),
+  ]).filter(Boolean);
+  const toneFor = (i) => ramp[i % ramp.length];
+  const tintFor = (i) => mixHex(theme.bg || '#FFFFFF', toneFor(i), 0.12);
   bands.forEach((b, i) => {
     if (!b.group) return;
     const y = top + b.from * rowH;
@@ -1514,21 +1805,38 @@ function ganttChart(spec, theme) {
 
   tasks.forEach((t, i) => {
     const y = top + i * rowH;
-    const tone = (spec.colors || [])[bands.findIndex((b) => i >= b.from && i <= b.to) % ((spec.colors || []).length || 1)]
-      || SERIES[Math.max(0, bands.findIndex((b) => i >= b.from && i <= b.to)) % SERIES.length];
+    const tone = toneFor(Math.max(0, bands.findIndex((b) => i >= b.from && i <= b.to)));
     // The name, in the gutter. Left-aligned and clipped by the gutter width
     // rather than by the bar, so a long name never lands on top of a neighbour.
     out += text(12 + groupW, y + rowH / 2, fit(t.name, nameW - groupW - 6),
       { size: 11.5, color: theme.ink || '#3D3D3D', baseline: 'middle' });
 
     const bx = atDay(t.start);
+    if (t.milestone) {
+      // A diamond on the date, which is the convention every project tool uses
+      // and the only mark that reads at a glance as 「a point, not a period」.
+      const cy = y + rowH / 2;
+      const r = Math.min(8, barH * 0.72);
+      // Nudged inside the plot: a milestone on the last day of the plan sits
+      // exactly on the right edge, and half a diamond hanging off the picture
+      // looks like the chart was cropped.
+      const mx = Math.min(Math.max(bx, x0 + r), x0 + plotW - r);
+      out += `<path d="M${n2(mx)},${n2(cy - r)}L${n2(mx + r)},${n2(cy)}`
+        + `L${n2(mx)},${n2(cy + r)}L${n2(mx - r)},${n2(cy)}Z" fill="${tone}"`
+        + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="1.2"/>`;
+      return;
+    }
     // +1 because a task that starts and ends on the same day still lasts a day;
     // a floor so a one-day task is a mark rather than a hairline.
     const bw = Math.max(4, ((t.end - t.start + 1) / span) * plotW);
-    out += rect(bx, y + (rowH - barH) / 2, bw, barH, tone, ' rx="3"');
+    // With a completion figure the bar is split — pale remainder, solid done —
+    // so a mostly-solid bar reads as mostly finished without a legend. Without
+    // one it stays solid: a plan that never reported progress should not look
+    // like a plan where nothing has been done.
+    out += rect(bx, y + (rowH - barH) / 2, bw, barH,
+      t.done > 0 ? mixHex(tone, theme.bg || '#FFFFFF', 0.55) : tone, ' rx="3"');
     if (t.done > 0) {
-      out += rect(bx, y + (rowH - barH) / 2, bw * t.done, barH,
-        mixHex(tone, '#000000', 0.25), ' rx="3"');
+      out += rect(bx, y + (rowH - barH) / 2, Math.max(2, bw * t.done), barH, tone, ' rx="3"');
     }
   });
 
@@ -1642,26 +1950,37 @@ function plotChart(spec, theme) {
   // so the same 「is zero in sight」 test the scatter uses applies here.
   const rawMinY = Math.min(...ys);
   const rawMaxY = Math.max(...ys);
-  const [y0, y1] = logY
+  // Linear axes are widened to the tick step so the axis ENDS on a round number
+  // too; a log axis keeps its padded domain, because stretching it to the next
+  // decade can throw away most of the plot's width.
+  const fit = (a, b, isLog) => (isLog ? [a, b] : [niceScale(a, b).lo, niceScale(a, b).hi]);
+  const [y0, y1] = fit(...(logY
     ? pad(rawMinY, rawMaxY)
-    : pad(rawMinY >= 0 && rawMinY < (rawMaxY - rawMinY) * 0.6 ? 0 : rawMinY, rawMaxY);
-  const [x0, x1] = pad(Math.min(...xs), Math.max(...xs));
+    : pad(rawMinY >= 0 && rawMinY < (rawMaxY - rawMinY) * 0.6 ? 0 : rawMinY, rawMaxY)), logY);
+  const [x0, x1] = fit(...pad(Math.min(...xs), Math.max(...xs)), logX);
 
   const f = frame(spec, { axis: true, legend: wantsLegend(curves) });
   let out = chrome(spec, f, theme);
   const px = (v) => f.x + ((tx(v) - x0) / ((x1 - x0) || 1)) * f.w;
   const py = (v) => f.y + f.h - ((ty(v) - y0) / ((y1 - y0) || 1)) * f.h;
 
-  /** A tick's label: the real value, not the logarithm of it. */
-  const back = (t, isLog) => (isLog ? 10 ** t : t);
-  for (let i = 0; i <= 4; i++) {
-    const gy = f.y + (f.h / 4) * i;
+  /**
+   * Tick positions in real units — a log axis ticks at 100 and 1,000, not at
+   * four equal slices of the exponent.
+   */
+  const ticksFor = (isLog, a, b) => (isLog
+    ? logTicks(10 ** a, 10 ** b)
+    : niceScale(a, b).ticks.filter((t) => t >= a - 1e-9 && t <= b + 1e-9));
+  for (const t of ticksFor(logY, y0, y1)) {
+    const gy = py(t);
     out += line(f.x, gy, f.x + f.w, gy, theme.line);
-    out += text(f.x - 8, gy, short(back(y1 - ((y1 - y0) / 4) * i, logY)),
+    out += text(f.x - 8, gy, short(t),
       { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
-    const gx = f.x + (f.w / 4) * i;
+  }
+  for (const t of ticksFor(logX, x0, x1)) {
+    const gx = px(t);
     out += line(gx, f.y, gx, f.y + f.h, theme.line);
-    out += text(gx, f.y + f.h + 18, short(back(x0 + ((x1 - x0) / 4) * i, logX)),
+    out += text(gx, f.y + f.h + 18, short(t),
       { size: 11, color: theme.muted, anchor: 'middle' });
   }
 
@@ -1694,8 +2013,8 @@ function plotChart(spec, theme) {
     { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
   }
   if (spec.y_axis) {
-    out += text(f.x - 44, f.y - 8, String(spec.y_axis) + (logY ? '（對數刻度）' : ''),
-      { size: 11.5, bold: true, color: theme.strong });
+    out += text(14, f.y + f.h / 2, String(spec.y_axis) + (logY ? '（對數刻度）' : ''),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'middle', rotate: -90 });
   }
   out += legend(curves, f, theme);
   return out;

@@ -23,3 +23,269 @@ export const MAPS = {"world":{"Fiji":[[[-180,-16.1],[178.7,-17],[180,-16.1],[-18
 
 export const MAP_NAMES = Object.keys(MAPS);
 export const regionsOf = (map) => Object.keys(MAPS[map] || {});
+
+/**
+ * The region names a person actually types.
+ *
+ * ── The bug this is the fix for ──
+ * The keys above are short simplified-Chinese forms — 「新竹」, 「宜兰」, 「广东」 —
+ * because that is how the geometry arrived. Lookups were exact, so a Taiwanese
+ * user asking for 「新竹市」、「台中市」、「高雄市」 got a blank map with a footnote
+ * reading 「找不到：新竹市、台中市、高雄市」. Every one of those is the correct
+ * name of the place. 「臺中」 failed too, and so did 「宜蘭」, 「雲林」, 「屏東」,
+ * 「花蓮」 — the traditional spellings of our own counties, in a tool whose users
+ * write traditional Chinese.
+ *
+ * It is the worst shape of failure available: the data was right, the map was
+ * right, and the only thing wrong was a suffix the renderer insisted on not
+ * having. So three things are accepted now and none of them are guesses:
+ *
+ *   · an administrative suffix — 市 縣 县 省 自治區 特別行政區 …
+ *   · 臺 for 台, which is the same character by any reading
+ *   · the traditional spelling of every key that differs from the simplified one
+ *
+ * The last one is a hand-written table rather than a converter, because it only
+ * has to cover the fifty-one names in this file and a converter would be a
+ * dependency that can be wrong about the other twenty thousand.
+ */
+const TRADITIONAL = {
+  宜蘭: '宜兰', 桃園: '桃园', 嘉義: '嘉义', 雲林: '云林', 屏東: '屏东', 花蓮: '花莲',
+  內蒙古: '内蒙古', 遼寧: '辽宁', 黑龍江: '黑龙江', 江蘇: '江苏', 浙江: '浙江',
+  福建: '福建', 江西: '江西', 山東: '山东', 河南: '河南', 湖北: '湖北', 湖南: '湖南',
+  廣東: '广东', 廣西: '广西', 海南: '海南', 重慶: '重庆', 四川: '四川', 貴州: '贵州',
+  雲南: '云南', 西藏: '西藏', 陝西: '陕西', 甘肅: '甘肃', 青海: '青海', 寧夏: '宁夏',
+  新疆: '新疆', 台灣: '台湾', 臺灣: '台湾', 香港: '香港', 澳門: '澳门',
+};
+
+/**
+ * What people call these countries.
+ *
+ * ── Why this table exists ──
+ * The geometry's names come from Natural Earth, so the key for the United
+ * States is 「United States of America」 and the key for the Congo is 「Dem. Rep.
+ * Congo」. Asking for 「United States」 produced 「找不到：United States」 under a
+ * blank map — and 「美國」, 「日本」, 「德國」 produced the same, which matters more:
+ * this add-in writes Chinese documents for Chinese-speaking users, and the
+ * Chinese name of a country is not an alternative spelling here, it is the
+ * normal one.
+ *
+ * Traditional forms first, because that is who uses this; simplified and the
+ * common English variants follow. Only names that differ from the key are
+ * listed — the key itself always matches.
+ */
+const WORLD_NAMES = {
+  'Fiji': ['斐濟'],
+  'Tanzania': ['坦尚尼亞', '坦桑尼亞'],
+  'W. Sahara': ['西撒哈拉', 'Western Sahara'],
+  'Canada': ['加拿大'],
+  'United States of America': ['美國', '美利堅合眾國', 'United States', 'USA', 'U.S.', 'U.S.A.', 'US', 'America'],
+  'Kazakhstan': ['哈薩克', '哈薩克斯坦'],
+  'Uzbekistan': ['烏茲別克', '烏茲別克斯坦'],
+  'Papua New Guinea': ['巴布亞紐幾內亞', '巴布亞新幾內亞'],
+  'Indonesia': ['印尼', '印度尼西亞'],
+  'Argentina': ['阿根廷'],
+  'Chile': ['智利'],
+  'Dem. Rep. Congo': ['剛果民主共和國', '民主剛果', '剛果（金）', 'DR Congo', 'Democratic Republic of the Congo'],
+  'Somalia': ['索馬利亞', '索馬里'],
+  'Kenya': ['肯亞', '肯尼亞'],
+  'Sudan': ['蘇丹'],
+  'Chad': ['查德', '乍得'],
+  'Haiti': ['海地'],
+  'Dominican Rep.': ['多明尼加', '多米尼加', 'Dominican Republic'],
+  'Russia': ['俄羅斯', '俄國', 'Russian Federation'],
+  'Norway': ['挪威'],
+  'Greenland': ['格陵蘭'],
+  'Fr. S. Antarctic Lands': ['法屬南方和南極領地'],
+  'South Africa': ['南非'],
+  'Lesotho': ['賴索托', '萊索托'],
+  'Mexico': ['墨西哥'],
+  'Uruguay': ['烏拉圭'],
+  'Brazil': ['巴西'],
+  'Bolivia': ['玻利維亞'],
+  'Peru': ['秘魯'],
+  'Colombia': ['哥倫比亞'],
+  'Panama': ['巴拿馬'],
+  'Costa Rica': ['哥斯大黎加', '哥斯達黎加'],
+  'Nicaragua': ['尼加拉瓜'],
+  'Honduras': ['宏都拉斯', '洪都拉斯'],
+  'El Salvador': ['薩爾瓦多'],
+  'Guatemala': ['瓜地馬拉', '危地馬拉'],
+  'Belize': ['貝里斯', '伯利茲'],
+  'Venezuela': ['委內瑞拉'],
+  'Guyana': ['蓋亞那', '圭亞那'],
+  'Suriname': ['蘇利南', '蘇里南'],
+  'France': ['法國'],
+  'Ecuador': ['厄瓜多', '厄瓜多爾'],
+  'Cuba': ['古巴'],
+  'Zimbabwe': ['辛巴威', '津巴布韋'],
+  'Botswana': ['波札那', '博茨瓦納'],
+  'Namibia': ['納米比亞'],
+  'Senegal': ['塞內加爾'],
+  'Mali': ['馬利', '馬里'],
+  'Mauritania': ['茅利塔尼亞', '毛里塔尼亞'],
+  'Benin': ['貝南', '貝寧'],
+  'Niger': ['尼日'],
+  'Nigeria': ['奈及利亞', '尼日利亞'],
+  'Cameroon': ['喀麥隆'],
+  'Togo': ['多哥'],
+  'Ghana': ['迦納', '加納'],
+  'Côte d\'Ivoire': ['象牙海岸', '科特迪瓦', 'Ivory Coast', 'Cote d\'Ivoire'],
+  'Guinea': ['幾內亞'],
+  'Guinea-Bissau': ['幾內亞比索'],
+  'Liberia': ['賴比瑞亞', '利比里亞'],
+  'Sierra Leone': ['獅子山', '塞拉利昂'],
+  'Burkina Faso': ['布吉納法索', '布基納法索'],
+  'Central African Rep.': ['中非', '中非共和國', 'Central African Republic'],
+  'Congo': ['剛果', '剛果共和國', '剛果（布）'],
+  'Gabon': ['加彭', '加蓬'],
+  'Eq. Guinea': ['赤道幾內亞', 'Equatorial Guinea'],
+  'Zambia': ['尚比亞', '贊比亞'],
+  'Malawi': ['馬拉威', '馬拉維'],
+  'Mozambique': ['莫三比克', '莫桑比克'],
+  'eSwatini': ['史瓦帝尼', '斯威士蘭', 'Swaziland', 'Eswatini'],
+  'Angola': ['安哥拉'],
+  'Burundi': ['蒲隆地', '布隆迪'],
+  'Israel': ['以色列'],
+  'Madagascar': ['馬達加斯加'],
+  'Tunisia': ['突尼西亞', '突尼斯'],
+  'Algeria': ['阿爾及利亞'],
+  'Jordan': ['約旦'],
+  'United Arab Emirates': ['阿聯', '阿拉伯聯合大公國', '阿聯酋', 'UAE'],
+  'Kuwait': ['科威特'],
+  'Iraq': ['伊拉克'],
+  'Oman': ['阿曼'],
+  'Cambodia': ['柬埔寨'],
+  'Thailand': ['泰國'],
+  'Laos': ['寮國', '老撾'],
+  'Myanmar': ['緬甸', 'Burma'],
+  'Vietnam': ['越南', 'Viet Nam'],
+  'North Korea': ['北韓', '朝鮮'],
+  'South Korea': ['南韓', '韓國', '大韓民國', 'Korea'],
+  'Mongolia': ['蒙古'],
+  'India': ['印度'],
+  'Bangladesh': ['孟加拉'],
+  'Bhutan': ['不丹'],
+  'Nepal': ['尼泊爾'],
+  'Pakistan': ['巴基斯坦'],
+  'Afghanistan': ['阿富汗'],
+  'Tajikistan': ['塔吉克', '塔吉克斯坦'],
+  'Kyrgyzstan': ['吉爾吉斯', '吉爾吉斯斯坦'],
+  'Turkmenistan': ['土庫曼', '土庫曼斯坦'],
+  'Iran': ['伊朗'],
+  'Syria': ['敘利亞'],
+  'Armenia': ['亞美尼亞'],
+  'Sweden': ['瑞典'],
+  'Belarus': ['白俄羅斯'],
+  'Ukraine': ['烏克蘭'],
+  'Poland': ['波蘭'],
+  'Austria': ['奧地利'],
+  'Hungary': ['匈牙利'],
+  'Moldova': ['摩爾多瓦'],
+  'Romania': ['羅馬尼亞'],
+  'Lithuania': ['立陶宛'],
+  'Latvia': ['拉脫維亞'],
+  'Estonia': ['愛沙尼亞'],
+  'Germany': ['德國'],
+  'Bulgaria': ['保加利亞'],
+  'Greece': ['希臘'],
+  'Turkey': ['土耳其', 'Türkiye'],
+  'Albania': ['阿爾巴尼亞'],
+  'Croatia': ['克羅埃西亞', '克羅地亞'],
+  'Switzerland': ['瑞士'],
+  'Belgium': ['比利時'],
+  'Netherlands': ['荷蘭'],
+  'Portugal': ['葡萄牙'],
+  'Spain': ['西班牙'],
+  'Ireland': ['愛爾蘭'],
+  'New Caledonia': ['新喀里多尼亞'],
+  'New Zealand': ['紐西蘭', '新西蘭'],
+  'Australia': ['澳洲', '澳大利亞'],
+  'Sri Lanka': ['斯里蘭卡'],
+  'China': ['中國', '中國大陸', '中华人民共和国', '中華人民共和國'],
+  'Taiwan': ['台灣', '臺灣', '台湾'],
+  'Italy': ['義大利', '意大利'],
+  'Denmark': ['丹麥'],
+  'United Kingdom': ['英國', 'UK', 'U.K.', 'Britain', 'Great Britain', 'England'],
+  'Iceland': ['冰島'],
+  'Azerbaijan': ['亞塞拜然', '阿塞拜疆'],
+  'Georgia': ['喬治亞', '格魯吉亞'],
+  'Philippines': ['菲律賓'],
+  'Malaysia': ['馬來西亞'],
+  'Slovenia': ['斯洛維尼亞', '斯洛文尼亞'],
+  'Finland': ['芬蘭'],
+  'Slovakia': ['斯洛伐克'],
+  'Czechia': ['捷克', 'Czech Republic'],
+  'Eritrea': ['厄利垂亞', '厄立特里亞'],
+  'Japan': ['日本'],
+  'Paraguay': ['巴拉圭'],
+  'Yemen': ['葉門', '也門'],
+  'Saudi Arabia': ['沙烏地阿拉伯', '沙特阿拉伯', '沙國'],
+  'Antarctica': ['南極洲', '南極'],
+  'Morocco': ['摩洛哥'],
+  'Egypt': ['埃及'],
+  'Libya': ['利比亞'],
+  'Ethiopia': ['衣索比亞', '埃塞俄比亞'],
+  'Djibouti': ['吉布地', '吉布提'],
+  'Somaliland': ['索馬利蘭', '索馬里蘭'],
+  'Uganda': ['烏干達'],
+  'Rwanda': ['盧安達', '盧旺達'],
+  'Bosnia and Herz.': ['波士尼亞', '波黑', 'Bosnia', 'Bosnia and Herzegovina'],
+  'Macedonia': ['北馬其頓', '馬其頓', 'North Macedonia'],
+  'Serbia': ['塞爾維亞'],
+  'Montenegro': ['蒙特內哥羅', '黑山'],
+  'Kosovo': ['科索沃'],
+  'S. Sudan': ['南蘇丹', 'South Sudan'],
+};
+
+/** alias → key, built once. */
+const WORLD_INDEX = (() => {
+  const m = new Map();
+  for (const [key, names] of Object.entries(WORLD_NAMES)) {
+    for (const n of names) m.set(n.toLowerCase(), key);
+  }
+  return m;
+})();
+
+/** Strip what an address carries and a map key does not. */
+const SUFFIX = /(特別行政區|特别行政区|自治區|自治区|直轄市|直辖市|省|市|縣|县|區|区|州)$/;
+
+/**
+ * Find a region's key, accepting the ways people write it.
+ *
+ * Returns the key as this file spells it, or null — and null genuinely means
+ * 「we do not have this place」, which is worth reporting, rather than 「you
+ * spelt it in the wrong script」, which is not the user's problem.
+ */
+export function regionKey(map, name) {
+  const geo = MAPS[map];
+  if (!geo) return null;
+  const raw = String(name == null ? '' : name).trim();
+  if (!raw) return null;
+
+  const tries = [];
+  const add = (v) => { if (v && !tries.includes(v)) tries.push(v); };
+  add(raw);
+  // 臺 and 台 are the same character; nobody should have to know which one the
+  // geometry happened to use.
+  const tai = raw.replace(/臺/g, '台');
+  add(tai);
+  for (const v of [raw, tai]) {
+    add(TRADITIONAL[v]);
+    const cut = v.replace(SUFFIX, '');
+    if (cut && cut !== v) { add(cut); add(TRADITIONAL[cut]); }
+  }
+  for (const v of tries) {
+    if (geo[v]) return v;
+  }
+  // World names are latin and case is not meaningful: 「taiwan」 is Taiwan.
+  const lower = raw.toLowerCase();
+  for (const k of Object.keys(geo)) {
+    if (k.toLowerCase() === lower) return k;
+  }
+  // Then what people actually call the place, in either script.
+  for (const v of tries) {
+    const hit = WORLD_INDEX.get(String(v).toLowerCase());
+    if (hit && geo[hit]) return hit;
+  }
+  return null;
+}

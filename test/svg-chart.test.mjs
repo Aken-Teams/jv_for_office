@@ -257,8 +257,11 @@ const sane = (svg) => !/NaN|Infinity|undefined/.test(svg)
   const g1 = dots[1] - dots[0];
   const g2 = dots[2] - dots[1];
   ok('間隔照實際數值，不是平均排開', Math.abs(g1 - g2) > 20, `${g1} vs ${g2}`);
+  // 中線從實際畫布算——時間軸現在自己決定高度，寫死 170 會在高度一變就失準。
+  const tlH = Number(/height="(\d+)"/.exec(tl)[1]);
   ok('標註上下交錯，不會擠在同一邊',
-    new Set([...tl.matchAll(/<text x="[\d.]+" y="([\d.]+)"/g)].map((m) => +m[1] > 170)).size === 2);
+    new Set([...tl.matchAll(/<text x="[\d.]+" y="([\d.]+)"/g)]
+      .map((m) => +m[1] > tlH / 2)).size === 2, `高 ${tlH}`);
   ok('重點事件會被標出來', tl.includes('r="8"'));
 
   // 給不了刻度的時候平均排開是誠實的——我們沒有的尺度不能自己發明。
@@ -308,9 +311,13 @@ for (const which of ['world', 'china', 'taiwan']) {
     && !/NaN|undefined|Infinity/.test(svg), svgProblem(svg));
   // 每個地區都要落在畫布裡，不然就是投影或縮放算錯了。
   const pts = [...svg.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map((m) => [+m[1], +m[2]]);
+  // 尺寸從 SVG 讀——地圖現在照地形自己決定高度，不再固定 380。
+  const cw = Number(/width="(\d+)"/.exec(svg)[1]);
+  const ch = Number(/height="(\d+)"/.exec(svg)[1]);
   ok(`${which}：全部畫在畫布內`,
-    pts.every(([x, y]) => x >= -1 && x <= 761 && y >= -1 && y <= 381),
-    `x ${Math.min(...pts.map((q) => q[0])).toFixed(0)}..${Math.max(...pts.map((q) => q[0])).toFixed(0)}`);
+    pts.every(([x, y]) => x >= -1 && x <= cw + 1 && y >= -1 && y <= ch + 1),
+    `${cw}x${ch}｜x ${Math.min(...pts.map((q) => q[0])).toFixed(0)}..${Math.max(...pts.map((q) => q[0])).toFixed(0)}`
+    + `｜y ${Math.min(...pts.map((q) => q[1])).toFixed(0)}..${Math.max(...pts.map((q) => q[1])).toFixed(0)}`);
   // 給了值的地區要有不同深淺，不然這張圖沒有在表達任何東西。
   const fills = new Set([...svg.matchAll(/<path d="[^"]*" fill="(#[0-9A-Fa-f]{6})"/g)]
     .map((m) => m[1].toUpperCase()));
@@ -410,12 +417,31 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('世界地圖有少數名字對不上時不換', !w.includes('已改用'));
   ok('但仍然把對不上的講出來', w.includes('Narnia'));
 
-  // 「United States of America」原本會直接壓到右邊的數字上。
-  const names = [...w.matchAll(/<text x="([\d.]+)"[^>]*>([^<]*)<\/text>/g)]
-    .filter((m) => /United|China/.test(m[2]));
-  ok('過長的名字會截斷', names.some((m) => m[2].endsWith('…')),
-    names.map((m) => m[2]).join(' | '));
-  ok('短名字不會被動到', names.some((m) => m[2] === 'China'));
+  /**
+   * 長名字不可以壓到右邊的數字上。
+   *
+   * 本來這條斷言的是「會截斷」，但截斷只是達成它的其中一種做法——現在圖例會
+   * 先照內容把自己加寬，所以 450 點寬的文件裡「United States」是完整印出來的，
+   * 而不是「United St…」。要守的是不重疊，不是截斷本身。
+   */
+  const legendRow = (svg) => [...svg.matchAll(/<text x="([\d.]+)"[^>]*font-size="([\d.]+)"[^>]*>([^<]*)</g)]
+    .map((m) => ({ x: Number(m[1]), size: Number(m[2]), txt: m[3] }));
+  const widthOf = (t, size) => [...t]
+    .reduce((a, c) => a + (/[⺀-｠]/.test(c) ? size : size * 0.55), 0);
+  const nums = legendRow(w).filter((t) => /^[\d.]+$/.test(t.txt));
+  const names = legendRow(w).filter((t) => /United|China/.test(t.txt));
+  const numLeft = nums.length ? Math.min(...nums.map((t) => t.x - widthOf(t.txt, t.size))) : Infinity;
+  ok('長名字不會壓到數字',
+    names.every((t) => t.x + widthOf(t.txt, t.size) <= numLeft + 0.5),
+    names.map((t) => `${t.txt}@${(t.x + widthOf(t.txt, t.size)).toFixed(0)}`).join(' | ') + ` 數字從 ${numLeft.toFixed(0)}`);
+  ok('放得下就完整印出來', names.some((t) => t.txt === 'United States of America'),
+    names.map((t) => t.txt).join(' | '));
+  ok('短名字不會被動到', names.some((t) => t.txt === 'China'));
+
+  // 真的窄到放不下，還是要截斷而不是畫出界。
+  const tight = chartSvg({ type: 'map', map: 'world', width: 300,
+    categories: ['United States of America', 'China'], values: [1, 2] }, P);
+  ok('窄到放不下才截斷', /…/.test(tight), tight.match(/>([^<]*United[^<]*)</) || '沒有這一列');
 }
 
 // ── 散佈圖、堆疊、箱型 ──────────────────────────────────────────────────────
@@ -766,6 +792,113 @@ for (const which of ['world', 'china', 'taiwan']) {
   ok('chartData 只挑資料欄位',
     picked.events && picked.curves && picked.width === undefined && picked.junk === undefined,
     JSON.stringify(picked));
+}
+
+/**
+ * 地名要收得下台灣人實際會打的寫法。
+ *
+ * ── 怎麼發現的 ──
+ * 把 Word 支援的每一種圖一次全部畫出來檢查的時候，台灣地圖整張空白，角落一行
+ * 小字寫著「找不到：新竹市、台中市、高雄市」。那三個都是正確的地名。
+ *
+ * 原因是地圖的鍵來自幾何資料，是簡體、而且不含「市／縣」：「新竹」「宜兰」
+ * 「屏东」。比對又是完全精確，所以在一間台灣公司裡，最自然的寫法——正體字、
+ * 加縣市——每一個都打不中。
+ *
+ * 這是最糟的一種壞法：資料對、地圖對，錯的只是一個後綴。
+ */
+{
+  const TH = { ink: '#000', strong: '#1F3864', accent: '#C00', muted: '#595959',
+    line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFF' };
+  const tw = chartSvg({ type: 'map', map: 'taiwan', title: '各縣市客戶數',
+    categories: ['新竹市', '臺中市', '高雄市', '宜蘭縣', '雲林縣', '屏東縣'],
+    values: [38, 29, 24, 17, 22, 31], width: 450 }, TH);
+  ok('台灣地圖收得下縣市全名與正體字', !/找不到/.test(tw));
+  // 圖例要印回使用者寫的那個名字，不是幾何資料的簡寫。
+  ok('圖例印使用者寫的名稱', /新竹市</.test(tw) && /宜蘭縣</.test(tw));
+
+  const cn = chartSvg({ type: 'map', map: 'china', title: '省別',
+    categories: ['廣東省', '山東', '河南省', '內蒙古自治區'],
+    values: [5, 3, 2, 1], width: 450 }, TH);
+  ok('中國地圖收得下正體字與「省」', !/找不到/.test(cn));
+
+  const en = chartSvg({ type: 'map', map: 'world', categories: ['taiwan', 'JAPAN'],
+    values: [1, 2], width: 450 }, TH);
+  ok('世界地圖不分大小寫', !/找不到/.test(en));
+
+  // 真的沒有的地方還是要講——這句話本身是有用的，不能為了讓測試過就拿掉。
+  const bad = chartSvg({ type: 'map', map: 'taiwan', categories: ['火星市'],
+    values: [1], width: 450 }, TH);
+  ok('真的找不到還是會說', /找不到/.test(bad) && /火星市/.test(bad));
+}
+
+/**
+ * 數值軸的軸名要有自己的位置。
+ *
+ * ── 怎麼發現的 ──
+ * 同一次全畫一遍，plot 和 scatter 兩張的 Y 軸名壓在圖表標題和最上面那個刻度上。
+ * 它本來畫在 `f.x - 44, f.y - 6`，而那個角落正是標題和頂端刻度所在的地方——在
+ * 760 點寬的投影片上擠得過去，在 450 點的內文欄寬就擠不過去了。
+ *
+ * 數值軸沒有軸名就看不懂，所以讓位的不該是軸名。改成沿著軸直排，並在版面上先
+ * 留出那一欄。
+ */
+{
+  const TH = { ink: '#000', strong: '#1F3864', accent: '#C00', muted: '#595959',
+    line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFF' };
+  const measure = (t, size) => [...t]
+    .reduce((a, c) => a + (/[\u2E80-\uFF60]/.test(c) ? size : size * 0.55), 0);
+
+  const boxesOf = (svg) => [...svg.matchAll(
+    /<text x="([-\d.]+)" y="([-\d.]+)"[^>]*font-size="([\d.]+)"[^>]*text-anchor="(\w+)"([^>]*)>([^<]*)</g)]
+    .filter((m) => m[6].trim())
+    .map((m) => {
+      const x = Number(m[1]); const y = Number(m[2]); const size = Number(m[3]);
+      const w = measure(m[6], size);
+      if (/rotate\(-?9[05]/.test(m[5])) return { txt: m[6], size, l: x - size, r: x + size, y: y - w / 2, tall: w };
+      const l = m[4] === 'start' ? x : (m[4] === 'end' ? x - w : x - w / 2);
+      return { txt: m[6], size, l, r: l + w, y, tall: 0 };
+    });
+
+  const overlaps = (bs) => {
+    const hit = [];
+    for (let i = 0; i < bs.length; i++) {
+      for (let j = i + 1; j < bs.length; j++) {
+        const a = bs[i]; const b = bs[j];
+        const near = a.y < b.y + b.tall + Math.min(a.size, b.size) * 0.9
+          && b.y < a.y + a.tall + Math.min(a.size, b.size) * 0.9;
+        if (near && a.l < b.r - 0.5 && b.l < a.r - 0.5) hit.push(`${a.txt}／${b.txt}`);
+      }
+    }
+    return hit;
+  };
+
+  // 內文欄寬，也就是 Word 實際會用的寬度。
+  const plot = chartSvg({ type: 'plot', width: 450, title: 'FFT 與直接計算的運算量',
+    x_axis: 'N（取樣點數）', y_axis: '乘法次數', log_x: true, log_y: true,
+    curves: [
+      { name: 'N²', points: [[64, 4096], [256, 65536], [1024, 1048576], [4096, 16777216]] },
+      { name: 'N log₂N', points: [[64, 384], [256, 2048], [1024, 10240], [4096, 49152]], dashed: true },
+    ] }, TH);
+  ok('plot 的軸名不壓到標題或刻度', !overlaps(boxesOf(plot)).length,
+    overlaps(boxesOf(plot)).join(' / '));
+  const pb = boxesOf(plot);
+  ok('plot 的字都在畫布內',
+    !pb.filter((b) => b.l < -1 || b.r > 451 || b.y < -1 || b.y + b.tall > 381).length,
+    pb.filter((b) => b.l < -1 || b.r > 451).map((b) => b.txt).join(' / '));
+
+  const sc = chartSvg({ type: 'scatter', width: 450, title: '爐溫與良率',
+    x_axis: '峰溫（°C）', y_axis: '良率（%）',
+    points: [{ x: 238, y: 96.1 }, { x: 246, y: 98.2 }, { x: 254, y: 97.2 }, { x: 257, y: 95.9 }] }, TH);
+  ok('scatter 的軸名不壓到別人', !overlaps(boxesOf(sc)).length, overlaps(boxesOf(sc)).join(' / '));
+
+  // 沒有軸名的圖不該為了這件事多留白——用格線的起點量，比字串長度誠實。
+  const leftOf = (svg) => Math.min(...[...svg.matchAll(/<line x1="([\d.]+)"/g)].map((m) => Number(m[1])));
+  const plain = chartSvg({ type: 'column', width: 450, categories: ['A', 'B'], values: [1, 2] }, TH);
+  const withName = chartSvg({ type: 'column', width: 450, categories: ['A', 'B'], values: [1, 2],
+    y_axis: '數量' }, TH);
+  ok('有軸名才多留那一欄', leftOf(withName) - leftOf(plain) === 20,
+    `${leftOf(plain)} -> ${leftOf(withName)}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -1840,6 +1840,7 @@ const CHART_LABEL = {
   column: '直條', bar: '橫條', line: '折線', area: '區域', pie: '圓餅', donut: '甜甜圈',
   waterfall: '瀑布', funnel: '漏斗', radar: '雷達', timeline: '時間軸', map: '地圖',
   scatter: '散佈', stacked: '堆疊長條', stacked100: '百分比堆疊', box: '箱型',
+  plot: '函數曲線',
 };
 
 const DOC_CHART_INK = {
