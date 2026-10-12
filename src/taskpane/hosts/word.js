@@ -87,6 +87,7 @@ const BASE_TOOLS = [
   'word_insert_link',
   'word_page_design',
   'word_normalize_layout',
+  'word_review_layout',
   'word_apply_theme',
   'word_replace_all',
   // Compute and edit inside Word instead of hauling the document through the
@@ -3165,6 +3166,120 @@ async function fillTable(args) {
   });
 }
 
+/**
+ * 最後一關：把版面上機械性的毛病掃一遍。
+ *
+ * ── 這支為什麼存在 ──
+ * 「最後他要完整看一下 WORD 資料排版，有些時候會變成他表格跨頁、多一整個空白頁」。
+ * 寫內容的時候每一步都是對的——插一段、插一張表、插一張圖——但那些動作是一個一個
+ * 下的，沒有人在最後退一步看整份長什麼樣。於是中間多出一整頁空白、表格的表頭留在
+ * 上一頁而資料跑到下一頁。
+ *
+ * ── 只修機械性的問題，不碰判斷 ──
+ * 「針對新章節新一頁的功能並沒有真的很需要，因為有時候真的要看，有些適合有些不適
+ * 合」——所以這支**不會**幫你把每個章節推到新的一頁。那是編輯判斷，猜錯的代價是
+ * 一份被硬切開的文件，而使用者要花更多力氣改回來。
+ *
+ * 它只處理「不管什麼文件都算錯」的那幾種：連續的空段落、結尾一串空白、長表格的
+ * 表頭沒有跨頁重複。
+ *
+ * ── 做不到的要講出來 ──
+ * 「整列不要被切開」（OOXML 的 `w:cantSplit`）在 Word JS API 裡沒有對應的屬性。
+ * 所以長表格這裡只能讓**表頭每頁重複**，讓跨頁之後還讀得懂；要完全不切開得由人
+ * 在 Word 裡設。報告會照實說，不會假裝修好了。
+ */
+async function reviewLayout(args) {
+  const fix = args.fix !== false;
+
+  return Word.run(async (ctx) => {
+    const items = await loadParagraphs(ctx);
+    const tables = ctx.document.body.tables;
+    tables.load('items/values,items/rowCount,items/headerRowCount');
+    await ctx.sync();
+
+    const found = [];
+    const fixed = [];
+
+    /**
+     * 連續的空段落。
+     *
+     * 一整頁空白幾乎都是這個來的——不是有人插了分頁，是連續十幾個空段落剛好把
+     * 內容推過一頁。留一個當作段落之間的呼吸，其餘刪掉。
+     */
+    const blanks = [];
+    let run = [];
+    items.forEach((p, i) => {
+      if (!String(p.text || '').trim()) { run.push(i); return; }
+      if (run.length >= 3) blanks.push(run.slice());
+      run = [];
+    });
+    if (run.length >= 2) blanks.push(run.slice());   // 結尾那串，門檻放寬
+
+    const result = await withTracking(ctx, optIn(args), async () => {
+      if (blanks.length) {
+        const total = blanks.reduce((a, b) => a + b.length, 0);
+        found.push(`${blanks.length} 處連續空段落（共 ${total} 段）`);
+        if (fix) {
+          // 由後往前刪，前面的索引才不會跟著位移。
+          const drop = blanks.flatMap((g) => (g[g.length - 1] === items.length - 1
+            // 結尾的全部刪掉：文件最後不需要留白，那是版面不是內容。
+            ? g
+            // 中間的留一段。
+            : g.slice(1)));
+          for (let i = drop.length - 1; i >= 0; i -= 1) {
+            try { items[drop[i]].delete(); } catch { /* 刪不掉就算了 */ }
+          }
+          fixed.push(`刪掉 ${drop.length} 個多餘的空段落`);
+        }
+      }
+
+      /**
+       * 長表格的表頭要跨頁重複。
+       *
+       * 只動「看起來真的有表頭」的：第一列每一格都有字、而且都不長。資料列當成
+       * 表頭重複出來，比不重複更難看。
+       */
+      tables.items.forEach((t, i) => {
+        const rows = Number(t.rowCount) || 0;
+        if (rows < 8) return;
+        const first = (Array.isArray(t.values) ? t.values[0] : null) || [];
+        const looksHeader = first.length > 1
+          && first.every((c) => String(c ?? '').trim() && String(c).length <= 14);
+        if (!looksHeader) {
+          found.push(`表格 ${i + 1} 有 ${rows} 列會跨頁，但第一列看起來不是表頭，沒有動它`);
+          return;
+        }
+        if (Number(t.headerRowCount) === 1) return;
+        found.push(`表格 ${i + 1} 有 ${rows} 列、表頭沒有跨頁重複`);
+        if (fix) {
+          try {
+            t.headerRowCount = 1;
+            fixed.push(`表格 ${i + 1} 的表頭改成每頁重複`);
+          } catch { /* 這個版本不支援就留著 */ }
+        }
+      });
+
+      await ctx.sync();
+      return null;
+    });
+
+    const long = tables.items.filter((t) => (Number(t.rowCount) || 0) >= 8).length;
+    const lines = [];
+    lines.push(found.length ? `檢查出 ${found.length} 件：\n- ${found.join('\n- ')}` : '版面沒有查到機械性的問題。');
+    if (fixed.length) lines.push(`\n已調整：\n- ${fixed.join('\n- ')}`);
+    if (!fix && found.length) lines.push('\n（這次只檢查沒有動它。要修的話再呼叫一次，不要帶 fix: false。）');
+    if (long) {
+      lines.push('\n【做不到、要講清楚的一件事】'
+        + `這份文件有 ${long} 張超過 8 列的表格。表頭可以設定成跨頁重複，`
+        + '但「整列不要被切成兩頁」在增益集的 API 裡沒有對應的設定，'
+        + '要完全不切開得在 Word 裡自己設（表格內容 → 列 → 取消「允許列超越頁」）。');
+    }
+    lines.push('\n沒有幫你把章節推到新的一頁——那是編輯判斷，有些章節適合有些不適合，'
+      + '要的話直接告訴我是哪幾個章節。');
+    return lines.join('\n') + trackingNote(result);
+  });
+}
+
 // ── Equations ─────────────────────────────────────────────────────────────────
 
 /**
@@ -4989,6 +5104,7 @@ export async function executeTool(tool, args, opts = {}) {
       case 'word_checkbox':
       case 'word_insert_link':
       case 'word_page_design':
+      case 'word_review_layout':
       case 'word_normalize_layout':
       case 'word_apply_theme':
       case 'word_insert_textbox':
@@ -5037,6 +5153,7 @@ export async function executeTool(tool, args, opts = {}) {
           word_insert_link: link,
           word_page_design: pageDesign,
           word_normalize_layout: normalizeLayout,
+          word_review_layout: reviewLayout,
           word_apply_theme: applyTheme,
           word_insert_textbox: insertTextBox,
           word_replace_all: replaceAll,
@@ -5167,6 +5284,7 @@ export const meta = {
     word_insert_link: t('正在設定超連結…'),
     word_page_design: t('正在設計版面…'),
     word_normalize_layout: t('正在統一排版…'),
+    word_review_layout: t('正在檢查整份版面…'),
     word_apply_theme: t('正在套用文件樣式…'),
     word_insert_textbox: t('正在插入文字方塊…'),
     word_replace_all: t('等待你確認取代…'),
