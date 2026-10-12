@@ -88,7 +88,13 @@ function niceMax(v) {
  * start at zero lies about the ratio between its bars.
  */
 function zeroTicks(max) {
-  const sc = niceScale(0, niceMax(max));
+  // Straight to niceScale, NOT niceScale(niceMax(max)): rounding up twice puts
+  // the axis at 60 for a maximum of 36, and a third of the chart is then empty
+  // headroom that nothing is ever going to fill.
+  // want 5, not 6: asking for more ticks lets the ladder settle on 2.5 — an axis
+  // reading 0 / 2.5 / 5 / 7.5 / 10 is harder to read a bar against than one
+  // reading 0 / 5 / 10, and a zero-based axis has no need for the extra lines.
+  const sc = niceScale(0, Math.max(0, Number(max) || 0), 5);
   const ticks = sc.ticks.filter((t) => t >= 0);
   return { top: sc.hi, ticks: ticks.length >= 2 ? ticks : [0, niceMax(max)] };
 }
@@ -117,10 +123,23 @@ function niceScale(lo, hi, want = 5) {
     const c = Number.isFinite(a) ? a : 0;
     return { lo: c - 1, hi: c + 1, ticks: [c - 1, c, c + 1] };
   }
+  /**
+   * The finest step that does not crowd the axis.
+   *
+   * Rounding the ideal gap up to the next ladder rung overshoots badly when it
+   * lands just above a rung: thicknesses spanning 0.97 to 1.20 wanted a gap of
+   * 0.066, which rounds to 0.1, and the axis came out 0.9 to 1.3 — nearly half
+   * of it empty. Walking the ladder from the bottom and stopping at the first
+   * step that fits picks 0.05 and an axis of 0.95 to 1.25 instead.
+   */
   const raw = (b - a) / Math.max(2, want - 1);
   const mag = 10 ** Math.floor(Math.log10(raw));
-  const norm = raw / mag;
-  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  let step = 10 * mag;
+  for (const k of [1, 2, 2.5, 5, 10, 20]) {
+    const trial = k * mag;
+    const count = Math.ceil(b / trial) - Math.floor(a / trial) + 1;
+    if (count <= want + 3) { step = trial; break; }
+  }
   const start = Math.floor(a / step) * step;
   const end = Math.ceil(b / step) * step;
   const ticks = [];
@@ -303,13 +322,67 @@ function legend(series, f, theme) {
   }).join('');
 }
 
+/**
+ * Error bars — the single thing that separates a result from a number.
+ *
+ * ── Why this is not its own chart type ──
+ * 「平均 ± 標準差」 is not a different figure, it is the same bar or line with
+ * the uncertainty drawn on it. Making it a type would mean a model had to
+ * choose between 「a column chart」 and 「a column chart with error bars」 and
+ * would lose the option whenever it picked first and got the data second.
+ *
+ * So `error` rides along with `values`: one row for one series, a row per
+ * series for several, and the shapes match or it is ignored rather than drawn
+ * against the wrong bars.
+ */
+function errorRows(spec, count, length) {
+  const e = spec.error;
+  if (!Array.isArray(e) || !e.length) return null;
+  const rows = Array.isArray(e[0]) ? e : [e];
+  const num = rows.map((r) => (Array.isArray(r) ? r : []).map((v) => {
+    const x = Math.abs(Number(v));
+    return Number.isFinite(x) ? x : 0;
+  }));
+  // One row for several series is the common case — the same ± applies to all
+  // of them only if the caller says so by repeating it, so it is not assumed.
+  if (num.length !== count && num.length !== 1) return null;
+  if (num.some((r) => r.length !== length)) return null;
+  return num.length === count ? num : new Array(count).fill(num[0]);
+}
+
+/** The cap-and-whisker itself, vertical or horizontal. */
+function errorBar(x, y, px0, px1, horizontal, color) {
+  const cap = 4;
+  return horizontal
+    ? line(px0, y, px1, y, color, 1.3)
+      + line(px0, y - cap, px0, y + cap, color, 1.3)
+      + line(px1, y - cap, px1, y + cap, color, 1.3)
+    : line(x, px0, x, px1, color, 1.3)
+      + line(x - cap, px0, x + cap, px0, color, 1.3)
+      + line(x - cap, px1, x + cap, px1, color, 1.3);
+}
+
+/** 「± 1 SD」 etc., stated on the figure — a bar with no stated meaning is noise. */
+function errorNote(spec, f, theme) {
+  if (!spec.error_label) return '';
+  return text(f.x + f.w, f.y - 6, String(spec.error_label),
+    { size: 10.5, color: theme.muted || '#8A93A0', anchor: 'end' });
+}
+
 // ── Renderers ────────────────────────────────────────────────────────────────
 
 function barChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const horizontal = spec.type === 'bar';
   const f = frame(spec, { axis: true, legend: wantsLegend(series), wideLabels: horizontal });
-  const { top, ticks } = zeroTicks(Math.max(...series.flatMap((s) => s.data), 0));
+  // The axis has to clear the error bars, not just the bars — an interval that
+  // runs off the top of the chart is worse than no interval at all.
+  const reach = (() => {
+    const e = errorRows(spec, series.length, labels.length);
+    return Math.max(...series.flatMap((s, si) => s.data
+      .map((v, i) => v + (e ? e[si][i] : 0))), 0);
+  })();
+  const { top, ticks } = zeroTicks(reach);
   let out = chrome(spec, f, theme);
 
   // Gridlines behind everything, in the tint colour — visible enough to read a
@@ -334,23 +407,40 @@ function barChart(spec, theme) {
   const inner = band * 0.72;
   const bw = inner / series.length;
 
+  const errs = errorRows(spec, series.length, labels.length);
   labels.forEach((label, g) => {
     const base = (horizontal ? f.y : f.x) + band * g + (band - inner) / 2;
     series.forEach((s, si) => {
       const ratio = top ? s.data[g] / top : 0;
+      const e = errs ? errs[si][g] : 0;
+      // Clamped to the axis: an interval that runs below zero on a count is
+      // drawn to zero rather than off the bottom of the chart.
+      const at = (v) => Math.max(0, Math.min(top, v)) / (top || 1);
       if (horizontal) {
         const y = base + bw * si;
         out += rect(f.x, y, f.w * ratio, bw * 0.86, s.color, ' rx="2"');
+        if (e > 0) {
+          out += errorBar(0, y + bw * 0.43,
+            f.x + f.w * at(s.data[g] - e), f.x + f.w * at(s.data[g] + e),
+            true, theme.ink || '#3D3D3D');
+        }
         if (spec.data_labels !== false) {
-          out += text(f.x + f.w * ratio + 6, y + bw * 0.43, short(s.data[g]),
+          out += text(f.x + f.w * ratio + (e > 0 ? 12 : 6), y + bw * 0.43, short(s.data[g]),
             { size: 11, color: theme.ink, baseline: 'middle' });
         }
       } else {
         const h = f.h * ratio;
         const x = base + bw * si;
         out += rect(x, f.y + f.h - h, bw * 0.86, h, s.color, ' rx="2"');
+        if (e > 0) {
+          out += errorBar(x + bw * 0.43, 0,
+            f.y + f.h - f.h * at(s.data[g] + e), f.y + f.h - f.h * at(s.data[g] - e),
+            false, theme.ink || '#3D3D3D');
+        }
         if (spec.data_labels !== false) {
-          out += text(x + bw * 0.43, f.y + f.h - h - 7, short(s.data[g]),
+          // Above the whisker, not above the bar, or the number sits on it.
+          const topY = e > 0 ? f.y + f.h - f.h * at(s.data[g] + e) : f.y + f.h - h;
+          out += text(x + bw * 0.43, topY - 7, short(s.data[g]),
             { size: 11, color: theme.ink, anchor: 'middle' });
         }
       }
@@ -365,6 +455,7 @@ function barChart(spec, theme) {
   });
 
   out += line(f.x, f.y + f.h, f.x + f.w, f.y + f.h, theme.muted, 1.2);
+  out += errorNote(spec, f, theme);
   out += legend(series, f, theme);
   return out;
 }
@@ -372,7 +463,9 @@ function barChart(spec, theme) {
 function lineChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const f = frame(spec, { axis: true, legend: wantsLegend(series) });
-  const { top, ticks } = zeroTicks(Math.max(...series.flatMap((s) => s.data), 0));
+  const errs = errorRows(spec, series.length, labels.length);
+  const { top, ticks } = zeroTicks(Math.max(...series.flatMap((s, si) => s.data
+    .map((v, i) => v + (errs ? errs[si][i] : 0))), 0));
   let out = chrome(spec, f, theme);
 
   for (const v of ticks) {
@@ -388,7 +481,7 @@ function lineChart(spec, theme) {
   const px = (i) => (labels.length > 1 ? f.x + step * i : f.x + f.w / 2);
   const py = (v) => f.y + f.h - (top ? (v / top) * f.h : 0);
 
-  series.forEach((s) => {
+  series.forEach((s, si) => {
     const pts = s.data.map((v, i) => `${n2(px(i))},${n2(py(v))}`).join(' ');
     if (spec.area) {
       out += `<polygon points="${n2(px(0))},${n2(f.y + f.h)} ${pts} ${n2(px(s.data.length - 1))},${n2(f.y + f.h)}"`
@@ -397,6 +490,13 @@ function lineChart(spec, theme) {
     out += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2.5"`
       + ' stroke-linejoin="round" stroke-linecap="round"/>';
     s.data.forEach((v, i) => {
+      // Error bars under the markers, so the marker stays the thing the eye
+      // lands on and the interval reads as its context.
+      const e = errs ? errs[si][i] : 0;
+      if (e > 0) {
+        out += errorBar(px(i), 0, py(Math.min(top, v + e)), py(Math.max(0, v - e)),
+          false, s.color);
+      }
       out += `<circle cx="${n2(px(i))}" cy="${n2(py(v))}" r="3.5" fill="#FFFFFF" stroke="${s.color}" stroke-width="2"/>`;
     });
   });
@@ -405,6 +505,7 @@ function lineChart(spec, theme) {
     out += text(px(i), f.y + f.h + 20, label, { size: 12, color: theme.ink, anchor: 'middle' });
   });
   out += line(f.x, f.y + f.h, f.x + f.w, f.y + f.h, theme.muted, 1.2);
+  out += errorNote(spec, f, theme);
   out += legend(series, f, theme);
   return out;
 }
@@ -1335,6 +1436,10 @@ function scatterChart(spec, theme) {
     .map((p) => ({
       x: Number(p.x), y: Number(p.y), label: String(p.label || ''),
       group: String(p.group || ''),
+      // A third variable, if there is one — this is what makes it a bubble
+      // chart, and it is the same figure with the dots sized rather than a
+      // different type to choose between.
+      size: Number(p.size ?? p.r),
     }))
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   if (!pts.length) throw new Error('points 是必要的：[{ x, y, label }]。');
@@ -1382,13 +1487,87 @@ function scatterChart(spec, theme) {
       { size: 11, color: theme.muted, anchor: 'middle' });
   }
 
+  /**
+   * The fitted line, and the number that says whether to believe it.
+   *
+   * ── Why a scatter without one is only half a figure ──
+   * The reason a paper prints a scatter is almost always 「these two things move
+   * together」, and the evidence for that claim is the slope and R². Drawing the
+   * cloud and leaving the reader to eyeball the trend is how two people look at
+   * the same figure and disagree about whether there is one.
+   *
+   * Ordinary least squares, stated on the figure: the equation and R², so the
+   * figure carries its own result rather than depending on a sentence nearby
+   * that may be edited away.
+   */
+  const fitted = (() => {
+    if (spec.fit !== 'linear' && spec.fit !== true) return null;
+    const n = pts.length;
+    if (n < 3) return null;
+    const mx = xs.reduce((a, b) => a + b, 0) / n;
+    const my = ys.reduce((a, b) => a + b, 0) / n;
+    const sxx = xs.reduce((a, v) => a + (v - mx) ** 2, 0);
+    const sxy = pts.reduce((a, p) => a + (p.x - mx) * (p.y - my), 0);
+    if (!sxx) return null;
+    const slope = sxy / sxx;
+    const intercept = my - slope * mx;
+    const syy = ys.reduce((a, v) => a + (v - my) ** 2, 0);
+    const r2 = syy ? (sxy * sxy) / (sxx * syy) : 0;
+    // The standard error of the fitted mean, for the band.
+    const resid = pts.reduce((a, p) => a + (p.y - (intercept + slope * p.x)) ** 2, 0);
+    const se = n > 2 ? Math.sqrt(resid / (n - 2)) : 0;
+    return { slope, intercept, r2, se, n, mx, sxx };
+  })();
+
   const groups = [...new Set(pts.map((p) => p.group))];
   const tone = (g) => (spec.colors || [])[Math.max(0, groups.indexOf(g))]
     || SERIES[Math.max(0, groups.indexOf(g)) % SERIES.length];
   const showLabels = spec.labels !== false && pts.length <= 12;
 
+  /**
+   * Bubble radius by AREA, not by radius.
+   *
+   * A value twice as large has to cover twice the ink, or the figure overstates
+   * it fourfold — the classic way a bubble chart lies. Floor of 4 points so the
+   * smallest observation is still a dot rather than a dropout.
+   */
+  if (fitted) {
+    const line1 = (x) => fitted.intercept + fitted.slope * x;
+    // The 95% band for the MEAN response, which is the one a reader expects
+    // around a regression line; it pinches at the centroid, which is the shape
+    // that tells them where the data actually was.
+    if (spec.fit_band === true && fitted.se > 0) {
+      const t = 1.96;
+      const band = (x) => t * fitted.se
+        * Math.sqrt(1 / fitted.n + ((x - fitted.mx) ** 2) / fitted.sxx);
+      const upper = [];
+      const lower = [];
+      for (let i = 0; i <= 40; i++) {
+        const x = x0 + ((x1 - x0) * i) / 40;
+        upper.push(`${n2(px(x))},${n2(py(line1(x) + band(x)))}`);
+        lower.unshift(`${n2(px(x))},${n2(py(line1(x) - band(x)))}`);
+      }
+      out += `<polygon points="${upper.concat(lower).join(' ')}"`
+        + ` fill="${theme.strong || SERIES[0]}" opacity="0.12"/>`;
+    }
+    out += line(px(x0), py(line1(x0)), px(x1), py(line1(x1)),
+      theme.accent || SERIES[2], 1.8);
+    const sign = fitted.intercept < 0 ? '−' : '+';
+    out += text(f.x + f.w, f.y - 6,
+      `y = ${sig(fitted.slope)}x ${sign} ${sig(Math.abs(fitted.intercept))}`
+      + `　R² = ${fitted.r2.toFixed(2)}`,
+      { size: 11, color: theme.muted, anchor: 'end' });
+  }
+
+  const sizes = pts.map((p) => p.size).filter(Number.isFinite);
+  const bubble = sizes.length === pts.length && sizes.some((v) => v > 0);
+  const sMax = bubble ? Math.max(...sizes) : 0;
+  const radius = (p) => (bubble && sMax > 0
+    ? 4 + 14 * Math.sqrt(Math.max(0, p.size) / sMax)
+    : 6);
+
   for (const p of pts) {
-    out += `<circle cx="${n2(px(p.x))}" cy="${n2(py(p.y))}" r="6"`
+    out += `<circle cx="${n2(px(p.x))}" cy="${n2(py(p.y))}" r="${n2(radius(p))}"`
       + ` fill="${tone(p.group)}" fill-opacity="0.75"`
       + ` stroke="${theme.bg || '#FFFFFF'}" stroke-width="1.5"/>`;
     if (showLabels && p.label) {
@@ -1870,24 +2049,28 @@ ganttChart.preferredHeight = (spec) => {
 };
 
 /** Rough on-screen width of a label, CJK counted double. */
+/**
+ * Truncate to the room available — measured at the size it will be drawn at.
+ *
+ * It used to measure every string as if it were 11.5 point, because that is
+ * what the Gantt's gutter uses. A caller drawing at 11 then reserved 90 points
+ * for a label this insisted was 92 wide, and 「合計（隨機效果）」 came out as
+ * 「合計（隨機效果…」 — clipped inside a gutter that had been sized to hold it.
+ * One ruler now, `textW`, the same one every other layout calculation uses.
+ */
 function labelWidth(s) {
-  let w = 0;
-  for (const ch of String(s || '')) {
-    w += /[\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60]/.test(ch) ? 11.5 : 6;
-  }
-  return w;
+  return textW(s, 11.5);
 }
 
-/** Trim a label to the room it has, with an ellipsis so the cut is visible. */
-function fit(s, room) {
+function fit(s, room, size = 11.5) {
   const str = String(s || '');
-  if (labelWidth(str) <= room) return str;
+  if (textW(str, size) <= room) return str;
   let out = '';
   for (const ch of str) {
-    if (labelWidth(out + ch) > room - 8) break;
+    if (textW(out + ch, size) > room - size * 0.7) break;
     out += ch;
   }
-  return out + '…';
+  return `${out}…`;
 }
 
 /**
@@ -2020,6 +2203,676 @@ function plotChart(spec, theme) {
   return out;
 }
 
+// ── Academic figures ─────────────────────────────────────────────────────────
+//
+// Everything above this line answers a business question: who sold more, where
+// the money went, when the project finishes. A paper asks different ones — how
+// is this distributed, do these two things co-vary, is the difference bigger
+// than the noise — and those need figures that the business set cannot fake.
+// 「學術文件的圖偏少」, and this is what was missing.
+
+/**
+ * The summary statistics the distribution figures all need.
+ *
+ * Quantiles by linear interpolation between order statistics, which is R's
+ * type 7 and what every paper means by 「四分位數」 unless it says otherwise.
+ */
+function describe(values) {
+  const v = (Array.isArray(values) ? values : []).map(Number)
+    .filter(Number.isFinite).sort((a, b) => a - b);
+  const n = v.length;
+  const mean = n ? v.reduce((a, b) => a + b, 0) / n : 0;
+  const sd = n > 1
+    ? Math.sqrt(v.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1))
+    : 0;
+  const q = (pp) => {
+    if (!n) return 0;
+    const i = (n - 1) * pp;
+    const lo = Math.floor(i);
+    const hi = Math.ceil(i);
+    return v[lo] + (v[hi] - v[lo]) * (i - lo);
+  };
+  return {
+    v, n, mean, sd, min: n ? v[0] : 0, max: n ? v[n - 1] : 0,
+    q1: q(0.25), median: q(0.5), q3: q(0.75),
+  };
+}
+
+/** Round to a sensible number of significant figures for a caption. */
+function sig(v, digits = 3) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return '—';
+  if (x === 0) return '0';
+  const mag = Math.floor(Math.log10(Math.abs(x)));
+  const places = Math.max(0, Math.min(6, digits - 1 - mag));
+  return x.toFixed(places).replace(/\.?0+$/, '') || '0';
+}
+
+/**
+ * A histogram — how one variable is distributed.
+ *
+ * ── Why this is not a bar chart ──
+ * A bar chart has categories; a histogram has an interval axis that the data
+ * was cut into, and the cutting is part of the figure. Asking a model to 「make
+ * a bar chart of the measurements」 produced one bar per measurement, which is
+ * not a distribution, it is the raw data standing up.
+ *
+ * So this takes the RAW values and does the binning here. The bin count follows
+ * Freedman–Diaconis — bin width 2·IQR/∛n, the rule that does not fall apart on
+ * skewed data the way Sturges does — and falls back to Sturges when the IQR is
+ * zero, which happens on heavily tied data like integer counts.
+ */
+function histogramChart(spec, theme) {
+  const raw = (Array.isArray(spec.values) ? spec.values : []).map(Number)
+    .filter(Number.isFinite);
+  if (raw.length < 2) {
+    throw new Error('histogram 需要 values：一整組**原始數值**（不是已經數好的次數）。'
+      + '例如 values: [1.02, 1.07, 1.05, …]。組數可以用 bins 指定，不給就自動算。');
+  }
+  const st = describe(raw);
+  const iqr = st.q3 - st.q1;
+  const fd = iqr > 0 ? (2 * iqr) / Math.cbrt(st.n) : 0;
+  const auto = fd > 0
+    ? Math.ceil((st.max - st.min) / fd)
+    : Math.ceil(Math.log2(st.n) + 1);
+  const bins = Math.max(4, Math.min(Math.round(Number(spec.bins) || auto) || 8, 40));
+
+  const span = (st.max - st.min) || 1;
+  const width = span / bins;
+  const counts = new Array(bins).fill(0);
+  for (const x of raw) {
+    // The last bin is closed at both ends, or the maximum falls outside it.
+    const k = Math.min(bins - 1, Math.floor((x - st.min) / width));
+    counts[k] += 1;
+  }
+
+  const { top, ticks } = zeroTicks(Math.max(...counts));
+  const f = frame(spec, { axis: true, legend: false });
+  let out = chrome(spec, f, theme);
+  const xr = niceScale(st.min, st.max);
+  const px = (v) => f.x + ((v - xr.lo) / ((xr.hi - xr.lo) || 1)) * f.w;
+  const py = (c) => f.y + f.h - (c / (top || 1)) * f.h;
+
+  for (const t of ticks) {
+    out += line(f.x, py(t), f.x + f.w, py(t), theme.line);
+    out += text(f.x - 8, py(t), short(t),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+  }
+  for (const t of xr.ticks) {
+    out += text(px(t), f.y + f.h + 18, short(t),
+      { size: 11, color: theme.muted, anchor: 'middle' });
+  }
+
+  // Bars touch: the gap in a bar chart separates categories, and here there is
+  // nothing between one interval and the next.
+  const tone = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  counts.forEach((c, i) => {
+    const bx = px(st.min + i * width);
+    const bw = Math.max(1, px(st.min + (i + 1) * width) - bx - 0.6);
+    out += rect(bx, py(c), bw, f.y + f.h - py(c), tone);
+  });
+
+  /**
+   * The fitted normal, when asked for.
+   *
+   * Scaled to counts rather than density — n · binWidth · φ(x) — so the curve
+   * and the bars are on the same axis. A density curve drawn against a count
+   * axis is off by a factor of several hundred and looks like a flat line.
+   */
+  if (spec.normal === true && st.sd > 0) {
+    const pdf = (x) => Math.exp(-((x - st.mean) ** 2) / (2 * st.sd ** 2))
+      / (st.sd * Math.sqrt(2 * Math.PI));
+    const pts = [];
+    for (let i = 0; i <= 80; i++) {
+      const x = xr.lo + ((xr.hi - xr.lo) * i) / 80;
+      pts.push(`${i ? 'L' : 'M'}${n2(px(x))},${n2(py(st.n * width * pdf(x)))}`);
+    }
+    out += `<path d="${pts.join('')}" fill="none" stroke="${theme.accent || SERIES[2]}"`
+      + ' stroke-width="1.8" stroke-linejoin="round"/>';
+  }
+
+  // n, mean and SD belong on the figure: a histogram without them cannot be
+  // compared with the one on the next page.
+  const note = `n = ${st.n}　平均 ${sig(st.mean)}　標準差 ${sig(st.sd)}`;
+  out += text(f.x + f.w, f.y - 6, note,
+    { size: 11, color: theme.muted, anchor: 'end' });
+  if (spec.x_axis) {
+    out += text(f.x + f.w, f.y + f.h + 34, String(spec.x_axis),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
+  }
+  out += text(14, f.y + f.h / 2, String(spec.y_axis || '次數'),
+    { size: 11.5, bold: true, color: theme.strong, anchor: 'middle', rotate: -90 });
+  return out;
+}
+
+/**
+ * A heat map — a matrix of numbers, read as colour.
+ *
+ * ── What this covers ──
+ * Correlation matrices, confusion matrices, expression panels, any 「這些對那些」
+ * table where the pattern matters more than the individual figures. None of them
+ * can be drawn with the business set: a grouped bar chart of a 10 × 10 matrix is
+ * a hundred bars.
+ *
+ * The scale is diverging when the data crosses zero — correlation runs −1 to 1
+ * and the sign is the whole point, so zero has to be the colourless middle —
+ * and sequential otherwise. Stated explicitly with `scale` when the data
+ * happens not to cross zero but the measure still has a meaningful centre.
+ */
+function heatmapChart(spec, theme) {
+  const matrix = (Array.isArray(spec.matrix) ? spec.matrix : [])
+    .map((r) => (Array.isArray(r) ? r.map(Number) : []));
+  if (!matrix.length || !matrix[0].length) {
+    throw new Error('heatmap 需要 matrix：二維陣列，每一列一樣長。'
+      + '再用 rows 和 cols 給列名與欄名。');
+  }
+  const cols = matrix[0].length;
+  if (matrix.some((r) => r.length !== cols)) {
+    throw new Error('heatmap 的 matrix 每一列長度要一樣。');
+  }
+  const rowNames = (Array.isArray(spec.rows) ? spec.rows : []).map(String);
+  const colNames = (Array.isArray(spec.cols) ? spec.cols : []).map(String);
+  const flat = matrix.flat().filter(Number.isFinite);
+  if (!flat.length) throw new Error('heatmap 的 matrix 裡沒有任何數字。');
+  const lo = Math.min(...flat);
+  const hi = Math.max(...flat);
+  const diverging = spec.scale === 'diverging' || (spec.scale !== 'sequential' && lo < 0 && hi > 0);
+
+  const W = Number(spec.width) || 760;
+  const H = Number(spec.height) || 380;
+  const labelSize = 10.5;
+  // Gutters measured against the actual names — a fixed gutter either clips
+  // 「不良原因」 or wastes half the figure on 「A」.
+  // +14 for the gap between the label and the grid: measuring the text and then
+  // subtracting the gap from the same number is how 「爐溫」 came out as 「爐…」
+  // in a gutter that was exactly the width of 「爐溫」.
+  const left = Math.min(W * 0.3, Math.max(28, ...rowNames.map((t) => textW(t, labelSize) + 14)));
+  const bottom = Math.min(H * 0.28, Math.max(26, ...colNames.map((t) => textW(t, labelSize) + 10)));
+  const barW = 44;
+  const top = spec.title ? 44 : 16;
+  const gridW = W - left - 16 - barW;
+  const gridH = H - top - bottom - 10;
+  const cw = gridW / cols;
+  const ch = gridH / matrix.length;
+
+  const f = { W, H, x: left, y: top, w: gridW, h: gridH, pad: { top } };
+  let out = chrome(spec, f, theme);
+
+  const warm = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const cool = (spec.colors || [])[1] || theme.accent || SERIES[2];
+  const base = theme.bg || '#FFFFFF';
+  const paint = (v) => {
+    if (!Number.isFinite(v)) return theme.tint || '#EEF3F8';
+    if (diverging) {
+      const edge = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+      return v >= 0 ? mixHex(base, warm, v / edge) : mixHex(base, cool, -v / edge);
+    }
+    return mixHex(base, warm, hi === lo ? 1 : (v - lo) / (hi - lo));
+  };
+
+  // Values printed only when the cells are big enough to hold them; past that
+  // the figure is a table and should have been one.
+  const showValues = spec.show_values === true
+    || (spec.show_values !== false && cw >= 34 && ch >= 20);
+
+  matrix.forEach((row, r) => {
+    row.forEach((v, c) => {
+      const x = f.x + c * cw;
+      const y = f.y + r * ch;
+      out += rect(x, y, cw - 1, ch - 1, paint(v));
+      if (showValues && Number.isFinite(v)) {
+        // White on the dark end, ink on the pale end, so the number is readable
+        // at both extremes of the scale.
+        const strength = diverging
+          ? Math.abs(v) / (Math.max(Math.abs(lo), Math.abs(hi)) || 1)
+          : (hi === lo ? 1 : (v - lo) / (hi - lo));
+        out += text(x + cw / 2, y + ch / 2, sig(v, 2),
+          { size: Math.min(11, ch * 0.5), anchor: 'middle', baseline: 'middle',
+            color: strength > 0.6 ? (theme.bg || '#FFFFFF') : (theme.ink || '#3D3D3D') });
+      }
+    });
+    const name = rowNames[r];
+    if (name) {
+      out += text(f.x - 6, f.y + r * ch + ch / 2, fit(name, left - 8, labelSize),
+        { size: labelSize, color: theme.ink || '#3D3D3D', anchor: 'end', baseline: 'middle' });
+    }
+  });
+
+  colNames.forEach((name, c) => {
+    if (!name) return;
+    const x = f.x + c * cw + cw / 2;
+    // Rotated when they would collide, which on a square matrix is almost
+    // always — horizontal column labels are what turns a heat map into a smear.
+    const flat2 = textW(name, labelSize) <= cw - 4;
+    out += flat2
+      ? text(x, f.y + f.h + 14, name,
+        { size: labelSize, color: theme.ink || '#3D3D3D', anchor: 'middle' })
+      : text(x, f.y + f.h + 8, fit(name, bottom - 8, labelSize),
+        { size: labelSize, color: theme.ink || '#3D3D3D', anchor: 'end', rotate: -45 });
+  });
+
+  /** The colour bar, because nobody can read a number off a shade. */
+  const bx = W - barW + 10;
+  const bh = Math.min(f.h, 160);
+  const by = f.y + (f.h - bh) / 2;
+  for (let i = 0; i < 40; i++) {
+    const t = 1 - i / 39;
+    out += rect(bx, by + (bh / 40) * i, 12, bh / 40 + 0.6,
+      paint(diverging ? (t * 2 - 1) * Math.max(Math.abs(lo), Math.abs(hi)) : lo + (hi - lo) * t));
+  }
+  out += text(bx + 16, by + 4, sig(diverging ? Math.max(Math.abs(lo), Math.abs(hi)) : hi, 2),
+    { size: 10, color: theme.muted, baseline: 'middle' });
+  out += text(bx + 16, by + bh - 4, sig(diverging ? -Math.max(Math.abs(lo), Math.abs(hi)) : lo, 2),
+    { size: 10, color: theme.muted, baseline: 'middle' });
+  return out;
+}
+
+/**
+ * A violin plot — the shape of a distribution, not just its quartiles.
+ *
+ * ── Why a box plot is not enough ──
+ * Two groups can have the same five-number summary and completely different
+ * shapes: one unimodal, one split into two clumps. The box hides that, and in a
+ * paper hiding it is the difference between 「the treatment works」 and 「the
+ * treatment works for half the subjects」. Modern papers print both, so the box
+ * is drawn inside the violin unless asked not to.
+ *
+ * The density is a Gaussian kernel estimate with Silverman's bandwidth — the
+ * default in every statistics package, so the figure matches what the reader
+ * would have got from theirs.
+ */
+function violinChart(spec, theme) {
+  const groups = (Array.isArray(spec.groups) ? spec.groups : [])
+    .map((g) => ({ label: String((g && g.label) || ''), st: describe(g && g.values) }))
+    .filter((g) => g.st.n >= 2);
+  if (!groups.length) {
+    throw new Error('violin 需要 groups：[{ label: "對照組", values: [原始數值…] }]。'
+      + '每組至少兩個數值。');
+  }
+
+  const all = groups.flatMap((g) => g.st.v);
+  const pad = (Math.max(...all) - Math.min(...all)) * 0.12 || 1;
+  const yr = niceScale(Math.min(...all) - pad, Math.max(...all) + pad);
+  const f = frame(spec, { axis: true, legend: false });
+  let out = chrome(spec, f, theme);
+  const py = (v) => f.y + f.h - ((v - yr.lo) / ((yr.hi - yr.lo) || 1)) * f.h;
+
+  for (const t of yr.ticks) {
+    out += line(f.x, py(t), f.x + f.w, py(t), theme.line);
+    out += text(f.x - 8, py(t), short(t),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+  }
+
+  const band = f.w / groups.length;
+  const half = Math.min(42, band * 0.36);
+  groups.forEach((g, i) => {
+    const cx = f.x + band * i + band / 2;
+    const tone = (spec.colors || [])[i] || theme.strong || SERIES[0];
+    const { st } = g;
+
+    // Silverman: 0.9 · min(sd, IQR/1.34) · n^(−1/5).
+    const spread = Math.min(st.sd || 1, ((st.q3 - st.q1) / 1.349) || st.sd || 1);
+    const h = 0.9 * (spread || 1) * st.n ** -0.2 || 1;
+    const dens = (x) => st.v.reduce((a, v) => a
+      + Math.exp(-((x - v) ** 2) / (2 * h * h)), 0) / (st.n * h * Math.sqrt(2 * Math.PI));
+
+    const steps = 48;
+    const ys = [];
+    for (let k = 0; k <= steps; k++) {
+      const v = st.min + ((st.max - st.min) * k) / steps;
+      ys.push({ v, d: dens(v) });
+    }
+    const peak = Math.max(...ys.map((q) => q.d)) || 1;
+    const right = ys.map((q) => `${n2(cx + (q.d / peak) * half)},${n2(py(q.v))}`);
+    const left = ys.slice().reverse().map((q) => `${n2(cx - (q.d / peak) * half)},${n2(py(q.v))}`);
+    out += `<path d="M${right.join('L')}L${left.join('L')}Z"`
+      + ` fill="${mixHex(theme.bg || '#FFFFFF', tone, 0.3)}" stroke="${tone}"`
+      + ' stroke-width="1.2" stroke-linejoin="round"/>';
+
+    if (spec.box !== false) {
+      const bw = Math.max(6, half * 0.26);
+      out += line(cx, py(st.min), cx, py(st.max), tone, 1);
+      out += rect(cx - bw / 2, py(st.q3), bw, Math.max(1.5, py(st.q1) - py(st.q3)),
+        theme.bg || '#FFFFFF');
+      out += rect(cx - bw / 2, py(st.q3), bw, Math.max(1.5, py(st.q1) - py(st.q3)),
+        mixHex(theme.bg || '#FFFFFF', tone, 0.55));
+      out += `<circle cx="${n2(cx)}" cy="${n2(py(st.median))}" r="2.6"`
+        + ` fill="${theme.bg || '#FFFFFF'}" stroke="${tone}" stroke-width="1.4"/>`;
+    }
+
+    out += text(cx, f.y + f.h + 20, fit(g.label, band - 6, 12),
+      { size: 12, color: theme.ink || '#3D3D3D', anchor: 'middle' });
+    out += text(cx, f.y + f.h + 34, `n = ${st.n}`,
+      { size: 10, color: theme.muted, anchor: 'middle' });
+  });
+
+  if (spec.y_axis) {
+    out += text(14, f.y + f.h / 2, String(spec.y_axis),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'middle', rotate: -90 });
+  }
+  return out;
+}
+
+/**
+ * A forest plot — several estimates and their confidence intervals, together.
+ *
+ * ── Why nothing else will do ──
+ * This is the figure of a meta-analysis, and of any table of effects: one row
+ * per study or subgroup, each showing an estimate and how sure it is, all read
+ * against a line where 「no effect」 sits. A bar chart of the same numbers throws
+ * away the intervals, which are the entire reason the figure exists — two
+ * studies with the same odds ratio and intervals of 0.9–1.1 and 0.2–5.0 are not
+ * the same finding.
+ *
+ * Ratios go on a log axis, because 2× and ½× are the same size of effect in
+ * opposite directions and a linear axis draws one of them four times longer.
+ */
+function forestChart(spec, theme) {
+  const rows = (Array.isArray(spec.rows) ? spec.rows : [])
+    .map((r) => ({
+      label: String((r && r.label) || ''),
+      value: Number(r && r.value),
+      lo: Number(r && r.lo),
+      hi: Number(r && r.hi),
+      weight: Number(r && r.weight) || 0,
+    }))
+    .filter((r) => Number.isFinite(r.value));
+  if (!rows.length) {
+    throw new Error('forest 需要 rows：[{ label: "研究 A", value: 1.24, lo: 0.98, hi: 1.57 }]。'
+      + 'value 是效果量，lo／hi 是信賴區間。比值型的效果量（OR、RR、HR）記得開 log_x。');
+  }
+  const summary = spec.summary && Number.isFinite(Number(spec.summary.value))
+    ? {
+      label: String(spec.summary.label || '合計'),
+      value: Number(spec.summary.value),
+      lo: Number(spec.summary.lo),
+      hi: Number(spec.summary.hi),
+    }
+    : null;
+
+  const logX = spec.log_x === true;
+  const all = [...rows, ...(summary ? [summary] : [])]
+    .flatMap((r) => [r.value, r.lo, r.hi]).filter(Number.isFinite);
+  // The null line is part of the picture even when no interval reaches it —
+  // 「this study is nowhere near 1」 is the finding.
+  const base = Number.isFinite(Number(spec.baseline)) ? Number(spec.baseline) : (logX ? 1 : 0);
+  if (logX && all.some((v) => v <= 0)) throw new Error('log_x 需要所有數值都大於 0。');
+  all.push(base);
+
+  const W = Number(spec.width) || 760;
+  const size = 11;
+  const fmt = (r) => (Number.isFinite(r.lo) && Number.isFinite(r.hi)
+    ? `${sig(r.value)} (${sig(r.lo)}–${sig(r.hi)})`
+    : sig(r.value));
+  // 16 points of margin on the left, 10 before the plot: measuring only the
+  // text and then subtracting the gaps from the same number is what turned
+  // 「合計（隨機效果）」 into 「合計（隨機效…」 in a gutter sized for it.
+  const labelW = Math.min(W * 0.34,
+    Math.max(70, ...[...rows, ...(summary ? [summary] : [])].map((r) => textW(r.label, size) + 28)));
+  const valueW = spec.show_values === false
+    ? 8
+    : Math.min(W * 0.28,
+      Math.max(60, ...[...rows, ...(summary ? [summary] : [])].map((r) => textW(fmt(r), size) + 12)));
+
+  const rowH = 24;
+  const top = spec.title ? 46 : 20;
+  const bodyRows = rows.length + (summary ? 1 : 0);
+  const H = Number(spec.height) || (top + bodyRows * rowH + 46);
+  const f = { W, H, x: labelW, y: top, w: W - labelW - valueW - 10, h: bodyRows * rowH };
+  let out = chrome(spec, { ...f, x: 16 }, theme);
+
+  const tx = (v) => (logX ? Math.log10(v) : v);
+  const lo0 = Math.min(...all.map(tx));
+  const hi0 = Math.max(...all.map(tx));
+  const pad = ((hi0 - lo0) || 1) * 0.08;
+  const px = (v) => f.x + ((tx(v) - (lo0 - pad)) / ((hi0 - lo0 + pad * 2) || 1)) * f.w;
+
+  const tone = (spec.colors || [])[0] || theme.strong || SERIES[0];
+  const axisY = f.y + f.h + 6;
+
+  // The null line, dashed and behind everything.
+  out += `<line x1="${n2(px(base))}" y1="${n2(f.y - 4)}" x2="${n2(px(base))}"`
+    + ` y2="${n2(axisY)}" stroke="${theme.muted || '#8A93A0'}" stroke-width="1"`
+    + ' stroke-dasharray="4 3"/>';
+
+  const draw = (r, i, isSummary) => {
+    const cy = f.y + i * rowH + rowH / 2;
+    out += text(labelW - 10, cy, fit(r.label, labelW - 26, size),
+      { size, bold: isSummary, color: theme.ink || '#3D3D3D', anchor: 'end', baseline: 'middle' });
+    if (Number.isFinite(r.lo) && Number.isFinite(r.hi)) {
+      out += line(px(r.lo), cy, px(r.hi), cy, tone, 1.4);
+      for (const end of [r.lo, r.hi]) out += line(px(end), cy - 4, px(end), cy + 4, tone, 1.4);
+    }
+    if (isSummary) {
+      // A diamond for the pooled estimate: the convention, and it stops the
+      // summary reading as just another study.
+      const x = px(r.value);
+      const l = Number.isFinite(r.lo) ? px(r.lo) : x - 8;
+      const h = Number.isFinite(r.hi) ? px(r.hi) : x + 8;
+      out += `<path d="M${n2(l)},${n2(cy)}L${n2(x)},${n2(cy - 7)}L${n2(h)},${n2(cy)}`
+        + `L${n2(x)},${n2(cy + 7)}Z" fill="${tone}"/>`;
+    } else {
+      // Box area by weight, which is how a reader sees which study carries the
+      // result. Area, not side: doubling the side quadruples the ink.
+      const maxW = Math.max(...rows.map((q) => q.weight), 0);
+      const k = maxW > 0 ? Math.sqrt((r.weight || maxW) / maxW) : 1;
+      const side = 5 + 6 * k;
+      out += rect(px(r.value) - side / 2, cy - side / 2, side, side, tone);
+    }
+    if (spec.show_values !== false) {
+      out += text(W - 16, cy, fmt(r),
+        { size, bold: isSummary, color: theme.ink || '#3D3D3D', anchor: 'end', baseline: 'middle' });
+    }
+  };
+
+  rows.forEach((r, i) => draw(r, i, false));
+  if (summary) {
+    out += line(f.x, f.y + rows.length * rowH + 2, f.x + f.w,
+      f.y + rows.length * rowH + 2, theme.line || '#D5DBE0');
+    draw(summary, rows.length, true);
+  }
+
+  out += line(f.x, axisY, f.x + f.w, axisY, theme.line || '#D5DBE0');
+  const ticks = logX
+    ? logTicks(10 ** (lo0 - pad), 10 ** (hi0 + pad))
+    : niceScale(lo0 - pad, hi0 + pad).ticks.filter((t) => t >= lo0 - pad && t <= hi0 + pad);
+  for (const t of ticks) {
+    out += text(px(t), axisY + 16, short(t),
+      { size: 10.5, color: theme.muted, anchor: 'middle' });
+  }
+  if (spec.x_axis) {
+    out += text(f.x + f.w / 2, axisY + 32, String(spec.x_axis) + (logX ? '（對數刻度）' : ''),
+      { size: 11, bold: true, color: theme.strong, anchor: 'middle' });
+  }
+  return out;
+}
+
+forestChart.preferredHeight = (spec) => {
+  const rows = (Array.isArray(spec.rows) ? spec.rows : []).length
+    + (spec.summary ? 1 : 0);
+  return Math.round((spec.title ? 46 : 20) + Math.max(1, rows) * 24 + (spec.x_axis ? 60 : 46));
+};
+
+/**
+ * A survival curve — the proportion still in one state as time passes.
+ *
+ * ── Why it is a step and not a line ──
+ * Nothing happens between events. The curve is flat until somebody fails, then
+ * drops; joining the points with a straight line claims a steady decline that
+ * was never observed, and at the resolution of a real study that is the
+ * difference between 「half failed in the first month」 and 「failures were
+ * spread over a year」.
+ *
+ * Censored observations get a tick. A survival figure without them cannot be
+ * read — a curve that stays at 90% says nothing until you know whether that is
+ * 200 subjects still under observation or two.
+ */
+function survivalChart(spec, theme) {
+  const curves = (Array.isArray(spec.curves) ? spec.curves : []).map((c, i) => ({
+    name: String((c && c.name) || ''),
+    color: (spec.colors || [])[i] || SERIES[i % SERIES.length],
+    dashed: !!(c && c.dashed),
+    censored: (Array.isArray(c && c.censored) ? c.censored : []).map(Number)
+      .filter(Number.isFinite),
+    points: (Array.isArray(c && c.points) ? c.points : [])
+      .map((pt) => (Array.isArray(pt)
+        ? { t: Number(pt[0]), s: Number(pt[1]) }
+        : { t: Number(pt && pt.t), s: Number(pt && pt.s) }))
+      .filter((pt) => Number.isFinite(pt.t) && Number.isFinite(pt.s))
+      .sort((a, b) => a.t - b.t),
+  })).filter((c) => c.points.length >= 2);
+  if (!curves.length) {
+    throw new Error('survival 需要 curves：[{ name: "處理組", points: [[0,1],[30,0.92],…],'
+      + ' censored: [45, 60] }]。points 是 [時間, 存活比例]，比例可以用 0–1 或 0–100。');
+  }
+
+  const all = curves.flatMap((c) => c.points);
+  const pct = all.some((pt) => pt.s > 1.5);
+  const top = pct ? 100 : 1;
+  const tMax = Math.max(...all.map((pt) => pt.t));
+  const xr = niceScale(0, tMax, 6);
+
+  const f = frame(spec, { axis: true, legend: wantsLegend(curves) });
+  let out = chrome(spec, f, theme);
+  const px = (t) => f.x + (t / (xr.hi || 1)) * f.w;
+  const py = (sv) => f.y + f.h - (sv / top) * f.h;
+
+  for (let i = 0; i <= 4; i++) {
+    const v = (top / 4) * i;
+    out += line(f.x, py(v), f.x + f.w, py(v), theme.line);
+    out += text(f.x - 8, py(v), pct ? `${short(v)}%` : short(v),
+      { size: 11, color: theme.muted, anchor: 'end', baseline: 'middle' });
+  }
+  for (const t of xr.ticks) {
+    out += text(px(t), f.y + f.h + 18, short(t),
+      { size: 11, color: theme.muted, anchor: 'middle' });
+  }
+
+  for (const c of curves) {
+    const d = [];
+    c.points.forEach((pt, i) => {
+      if (!i) { d.push(`M${n2(px(pt.t))},${n2(py(pt.s))}`); return; }
+      // Across at the old level, then straight down: the shape of 「nothing
+      // happened, then something did」.
+      d.push(`H${n2(px(pt.t))}`);
+      d.push(`V${n2(py(pt.s))}`);
+    });
+    out += `<path d="${d.join('')}" fill="none" stroke="${c.color}" stroke-width="2"`
+      + ' stroke-linejoin="round"' + (c.dashed ? ' stroke-dasharray="6 4"' : '') + '/>';
+
+    for (const t of c.censored) {
+      // The level the curve is at when the subject left the study.
+      const at = c.points.filter((pt) => pt.t <= t).pop() || c.points[0];
+      out += line(px(t), py(at.s) - 4, px(t), py(at.s) + 4, c.color, 1.6);
+    }
+  }
+
+  if (spec.x_axis) {
+    out += text(f.x + f.w, f.y + f.h + 34, String(spec.x_axis),
+      { size: 11.5, bold: true, color: theme.strong, anchor: 'end' });
+  }
+  out += text(14, f.y + f.h / 2, String(spec.y_axis || (pct ? '存活率（%）' : '存活比例')),
+    { size: 11.5, bold: true, color: theme.strong, anchor: 'middle', rotate: -90 });
+  out += legend(curves, f, theme);
+  return out;
+}
+
+/**
+ * A Venn diagram — what two or three sets share.
+ *
+ * Circles of equal size at fixed positions, with the counts written in the
+ * regions. Area-proportional Venn diagrams exist and are a trap: for three sets
+ * the areas usually cannot be satisfied at all, so the drawing quietly lies
+ * about the numbers it is printing beside itself. Equal circles claim nothing.
+ */
+function vennChart(spec, theme) {
+  const names = (Array.isArray(spec.sets) ? spec.sets : [])
+    .map((x) => String((x && x.label) || x || '')).filter(Boolean).slice(0, 3);
+  if (names.length < 2) {
+    throw new Error('venn 需要 sets：兩到三個集合名稱，例如 ["上升","下降"]。'
+      + '各區的數量放在 overlaps：{ A: 120, B: 80, AB: 25 }——'
+      + 'A 是第一個集合，B 是第二個，AB 是兩者都有。');
+  }
+  const o = (spec.overlaps && typeof spec.overlaps === 'object') ? spec.overlaps : {};
+  const num = (k) => {
+    const v = Number(o[k] ?? o[k.toLowerCase()]);
+    return Number.isFinite(v) ? v : null;
+  };
+
+  const f = frame(spec, { axis: false, legend: false });
+  let out = chrome(spec, f, theme);
+  const cx = f.x + f.w / 2;
+  const cy = f.y + f.h / 2;
+  const three = names.length === 3;
+  // Divided by a little more when there are three, because the bottom circle's
+  // name needs a line under it and the top two need one above.
+  const r = Math.min(f.w / (three ? 3.4 : 3.1), f.h / (three ? 3.3 : 2.6));
+  const d = r * 1.05;
+
+  const spots = three
+    ? [{ x: cx - d * 0.62, y: cy - d * 0.42 }, { x: cx + d * 0.62, y: cy - d * 0.42 },
+      { x: cx, y: cy + d * 0.66 }]
+    : [{ x: cx - d * 0.52, y: cy }, { x: cx + d * 0.52, y: cy }];
+
+  /**
+   * The ramp, not the accent.
+   *
+   * `SERIES[2]` is the alarm red this module uses for 「這一個有問題」, and three
+   * sets meant the third circle arrived in it — in a report, that reads as a
+   * warning about the third method rather than as the third method.
+   */
+  const ramp = ((spec.colors || []).length ? spec.colors : [
+    theme.strong || SERIES[0],
+    theme.second || SERIES[1],
+    mixHex(theme.strong || SERIES[0], theme.bg || '#FFFFFF', 0.45),
+  ]).filter(Boolean);
+  spots.forEach((s, i) => {
+    const tone = ramp[i % ramp.length];
+    out += `<circle cx="${n2(s.x)}" cy="${n2(s.y)}" r="${n2(r)}"`
+      + ` fill="${tone}" fill-opacity="0.26" stroke="${tone}" stroke-width="1.6"/>`;
+  });
+
+  const put = (x, y, v) => {
+    if (v === null) return;
+    out += text(x, y, short(v),
+      { size: 13, bold: true, color: theme.ink || '#3D3D3D', anchor: 'middle', baseline: 'middle' });
+  };
+
+  if (three) {
+    put(cx - d * 0.95, cy - d * 0.72, num('A'));
+    put(cx + d * 0.95, cy - d * 0.72, num('B'));
+    put(cx, cy + d * 1.08, num('C'));
+    put(cx, cy - d * 0.56, num('AB'));
+    put(cx - d * 0.52, cy + d * 0.34, num('AC'));
+    put(cx + d * 0.52, cy + d * 0.34, num('BC'));
+    put(cx, cy + d * 0.12, num('ABC'));
+  } else {
+    put(cx - d * 0.86, cy, num('A'));
+    put(cx + d * 0.86, cy, num('B'));
+    put(cx, cy, num('AB'));
+  }
+
+  /**
+   * Names outside the circles, and inside the picture.
+   *
+   * They used to be placed at a multiple of the radius, which put the third
+   * set's name below the bottom of the canvas — 「電測」 simply was not in the
+   * figure. Derived from each circle's own edge now, then clamped to the frame.
+   */
+  names.forEach((nm, i) => {
+    const sp = spots[i];
+    const below = three && i === 2;
+    const half = textW(nm, 12.5) / 2;
+    const x = Math.min(Math.max(sp.x + (three && i < 2 ? (i ? r * 0.72 : -r * 0.72) : 0),
+      f.x + half), f.x + f.w - half);
+    const y = below
+      ? Math.min(sp.y + r + 16, f.y + f.h - 2)
+      : Math.max(sp.y - r - 8, f.y + 10);
+    out += text(x, y, nm, { size: 12.5, bold: true, color: theme.strong, anchor: 'middle' });
+  });
+  return out;
+}
+
 const RENDER = {
   column: barChart, bar: barChart, line: lineChart, area: lineChart,
   pie: pieChart, donut: pieChart,
@@ -2028,6 +2881,8 @@ const RENDER = {
   scatter: scatterChart, stacked: stackedChart, stacked100: stackedChart,
   gantt: ganttChart, plot: plotChart,
   box: boxChart,
+  histogram: histogramChart, heatmap: heatmapChart, violin: violinChart,
+  forest: forestChart, survival: survivalChart, venn: vennChart,
 };
 export const CHART_TYPES = Object.keys(RENDER);
 
@@ -2063,6 +2918,9 @@ export const CHART_DATA_KEYS = [
   'events', 'total', 'points', 'boxes', 'map', 'area',
   'curves', 'x_axis', 'y_axis', 'log_x', 'log_y',
   'center', 'center_label', 'tasks', 'today',
+  // 學術那組
+  'bins', 'normal', 'matrix', 'rows', 'cols', 'scale', 'show_values', 'groups', 'box',
+  'baseline', 'summary', 'sets', 'overlaps', 'error', 'error_label', 'fit', 'fit_band',
 ];
 
 /** Pick the data fields out of a tool's arguments, leaving its own options behind. */

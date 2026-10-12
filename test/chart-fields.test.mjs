@@ -58,12 +58,27 @@ if (!fs.existsSync(serverDir)) {
  * 只有兩個欄位例外，而且是因為那支工具真的不畫那種圖：甘特圖在 Word 是獨立的
  * `word_insert_gantt`，所以 `word_insert_chart` 不需要 `tasks`／`today`。
  */
+/**
+ * 一支工具只需要宣告它自己列舉裡那些圖用得到的欄位。
+ *
+ * `skip` 不是豁免，是「這支工具沒有那種圖」。所以下面會再驗一次：跳過的欄位，
+ * 對應的圖型別真的不在它的列舉裡——不然這份清單就會變成把真的漏掉的欄位藏起來
+ * 的地方。
+ */
+const ACADEMIC = ['bins', 'normal', 'matrix', 'rows', 'cols', 'scale', 'show_values',
+  'groups', 'box', 'baseline', 'summary', 'sets', 'overlaps',
+  // 誤差棒和迴歸線不是新圖種，是加在既有圖上的——但同樣只開在 Word。
+  'error', 'error_label', 'fit', 'fit_band'];
 const CASES = [
-  { file: 'wordToolSpec.ts', tool: 'word_insert_chart', skip: ['tasks', 'today'] },
-  { file: 'pptToolSpec.ts', tool: 'ppt_add_chart', skip: [] },
+  // 甘特圖在 Word 是獨立的 word_insert_gantt，所以 word_insert_chart 不收 tasks。
+  { file: 'wordToolSpec.ts', tool: 'word_insert_chart', skip: ['tasks', 'today'],
+    absent: ['gantt'] },
+  // 學術那組只開在 Word：「PPT 維持之前那些圖應該就算夠用了」。
+  { file: 'pptToolSpec.ts', tool: 'ppt_add_chart', skip: ACADEMIC,
+    absent: ['histogram', 'heatmap', 'violin', 'forest', 'survival', 'venn'] },
 ];
 
-for (const { file, tool, skip } of CASES) {
+for (const { file, tool, skip, absent } of CASES) {
   const src = fs.readFileSync(new URL(`services/${file}`, serverDir), 'utf8');
   const start = src.indexOf(`name: '${tool}'`);
   ok(`${file} 找得到 ${tool}`, start > 0, start);
@@ -79,6 +94,12 @@ for (const { file, tool, skip } of CASES) {
   // additionalProperties: false 是對的——它擋掉打錯的參數名。但正因為它在，
   // 上面那條漏一個欄位就等於那種圖不能用。
   ok(`${tool} 仍然擋未知參數`, /additionalProperties: false/.test(body));
+
+  // 跳過的欄位必須真的對應到這支工具沒有的圖型別。
+  const enumLine = /enum: \[([\s\S]*?)\]/.exec(body);
+  const types = enumLine ? [...enumLine[1].matchAll(/'([a-z0-9]+)'/g)].map((m) => m[1]) : [];
+  const shouldNotHave = absent.filter((t) => types.includes(t));
+  ok(`${tool} 沒有列舉它不支援的圖`, !shouldNotHave.length, shouldNotHave.join(', '));
 
   /**
    * categories 不能是硬性要求。

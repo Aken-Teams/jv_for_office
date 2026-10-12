@@ -1841,6 +1841,9 @@ const CHART_LABEL = {
   waterfall: '瀑布', funnel: '漏斗', radar: '雷達', timeline: '時間軸', map: '地圖',
   scatter: '散佈', stacked: '堆疊長條', stacked100: '百分比堆疊', box: '箱型',
   plot: '函數曲線',
+  // 學術文件那組
+  histogram: '直方', heatmap: '熱力', violin: '小提琴',
+  forest: '森林', survival: '存活曲線', venn: '范氏',
 };
 
 const DOC_CHART_INK = {
@@ -1874,7 +1877,9 @@ async function insertChart(args) {
   // Charts that take their data some other way say so themselves; the rest need
   // categories and numbers, and saying it here gives a better message than the
   // renderer's.
-  const SELF_SHAPED = ['timeline', 'map', 'scatter', 'box', 'plot'];
+  // 自己帶資料形狀的圖：不吃 categories/values，所以不能用那一條檢查去擋。
+  const SELF_SHAPED = ['timeline', 'map', 'scatter', 'box', 'plot',
+    'histogram', 'heatmap', 'violin', 'forest', 'survival', 'venn'];
   if (!SELF_SHAPED.includes(type) && (!cats.length || !values)) {
     throw new Error('需要 categories（分類名稱）和 values（數字）。例如 '
       + 'categories=["Q1","Q2"], values=[120,140]；多個數列就給二維陣列，'

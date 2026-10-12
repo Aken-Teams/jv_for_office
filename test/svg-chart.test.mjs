@@ -72,7 +72,11 @@ const SHAPES = [
  * covering the shapes that ARE awkward for it.
  */
 const SHAPE_FUZZ = CHART_TYPES.filter(
-  (t) => !['timeline', 'radar', 'map', 'scatter', 'box', 'gantt', 'plot'].includes(t));
+  (t) => !['timeline', 'radar', 'map', 'scatter', 'box', 'gantt', 'plot',
+    // 學術那組也各有各的資料形狀：histogram 要原始數值、heatmap 要矩陣、
+    // violin 要分組、forest 要每列的效果量與信賴區間、survival 要階梯點、
+    // venn 要集合計數。它們同樣在下面有自己的夾具。
+    'histogram', 'heatmap', 'violin', 'forest', 'survival', 'venn'].includes(t));
 
 for (const type of SHAPE_FUZZ) {
   let bad = 0;
