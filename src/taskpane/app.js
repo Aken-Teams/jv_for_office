@@ -35,6 +35,23 @@ const LS_TOKEN = 'jv_token';
  */
 const LS_API_OVERRIDE = 'jv_api_override';
 /**
+ * 設定覆寫的當下，config.json 說的位址是什麼。
+ *
+ * ── 這個鍵為什麼存在 ──
+ * 覆寫是一條逃生路：伺服器位址填錯的時候，使用者可以當場改掉，不用等重新部署。
+ * 但它原本是**無條件**贏過 config.json 的，於是變成一個永遠不會過期、而且畫面上
+ * 完全看不見的設定。
+ *
+ * 實際發生的事：在本機測試時填過一次 `http://localhost:12054`，後來整套搬到正式
+ * 主機、config.json 也改對了，窗格照樣去打 localhost——因為那台使用者的瀏覽器
+ * 裡還留著那一行。症狀是「Failed to fetch · http://localhost:12054」，而使用者
+ * 根本不知道自己什麼時候設過這個。
+ *
+ * 記下「當時被蓋掉的是哪一個位址」之後就有判斷依據了：config.json 換了位址，
+ * 代表部署已經搬家，那次覆寫是針對舊環境做的，應該失效。
+ */
+const LS_API_OVERRIDE_FOR = 'jv_api_override_for';
+/**
  * Whether writes execute without a click. Persisted, unlike `sources`: this one
  * is a standing preference about how someone wants to work, and re-arming it
  * every time Excel restarts would just train them to switch it on without
@@ -85,7 +102,8 @@ const LS_DOMAIN = 'jv_ad_domain';
  * jv_excel_token holding a Word session, which would mislead whoever debugged
  * it next.
  */
-for (const key of [LS_TOKEN, LS_API_OVERRIDE, LS_AUTO_APPROVE, LS_MODEL, LS_LOCALE, LS_DOMAIN]) {
+for (const key of [LS_TOKEN, LS_API_OVERRIDE, LS_API_OVERRIDE_FOR, LS_AUTO_APPROVE,
+  LS_MODEL, LS_LOCALE, LS_DOMAIN]) {
   const legacy = key.replace(/^jv_/, 'jv_excel_');
   const value = localStorage.getItem(legacy);
   if (value === null) continue;
@@ -103,6 +121,21 @@ const LOCALES = [
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
+  /**
+   * 資料來源／模型清單是不是真的拿到了。
+   *
+   * 這份清單只在 showChat() 的時候抓一次。抓失敗的時候 state.models 是空的，而
+   * renderModelMenu() 看到空清單就把整個選單藏起來——於是「連線壞掉」這件事留下
+   * 的痕跡是**模型選單消失**，而且連線恢復之後它也不會自己回來，要關掉側邊欄重開。
+   *
+   * 分開記一個旗標而不是看 state.models.length，是因為兩種空清單意思不一樣：伺服器
+   * 真的只給一個模型（不用選，藏起來是對的），跟根本沒問到（該重試）。
+   */
+  sourcesLoaded: false,
+  /** config.json 說的位址，跟使用者覆寫的分開存——判斷覆寫過期了沒有要靠它。 */
+  deployedApiBase: '',
+  /** 目前用的是使用者手動填的位址，不是部署設定的。 */
+  apiOverridden: false,
   /** 哪一套環境，從 config.json 來。prod 以外都會在窗格頂端掛一條橫幅。 */
   channel: 'prod',
   channelLabel: '',
@@ -1969,6 +2002,10 @@ async function send(message, opts = {}) {
     void refreshDocumentName();
     // One may have landed while this turn was running.
     void loadHandoffs();
+    // 開啟側邊欄的當下連不上伺服器的話，模型和資料來源清單就是空的，而使用者看到的
+    // 是「選單不見了」——跟連線無關的一個症狀。這一輪對話既然跑完了，位址顯然已經
+    // 通了，趁這時候把清單補上，不用叫人關掉側邊欄重開。
+    if (!state.sourcesLoaded) void loadDataSources();
     progressDone(false);
     // The reply to a write-up request is the thing being made. Offering it here
     // is the difference between this feature working and not: left to find it
@@ -2051,21 +2088,66 @@ function setLoginMode(mode) {
  * the thing that's wrong.
  */
 async function loadConfig() {
+  /**
+   * config.json 先讀，覆寫後判斷——順序跟原本相反。
+   *
+   * 原本是「有覆寫就直接用，根本不讀 config.json」。那讓一次本機測試留下的
+   * `http://localhost:12054` 永遠活著，部署搬到哪裡都一樣。現在改成先知道這個
+   * 部署想連哪裡，再決定那份覆寫還算不算數。
+   */
   const override = localStorage.getItem(LS_API_OVERRIDE);
-  // 不管走哪一條路出去，橫幅都要掛上——包括使用者自己覆寫了伺服器位址的那條。
-  // `markChannel` 自己會擋重複，所以多呼叫一次是安全的。
-  if (override) { state.apiBase = override; markChannel(); return; }
+  const overrodeWhat = localStorage.getItem(LS_API_OVERRIDE_FOR);
+  let deployed = '';
   try {
     const res = await fetch('../../config.json', { cache: 'no-store' });
     if (res.ok) {
       const cfg = await res.json();
-      if (cfg.apiBase) state.apiBase = String(cfg.apiBase).replace(/\/+$/, '');
+      if (cfg.apiBase) deployed = String(cfg.apiBase).replace(/\/+$/, '');
+      if (cfg.apiBase) state.apiBase = deployed;
+      state.deployedApiBase = deployed;
       // 同一份程式碼部署兩次，差別只在這裡——所以橫幅也從同一個檔案來。
       if (cfg.channel) state.channel = String(cfg.channel).toLowerCase();
       if (cfg.channelLabel) state.channelLabel = String(cfg.channelLabel);
     }
   } catch { /* fall back to the default */ }
+
+  if (override) {
+    /**
+     * 覆寫只在「它當初蓋掉的那個位址還是現在這個」的時候有效。
+     *
+     * 換句話說：部署沒搬家，那次手動修正仍然成立；部署搬家了，那是針對舊環境做
+     * 的設定，讓它安靜地失效比讓它安靜地生效好——後者的症狀是連不上一個使用者
+     * 從沒聽過的位址，而且沒有任何線索指向原因。
+     *
+     * 舊版留下的覆寫沒有記錄當初蓋掉什麼（`overrodeWhat` 是 null），一律丟掉：
+     * 那正是出問題的那一批。
+     */
+    const stillValid = overrodeWhat && deployed && overrodeWhat === deployed;
+    if (stillValid) {
+      state.apiBase = override;
+      state.apiOverridden = true;
+    } else {
+      localStorage.removeItem(LS_API_OVERRIDE);
+      localStorage.removeItem(LS_API_OVERRIDE_FOR);
+      if (deployed) state.apiBase = deployed;
+    }
+  }
   markChannel();
+  /**
+   * 覆寫生效的時候要看得見。
+   *
+   * 這整個 bug 的本質不是「覆寫錯了」，是**它是隱形的**——使用者不知道自己設過，
+   * 畫面上也沒有任何地方顯示「你現在連的不是部署設定的位址」。所以除了讓它會過期
+   * 之外，生效的時候也要講出來。
+   */
+  if (state.apiOverridden) {
+    try {
+      const f = $('api-base-field');
+      if (f) f.hidden = false;
+      const i = $('api-base');
+      if (i) i.value = state.apiBase;
+    } catch { /* 登入畫面還沒建起來就算了 */ }
+  }
 }
 
 /** Reveal the server field so a wrong address can be fixed without a redeploy. */
@@ -3593,13 +3675,17 @@ async function loadDataSources() {
         logout(err.error || t('登入已過期，請重新登入。'));
         return;
       }
+      state.sourcesLoaded = false;
       state.sourceHint = t('無法向伺服器確認資料來源（HTTP {0}）。', res.status);
     } else {
       const body = await res.json();
       if (!body.dataSources) {
         // An older server build that predates this endpoint's response shape.
+        // Not a transient failure—retrying would just ask the same question again.
+        state.sourcesLoaded = true;
         state.sourceHint = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
       } else {
+        state.sourcesLoaded = true;
         state.available = body.dataSources;
         // Older servers do not send this; the picker then hides itself rather
         // than offering a list the server would ignore.
@@ -3608,6 +3694,7 @@ async function loadDataSources() {
       }
     }
   } catch (e) {
+    state.sourcesLoaded = false;
     state.sourceHint = networkTrouble();
   }
   renderSourceMenu();
@@ -3756,7 +3843,11 @@ Office.onReady(async (info) => {
         ? await loginAd($('ad-username').value.trim(), $('ad-password').value, $('ad-domain').value, apiBase)
         : { token: await login($('email').value.trim(), $('password').value, apiBase) };
       state.apiBase = apiBase;
-      if (typed) localStorage.setItem(LS_API_OVERRIDE, typed);
+      if (typed) {
+        localStorage.setItem(LS_API_OVERRIDE, typed);
+        // 記下這次蓋掉的是哪一個部署位址，之後才判斷得出來它過期了沒有。
+        localStorage.setItem(LS_API_OVERRIDE_FOR, state.deployedApiBase || '');
+      }
       if (state.loginMode === 'ad') localStorage.setItem(LS_DOMAIN, $('ad-domain').value);
       if (r.setup) { showSetup(r.setup, r.adUser); return; }
       state.token = r.token;
