@@ -98,10 +98,32 @@ body {
   background: var(--bg);
   height: 100vh;
   overflow: hidden;
+  /* body 自己當直向容器，窗格吃剩下的高度——不要讓窗格自己宣告 100vh。
+     原因見下面 .pane 的說明。 */
+  display: flex;
+  flex-direction: column;
   -webkit-font-smoothing: antialiased;
 }
 
-.pane { display: none; height: 100vh; flex-direction: column; position: relative; }
+/* 高度是「剩下的」，不是 100vh。
+
+   ── 這條規則改掉的那個 bug ──
+   原本寫 `height: 100vh`，也就是整個視窗的高度。只要 body 裡還有別的東西跟它並排，
+   總高度就會超出視窗一截，而 body 是 `overflow: hidden`——超出去的部分直接被裁掉，
+   沒有捲軸、沒有任何跡象。
+
+   測試區橫幅就是這樣一個兄弟（markChannel 用 insertBefore 插在 body 最前面）。
+   於是窗格被往下推一條橫幅的高度，底部同樣被切掉一條——切掉的正好是 .composer-foot，
+   也就是「Enter 送出」提示和模型選單。
+
+   症狀非常難查：資料全對、元素都在、模型選單的 hidden 也確實是 false，就是看不到。
+   而且只有非正式環境會發生，因為只有那裡才有橫幅。查了好幾輪都在找資料為什麼沒來，
+   實際上資料一直都在。
+
+   改成 flex 之後，body 裡不管多幾條橫幅，窗格都只拿剩下的空間。
+   `min-height: 0` 不能省：flex 項目預設 `min-height: auto` 會拒絕縮到比內容小，
+   裡面的 #log（flex: 1 + overflow-y: auto）就會把窗格再次撐高，繞回同一個 bug。 */
+.pane { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; position: relative; }
 .pane.show { display: flex; }
 
 /* ── Icons ──────────────────────────────────────────────────────────────── */

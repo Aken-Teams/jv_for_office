@@ -95,5 +95,45 @@ check(
   '無條件清掉會把本機開發環境一起弄壞。',
 );
 
+/**
+ * 窗格不能自己宣告 100vh。
+ *
+ * ── 這條守的是哪個 bug ──
+ * .pane 原本寫 height: 100vh。只要 body 裡還有別的東西跟它並排——測試區橫幅就是
+ * （markChannel 用 insertBefore 插在最前面）——總高度就超出視窗一截，而 body 是
+ * overflow: hidden，超出去的部分無聲無息被裁掉。
+ *
+ * 被裁掉的正好是最底下的 .composer-foot：「Enter 送出」提示和模型選單。症狀是
+ * 「選不了模型」，但資料全對、元素都在、wrap.hidden 也確實是 false。而且只有非正式
+ * 環境才會發生，因為只有那裡有橫幅。這個 bug 耗掉了好幾輪，全程都在查資料為什麼
+ * 沒來，實際上資料一直都在。
+ *
+ * 以後任何人想在 body 裡再加一條橫幅（公告、離線提示、升級提示）都會踩到同一個洞，
+ * 所以把「窗格只拿剩下的高度」這件事釘住。
+ */
+const css = fs.readFileSync(new URL('../src/taskpane/taskpane.css', import.meta.url), 'utf-8');
+const paneRule = (css.match(/^\.pane \{[^}]*\}/m) || [''])[0];
+
+check(
+  '.pane 不寫死 100vh（body 裡多一條橫幅就會把底部裁掉）',
+  !!paneRule && !/height:\s*100vh/.test(paneRule),
+  `目前是：${paneRule || '找不到 .pane 規則'}`,
+);
+check(
+  '.pane 用 flex 吃剩下的高度',
+  /flex:\s*1/.test(paneRule),
+  `目前是：${paneRule}`,
+);
+check(
+  '.pane 有 min-height: 0（不然裡面的 #log 會把它再撐高）',
+  /min-height:\s*0/.test(paneRule),
+  'flex 項目預設 min-height: auto 會拒絕縮到比內容小，繞回同一個 bug。',
+);
+check(
+  'body 是直向 flex 容器（橫幅和窗格才排得開）',
+  /body \{[^}]*flex-direction:\s*column/.test(css),
+  'body 沒有 display:flex / flex-direction:column，窗格拿不到「剩下的」高度。',
+);
+
 if (failed) { console.error(`\n${failed} 項沒過。`); process.exit(1); }
 console.log('\n開機就會讀部署設定。');
