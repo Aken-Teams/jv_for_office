@@ -3680,8 +3680,28 @@ async function deleteTemplate(id) {
 
 
 
+/**
+ * 這一輪已經講過一次了嗎。
+ *
+ * 清單會重抓（連線恢復之後），但同一句話講兩次只是噪音。
+ */
+let sourcesNoted = false;
+
 /** Ask the server which cross-source MCPs this user could actually mount. */
 async function loadDataSources() {
+  /**
+   * 失敗原因要**看得見**。
+   *
+   * ── 為什麼補這段 ──
+   * 這個函式原本把每一種失敗都只寫進 state.sourceHint，而那個字串唯一會露臉的地方
+   * 是「+」選單裡某個停用項目的 tooltip。使用者看到的只有「模型選單不見了」，
+   * 連線正常、聊天正常、什麼訊息都沒有。
+   *
+   * 於是「ping 打不到」「HTTP 401」「後端是舊版」「真的只有一個模型」這四件事在
+   * 畫面上長得一模一樣，查了好幾輪都在猜。訊息裡帶上狀態碼和拿到幾個模型，
+   * 下次就不用猜了。
+   */
+  let trouble = '';
   try {
     const res = await fetch(`${state.apiBase}/api/${host.meta.api}/ping`, {
       headers: { Authorization: `Bearer ${state.token}` },
@@ -3694,6 +3714,7 @@ async function loadDataSources() {
       }
       state.sourcesLoaded = false;
       state.sourceHint = t('無法向伺服器確認資料來源（HTTP {0}）。', res.status);
+      trouble = state.sourceHint;
     } else {
       const body = await res.json();
       if (!body.dataSources) {
@@ -3701,6 +3722,7 @@ async function loadDataSources() {
         // Not a transient failure—retrying would just ask the same question again.
         state.sourcesLoaded = true;
         state.sourceHint = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
+        trouble = state.sourceHint;
       } else {
         state.sourcesLoaded = true;
         state.available = body.dataSources;
@@ -3721,17 +3743,30 @@ async function loadDataSources() {
          */
         if (!Array.isArray(body.models)) {
           state.models = [];
-          state.sourceHint = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
-          addNote(t('伺服器尚未套用更新，請重新啟動 server 後再試。'), 'note');
+          trouble = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
         } else {
           state.models = body.models;
+          /**
+           * 一個模型不值得一個控制項，所以選單會藏起來——但那時候畫面上沒有任何
+           * 東西說明為什麼。這是最後一個安靜的分支，補上。
+           */
+          if (body.models.length < 2) {
+            trouble = t('伺服器只提供 {0} 個模型，所以沒有切換選單。', body.models.length);
+          }
         }
-        state.sourceHint = body.dataSources.hint || '';
+        // 這行要排在後面：dataSources.hint 是「資料來源」的說明，不該蓋掉上面
+        // 設好的錯誤原因——它們寫的是同一個欄位。上一版就是這樣把訊息吃掉的。
+        state.sourceHint = trouble || body.dataSources.hint || '';
       }
     }
   } catch (e) {
     state.sourcesLoaded = false;
     state.sourceHint = networkTrouble();
+    trouble = troubleDetail(e && e.message, 'ping');
+  }
+  if (trouble && !sourcesNoted) {
+    sourcesNoted = true;
+    addNote(trouble, 'note');
   }
   renderSourceMenu();
   renderModelMenu();
