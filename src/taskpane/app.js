@@ -2221,6 +2221,40 @@ function showChat() {
   void loadTemplates();
   void loadSkills();
   void loadHandoffs();
+  modelMenuWatchdog();
+}
+
+/**
+ * 模型選單該出現卻沒出現的時候，把內部狀態講出來。
+ *
+ * ── 為什麼需要這種東西 ──
+ * 「選單不見了」這個症狀背後至少有五種原因：ping 打不到、HTTP 錯誤、後端是舊版、
+ * 清單真的只有一個、以及 loadDataSources() 根本沒被執行到。前四種我已經讓它們各自
+ * 報自己的名字了，但第五種按定義不會——函式沒跑，就不會有訊息。
+ *
+ * 於是「什麼訊息都沒有」同時代表「一切正常」和「最裡面那層壞了」，而這兩件事在
+ * 畫面上都是一片安靜。查了好幾輪都在猜，就是卡在這裡。
+ *
+ * 所以改成從**結果**反推：選單本來就該出現，幾秒後它還是藏著就是不對，不管原因是
+ * 哪一種。印出來的是真正決定畫面的那幾個變數，不是我猜的那幾個。
+ *
+ * 只在壞掉的時候講話，正常情況下完全安靜。
+ */
+function modelMenuWatchdog() {
+  setTimeout(() => {
+    const wrap = document.querySelector('.model-wrap');
+    // 正常結局：選單出來了，什麼都不用說。
+    if (wrap && !wrap.hidden) return;
+    // 伺服器就是只給一個模型——藏起來是對的，而且 loadDataSources 已經講過了。
+    if (state.sourcesLoaded && state.models.length === 1) return;
+    const facts = [
+      `wrap=${wrap ? (wrap.hidden ? 'hidden' : 'shown') : '找不到元素'}`,
+      `sourcesLoaded=${state.sourcesLoaded}`,
+      `models=${state.models.length}`,
+      `apiBase=${state.apiBase}`,
+    ].join(' · ');
+    addNote(t('模型選單沒出現。把這行給 IT：{0}', facts), 'note');
+  }, 6000);
 }
 
 /**
