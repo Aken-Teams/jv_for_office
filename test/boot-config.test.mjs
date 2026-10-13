@@ -77,5 +77,23 @@ check(
   'markChannel() 不在 loadConfig() 裡，測試區橫幅會跟部署設定走散。',
 );
 
+/**
+ * 部署出去的窗格不該去連 localhost。
+ *
+ * 本機測試時填下的 http://localhost:12054 一旦跟著建置跑到別人的 PC 上，就一定是
+ * 錯的——那台沒有東西在聽那個埠。但判斷要綁在「窗格自己是從哪裡載入的」：本機開發
+ * 時窗格跑在 https://localhost:3443，那時候 localhost 的 API 才是對的。
+ */
+check(
+  '部署出去的窗格會丟掉指向 localhost 的覆寫',
+  /location\.hostname/.test(src) && /pointsAtLocalhost/.test(src),
+  '找不到這個判斷。',
+);
+check(
+  '這個判斷有看窗格自己的來源，不是無條件清掉',
+  /const impossible\s*=\s*pointsAtLocalhost\s*&&\s*!paneIsLocal/.test(src),
+  '無條件清掉會把本機開發環境一起弄壞。',
+);
+
 if (failed) { console.error(`\n${failed} 項沒過。`); process.exit(1); }
 console.log('\n開機就會讀部署設定。');

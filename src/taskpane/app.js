@@ -2122,7 +2122,23 @@ async function loadConfig() {
      * 舊版留下的覆寫沒有記錄當初蓋掉什麼（`overrodeWhat` 是 null），一律丟掉：
      * 那正是出問題的那一批。
      */
-    const stillValid = overrodeWhat && deployed && overrodeWhat === deployed;
+    /**
+     * 而且：部署出去的窗格永遠不該去連 localhost。
+     *
+     * 這條是另一台機器上的同事提出來的，判斷是對的——本機測試時填下的
+     * `http://localhost:12054`，一旦這份建置被部署到別人的 PC 上，就一定是錯的：
+     * 那台電腦上沒有東西在聽那個埠。症狀是「連不上伺服器」加上「選不了模型」
+     * （auth/mode 和 ping 都打到本機），而使用者完全不知道這個位址是哪來的。
+     *
+     * 但條件要綁在**窗格自己是從哪裡載入的**，不是無條件清掉：本機開發的時候窗格
+     * 跑在 https://localhost:3443，那時候 localhost 的 API 位址才是對的，無條件清
+     * 會把開發環境一起弄壞。窗格在真實主機上 + API 指向 localhost = 一定錯。
+     */
+    const paneIsLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+    const pointsAtLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(override);
+    const impossible = pointsAtLocalhost && !paneIsLocal;
+
+    const stillValid = !impossible && overrodeWhat && deployed && overrodeWhat === deployed;
     if (stillValid) {
       state.apiBase = override;
       state.apiOverridden = true;
