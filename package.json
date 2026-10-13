@@ -5,7 +5,8 @@
   "type": "module",
   "description": "JVision for Office — 任務窗格增益集，讓 AI 直接讀寫使用者當下開啟的檔案。目前支援 Excel；PowerPoint 與 Word 規劃中，見 docs/multi-host.md。",
   "scripts": {
-    "dev": "node tools/make-config.mjs && node tools/dev-server.mjs",
+    "dev": "node tools/make-config.mjs && node tools/make-manifests.mjs && node tools/dev-server.mjs",
+    "manifests": "node tools/make-manifests.mjs",
     "config": "node tools/make-config.mjs",
     "icons": "node tools/make-icons.mjs",
     "bump": "node tools/bump-version.mjs",

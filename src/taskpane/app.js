@@ -103,6 +103,9 @@ const LOCALES = [
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
+  /** 哪一套環境，從 config.json 來。prod 以外都會在窗格頂端掛一條橫幅。 */
+  channel: 'prod',
+  channelLabel: '',
   token: localStorage.getItem(LS_TOKEN) || '',
   /** Claude CLI session — echoed back each turn so the agent keeps its context. */
   sessionId: null,
@@ -2049,14 +2052,20 @@ function setLoginMode(mode) {
  */
 async function loadConfig() {
   const override = localStorage.getItem(LS_API_OVERRIDE);
-  if (override) { state.apiBase = override; return; }
+  // 不管走哪一條路出去，橫幅都要掛上——包括使用者自己覆寫了伺服器位址的那條。
+  // `markChannel` 自己會擋重複，所以多呼叫一次是安全的。
+  if (override) { state.apiBase = override; markChannel(); return; }
   try {
     const res = await fetch('../../config.json', { cache: 'no-store' });
     if (res.ok) {
       const cfg = await res.json();
       if (cfg.apiBase) state.apiBase = String(cfg.apiBase).replace(/\/+$/, '');
+      // 同一份程式碼部署兩次，差別只在這裡——所以橫幅也從同一個檔案來。
+      if (cfg.channel) state.channel = String(cfg.channel).toLowerCase();
+      if (cfg.channelLabel) state.channelLabel = String(cfg.channelLabel);
     }
   } catch { /* fall back to the default */ }
+  markChannel();
 }
 
 /** Reveal the server field so a wrong address can be fixed without a redeploy. */
@@ -3672,6 +3681,33 @@ function checkCspSubstituted() {
     + '所以所有對伺服器的連線都會被瀏覽器擋掉——登入、模型清單、送出訊息都不會動。'
     + '開發環境請重新啟動 npm run dev；部署環境請讓送出這個檔案的那一端做同樣的置換。';
   document.body.insertBefore(bar, document.body.firstChild);
+}
+
+/**
+ * 非正式環境要看得出來。
+ *
+ * ── 這是在防什麼 ──
+ * 測試區和正式區是同一份程式碼、同一個側邊欄長相。兩套同時裝著的時候，使用者
+ * 沒有任何線索知道自己正在改的文件跑在哪一套上——而測試區可能接著一個會被清掉
+ * 的資料庫，或是一個還沒驗過的版本。
+ *
+ * 橫幅固定在最上面而不是只出現一次：一次性的提示會被捲走，而這件事從頭到尾都成立。
+ *
+ * 預設是 prod（不顯示），所以漏設定的那一邊是正式區沒有橫幅，不是測試區安靜。
+ * 這個方向選錯的代價差很多。
+ */
+function markChannel() {
+  if (document.getElementById('channel-bar')) return;
+  const ch = String(state.channel || 'prod').toLowerCase();
+  if (ch === 'prod' || ch === 'production' || !ch) return;
+  const known = { test: '測試區', staging: '預備區', dev: '開發區', uat: '驗收區' };
+  const label = state.channelLabel || known[ch] || ch;
+  const bar = document.createElement('div');
+  bar.id = 'channel-bar';
+  bar.setAttribute('role', 'status');
+  bar.textContent = `${label}　·　這不是正式版，測試完請記得移除`;
+  document.body.insertBefore(bar, document.body.firstChild);
+  document.body.classList.add('is-nonprod');
 }
 
 Office.onReady(async (info) => {

@@ -1381,3 +1381,27 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   #log { scroll-behavior: auto; }
 }
+
+/*
+ * 非正式環境的橫幅。
+ *
+ * 測試區和正式區是同一份程式碼、同一個長相，兩套同時裝著的時候使用者沒有任何線索
+ * 知道自己在哪一套上。所以這條是**固定**的，不是一次性提示——一次性的會被捲走，
+ * 而「這是測試區」從頭到尾都成立。
+ *
+ * 橘色不是紅色：紅色在這個介面裡是錯誤和破壞性動作的顏色，拿來講環境會讓人以為
+ * 出事了。
+ */
+#channel-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  padding: 5px 12px;
+  background: #B45309;
+  color: #FFF7ED;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-align: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .12);
+}

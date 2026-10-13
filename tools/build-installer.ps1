@@ -32,9 +32,43 @@ $ErrorActionPreference = 'Stop'
 $root      = Split-Path -Parent $PSScriptRoot
 $installer = Join-Path $root 'installer'
 $source    = Join-Path $installer 'JVisionSetup.cs'
-$manifestDir = Join-Path $root 'manifests'
 $outExe    = Join-Path $installer 'JVisionSetup.exe'
 $logo      = Join-Path $root 'assets\logo.png'
+
+# ── 哪一套環境 ───────────────────────────────────────────────────────────────
+#
+# 安裝程式是把 manifest **嵌進 exe** 的，而且只讀 manifests\ 最上層那三個——所以
+# 「我開這個看不到測試區安裝」是對的：產在 manifests\test\ 底下的那三份，建置的
+# 時候根本沒被看到。
+#
+# 這裡照 .env 的 DEPLOY_CHANNEL 決定要嵌哪一組，並且：
+#   · 測試區的 exe 另外取名，不要蓋掉正式區那一支
+#   · 安裝程式自己的視窗標題也要標出來，不然按下去之前看不出裝的是哪一套
+$envFile = Join-Path $root '.env'
+$channel = 'prod'
+$label   = ''
+if (Test-Path $envFile) {
+  foreach ($line in Get-Content -Path $envFile -Encoding UTF8) {
+    if ($line -match '^\s*DEPLOY_CHANNEL\s*=\s*(.+?)\s*$') { $channel = $Matches[1].Trim('"', "'").ToLower() }
+    if ($line -match '^\s*DEPLOY_LABEL\s*=\s*(.+?)\s*$')   { $label   = $Matches[1].Trim('"', "'") }
+  }
+}
+if ($env:DEPLOY_CHANNEL) { $channel = $env:DEPLOY_CHANNEL.ToLower() }
+if ($env:DEPLOY_LABEL)   { $label   = $env:DEPLOY_LABEL }
+
+$isProd = ($channel -eq 'prod' -or $channel -eq 'production' -or -not $channel)
+if (-not $isProd) {
+  $known = @{ test = '測試'; staging = '預備'; dev = '開發'; uat = '驗收' }
+  if (-not $label) { $label = if ($known.ContainsKey($channel)) { $known[$channel] } else { $channel } }
+  $manifestDir = Join-Path $root "manifests\$channel"
+  $outExe      = Join-Path $installer "JVisionSetup-$channel.exe"
+  Write-Host "頻道：$channel（$label）— 嵌入 manifests\$channel\，輸出 $(Split-Path -Leaf $outExe)" -ForegroundColor Yellow
+  if (-not (Test-Path $manifestDir)) {
+    throw "找不到 $manifestDir。先跑 npm run manifests 產生非正式環境的 manifest。"
+  }
+} else {
+  $manifestDir = Join-Path $root 'manifests'
+}
 
 if (-not (Test-Path $source))   { throw "找不到 $source" }
 if (-not (Test-Path $manifestDir)) { throw "找不到 $manifestDir" }
@@ -73,6 +107,21 @@ using System.Reflection;
 [assembly: AssemblyVersion("$version")]
 [assembly: AssemblyFileVersion("$version")]
 "@ | Set-Content -Path $asmInfo -Encoding UTF8
+
+# 安裝程式自己的標題也要標。改的是一份暫存副本，原始碼不動——不然切回正式區的
+# 時候會留下一個改壞的檔案。
+if (-not $isProd) {
+  $patched = Join-Path $env:TEMP "JVisionSetup-$channel.cs"
+  # AppName 決定安裝資料夾（LocalAppData\<AppName>），ShortName 決定「應用程式和
+  # 功能」那筆解除安裝紀錄的登錄機碼。**兩個都要換**——只換 AppName 的話資料夾分開了，
+  # 但兩個版本仍然共用同一筆解除安裝紀錄，移除其中一個會把另一個的紀錄一起帶走。
+  $tag = ($channel -replace '[^a-zA-Z0-9]', '')
+  (Get-Content -Path $source -Encoding UTF8 -Raw) `
+    -replace 'AppName\s*=\s*"JVision for Office"', "AppName = `"JVision for Office（$label）`"" `
+    -replace 'ShortName\s*=\s*"JVisionForOffice"', "ShortName = `"JVisionForOffice_$tag`"" `
+    | Set-Content -Path $patched -Encoding UTF8
+  $source = $patched
+}
 
 $args = @(
   '/nologo'

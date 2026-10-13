@@ -503,7 +503,10 @@ namespace JVisionSetup
                         {
                             object val = wef.GetValue(name);
                             string s = val == null ? "" : val.ToString();
-                            if (s.StartsWith(legacyDir, StringComparison.OrdinalIgnoreCase))
+                            // 要帶分隔符號——理由同下面那一處。
+                            if (s.StartsWith(legacyDir + Path.DirectorySeparatorChar,
+                                    StringComparison.OrdinalIgnoreCase)
+                                || s.Equals(legacyDir, StringComparison.OrdinalIgnoreCase))
                             {
                                 try { wef.DeleteValue(name, false); } catch { }
                             }
@@ -551,7 +554,15 @@ namespace JVisionSetup
                     {
                         object val = wef.GetValue(name);
                         string s = val == null ? "" : val.ToString();
-                        if (s.StartsWith(Program.InstallDir, StringComparison.OrdinalIgnoreCase))
+                        /// 前綴比對一定要帶路徑分隔符號。
+                        ///
+                        /// 正式版的資料夾是 ...\JVision for Office，測試版是
+                        /// ...\JVision for Office（測試）——**後者以前者開頭**。少了
+                        /// 分隔符號，用正式版的安裝檔按「移除」會把測試版的註冊一起
+                        /// 刪掉，而使用者只會看到兩個增益集同時消失，完全不知道為什麼。
+                        if (s.StartsWith(Program.InstallDir + Path.DirectorySeparatorChar,
+                                StringComparison.OrdinalIgnoreCase)
+                            || s.Equals(Program.InstallDir, StringComparison.OrdinalIgnoreCase))
                         {
                             try { wef.DeleteValue(name, false); }
                             catch { }

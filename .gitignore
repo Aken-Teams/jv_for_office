@@ -9,3 +9,10 @@ test/.fit-under-test.mjs
 test/.clean-under-test.mjs
 test/.shapes-under-test.mjs
 test/.palette-under-test.mjs
+
+# 非正式環境的 manifest 是從 .env 產出來的，不進版控——
+# 每個部署的頻道和位址都不一樣，進了版控只會互相覆蓋。
+manifests/test/
+manifests/staging/
+manifests/dev/
+manifests/uat/
