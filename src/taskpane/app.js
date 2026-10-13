@@ -2209,14 +2209,28 @@ function showLogin(msg) {
   void loadAuthMode();
 }
 
+/** showChat() 的同步段落有沒有走完——看門狗要分辨「資料沒來」和「初始化死了」。 */
+let chatShown = false;
+
 function showChat() {
   $('login').classList.remove('show');
   $('setup').classList.remove('show');
   $('chat').classList.add('show');
-  updateUndoButton();
-  updateApproveToggle();
-  renderModelMenu();
-  renderSourceMenu();
+  /**
+   * 這四個是同步的，其中任何一個拋例外，後面那串載入全部不會執行——模型清單、
+   * 常用指令、技能、交接都會一起消失，而使用者只會看到「功能不見了」。
+   *
+   * 原本沒有 try：一個 render 失敗就悄悄帶走四個功能。
+   */
+  try {
+    updateUndoButton();
+    updateApproveToggle();
+    renderModelMenu();
+    renderSourceMenu();
+    chatShown = true;
+  } catch (e) {
+    bootTrouble(`側邊欄初始化中斷：${(e && e.message) || e}`);
+  }
   void loadDataSources();
   void loadTemplates();
   void loadSkills();
@@ -2240,20 +2254,49 @@ function showChat() {
  *
  * 只在壞掉的時候講話，正常情況下完全安靜。
  */
+/**
+ * 把話講在一個絕對看得到的地方。
+ *
+ * ── 為什麼不能用 addNote ──
+ * addNote 寫進對話記錄。但窗格剛開啟時是空白歡迎畫面，而且如果 showChat() 在中途
+ * 就拋了例外，連看門狗都不會被掛上——於是「沒有訊息」同時代表一切正常和整段初始化
+ * 死掉，兩者都是一片安靜。查了好幾輪都卡在這個死角。
+ *
+ * 這條管道只依賴 document.body 存在。它自己長出一條橫幅貼在最上面，不經過任何
+ * 狀態判斷、不經過聊天區、不經過歡迎畫面的切換。
+ */
+function bootTrouble(text) {
+  let bar = document.getElementById('boot-trouble');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'boot-trouble';
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = 'padding:6px 10px;font-size:11px;line-height:1.5;'
+      + 'background:#7a2d00;color:#fff;word-break:break-all;';
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+  bar.textContent = text;
+}
+
 function modelMenuWatchdog() {
   setTimeout(() => {
     const wrap = document.querySelector('.model-wrap');
-    // 正常結局：選單出來了，什麼都不用說。
-    if (wrap && !wrap.hidden) return;
-    // 伺服器就是只給一個模型——藏起來是對的，而且 loadDataSources 已經講過了。
+    // 正常結局：清單拿到了，選單也真的顯示出來。
+    if (wrap && !wrap.hidden && state.models.length >= 2) return;
+    // 伺服器就是只給一個模型——藏起來是對的，loadDataSources 已經講過了。
     if (state.sourcesLoaded && state.models.length === 1) return;
-    const facts = [
-      `wrap=${wrap ? (wrap.hidden ? 'hidden' : 'shown') : '找不到元素'}`,
-      `sourcesLoaded=${state.sourcesLoaded}`,
-      `models=${state.models.length}`,
-      `apiBase=${state.apiBase}`,
-    ].join(' · ');
-    addNote(t('模型選單沒出現。把這行給 IT：{0}', facts), 'note');
+    /**
+     * 連 showChat() 有沒有跑完都要回報。
+     *
+     * 「wrap 是顯示的但清單是空的」跟「wrap 是藏著的」是兩種完全不同的毛病，前者
+     * 代表畫面和資料對不上、後者代表資料沒來。原本的判斷把前者當成正常直接 return，
+     * 所以什麼都查不到。
+     */
+    bootTrouble(`模型選單診斷 · wrap=${wrap ? (wrap.hidden ? 'hidden' : 'shown') : '找不到元素'}`
+      + ` · foot=${document.querySelector('.composer-foot') ? 'ok' : '找不到元素'}`
+      + ` · showChat=${chatShown ? '完成' : '中斷'}`
+      + ` · sourcesLoaded=${state.sourcesLoaded} · models=${state.models.length}`
+      + ` · apiBase=${state.apiBase}`);
   }, 6000);
 }
 
