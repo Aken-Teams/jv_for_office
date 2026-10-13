@@ -2189,7 +2189,8 @@ function showLogin(msg) {
   $('setup').classList.remove('show');
   $('login-error').textContent = msg || '';
   $('api-base').value = state.apiBase;
-  void (async () => { await loadConfig(); await loadAuthMode(); })();
+  // 設定已經在開機的時候讀過了（見 Office.onReady）；這裡只問登入方式。
+  void loadAuthMode();
 }
 
 function showChat() {
@@ -3807,6 +3808,26 @@ Office.onReady(async (info) => {
     document.body.innerHTML = `<p style="padding:16px">${escapeHtml(t('這個增益集只能在 Excel 或 Word 中使用。'))}</p>`;
     return;
   }
+
+  /**
+   * 部署設定一定要先讀，而且在任何分支之前。
+   *
+   * ── 這裡原本錯在哪 ──
+   * loadConfig() 原本只在 showLogin() 裡被呼叫。於是「已經登入的人」這條路徑
+   * （最後那行 `if (state.token) showChat()`）從頭到尾不會讀 config.json，
+   * state.apiBase 就停在檔案頂端那個寫死的 DEFAULT_API_BASE。
+   *
+   * 那個預設值是 http://localhost:12054——開發用的。所以在別台機器上，只要使用者
+   * 還留著登入狀態，側邊欄就會去打一個那台根本沒有的位址，而且症狀跟網路故障
+   * 一模一樣。要清掉的方法是登出再登入一次，因為登入畫面才會讀設定。
+   *
+   * 橫幅也一樣：markChannel() 在 loadConfig() 的結尾，所以同一條路徑上連「測試區」
+   * 那條橘色橫幅都不會出現——測試版看起來跟正式版一樣。
+   *
+   * 讀設定是**開機該做的事**，不是登入流程的一部分。這裡 await，後面所有東西才
+   * 能假設位址是對的。
+   */
+  await loadConfig();
 
   setLocale(state.locale);
   applyStaticText();
