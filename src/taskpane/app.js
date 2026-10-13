@@ -3704,9 +3704,28 @@ async function loadDataSources() {
       } else {
         state.sourcesLoaded = true;
         state.available = body.dataSources;
-        // Older servers do not send this; the picker then hides itself rather
-        // than offering a list the server would ignore.
-        state.models = Array.isArray(body.models) ? body.models : [];
+        /**
+         * 伺服器沒送模型清單 = 它是舊的，不是「只有一個模型」。
+         *
+         * ── 為什麼要分開講 ──
+         * 這兩種情況原本都走到同一個結果：清單空的，選單安靜地消失。於是「後端
+         * 拉了 code 但沒重啟」這件事在窗格上的樣子，跟「這個版本本來就不給選模型」
+         * 完全一樣——沒有任何線索指向真正的原因。
+         *
+         * ping 回應裡 models 這個欄位是後來才加的（dataSources 更早）。所以一個
+         * 中間版本的後端會回得出資料來源、聊天也正常，就是少這一塊——最容易被
+         * 誤判成增益集的功能壞了。
+         *
+         * 欄位整個不存在就直說伺服器要重啟。這跟上面那個 !body.dataSources 是同一
+         * 句話，只是這次是「比較新一點的舊版」。
+         */
+        if (!Array.isArray(body.models)) {
+          state.models = [];
+          state.sourceHint = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
+          addNote(t('伺服器尚未套用更新，請重新啟動 server 後再試。'), 'note');
+        } else {
+          state.models = body.models;
+        }
         state.sourceHint = body.dataSources.hint || '';
       }
     }
