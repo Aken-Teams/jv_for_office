@@ -144,6 +144,8 @@ const state = {
   sessionId: null,
   runId: null,
   streaming: false,
+  /** 使用者按過停止了。見 stopRun()——abort 讓伺服器停，這個旗標讓窗格停。 */
+  stopped: false,
   /** Lets the person call off a run that is taking too long. See stopRun(). */
   abort: null,
   documentName: '',
@@ -986,6 +988,13 @@ function autoApprovedCard(summary) {
  *
  * Resolves { approved, card, note }.
  */
+/**
+ * 正在等人回答的那張確認卡，收在這裡讓停止鍵碰得到。
+ *
+ * 一次只會有一張——流程在等答案的時候不會再送出新的工具呼叫。
+ */
+let pendingConfirm = null;
+
 function askConfirm(summary, detail, meta, highRisk) {
   return new Promise((resolve) => {
     clearEmptyState();
@@ -1034,6 +1043,7 @@ function askConfirm(summary, detail, meta, highRisk) {
     say.addEventListener('input', syncLabel);
 
     const done = (ok) => {
+      pendingConfirm = null;
       const note = say.value.trim();
       // ✓ / × rather than emoji: they inherit colour and exist in every font in
       // the stack, so they render identically on Windows and in dark mode.
@@ -1043,6 +1053,18 @@ function askConfirm(summary, detail, meta, highRisk) {
     };
     card.querySelector('.btn-approve').addEventListener('click', () => done(true));
     deny.addEventListener('click', () => done(false));
+    /**
+     * 停止鍵也要收得掉這張卡。
+     *
+     * 這張卡在等人回答的時候，整個流程就停在這個 promise 上。原本唯一的出口是那兩顆
+     * 按鈕——於是「我想中途停掉」的人只能按拒絕，而拒絕的語意是「這一步不要，繼續
+     * 做下一步」，不是「全部不要了」。使用者得一直按拒絕才能把一輪工作磨完。
+     *
+     * 把 resolver 存起來，stopRun() 就能替它結案。存的是函式不是 promise，因為要做的
+     * 事是「替使用者按下拒絕」，不是把 promise 丟掉——卡片還是要畫上結果，讓紀錄裡
+     * 看得出這一步是被中止的，而不是憑空消失。
+     */
+    pendingConfirm = () => done(false);
     // Enter sends the instruction rather than approving. Someone who has just
     // typed 「不要這樣做」 pressing Enter must not have it executed.
     say.addEventListener('keydown', (e) => {
@@ -1486,6 +1508,16 @@ async function handleToolRequest(payload) {
   // needsConfirm true means a person saw this call and said yes (or has auto-approve
   // on). False means the server judged it a read — and if it turns out not to be,
   // the guard inside runScript stops it rather than trusting that judgement.
+  /**
+   * 停了就不要再動文件。
+   *
+   * 這是最後一道關卡——到這一行為止，這個工具呼叫還沒碰到使用者的文件。再往下就是
+   * 真的寫進去了，所以檢查放在這裡而不是更早：更早的話擋不住已經排進佇列的呼叫。
+   */
+  if (state.stopped) {
+    await postToolResult(state.runId, callId, { ok: false, error: '使用者已中止這次工作。' });
+    return;
+  }
   const result = await host.executeTool(tool, args, { writeApproved: !!needsConfirm, source });
   // Recorded with its outcome, which is the whole point — see recorder.js. The
   // snapshot is kept by REFERENCE so undoLast can find this entry again without
@@ -1765,16 +1797,39 @@ function backToLive() {
   scrollDown();
 }
 
+/**
+ * 真的停下來，不是只切斷連線。
+ *
+ * ── 為什麼原本會「按了沒反應」 ──
+ * 原本只做一件事：abort 掉 SSE。伺服器那端是對的——它的 res.on('close') 會殺掉這個
+ * runId 的 agent，而且只殺這一個，不影響別人。
+ *
+ * 問題在窗格這端：連線斷了，但**已經收到的工具呼叫還排在佇列裡**，窗格繼續一個一個
+ * 執行、繼續把結果 POST 回去。使用者看到的是步驟還在往下跑、文件還在被寫——按鈕
+ * 明明按下去了，畫面卻什麼都沒變，那就是「沒反應」。
+ *
+ * 所以要有一個旗標：停了就不要再動文件、也不要再回報結果。abort 負責讓伺服器停，
+ * 旗標負責讓窗格停，兩個都要。
+ *
+ * ── 已經寫進文件的不自動還原 ──
+ * 按停止多半是「寫太多了」或「方向不對」，不是「全部不要」。快照還在，要退回去按
+ * 復原就好；自動還原的話，只是想停下來看看的人得整個重跑一次。
+ */
 function stopRun() {
-  if (!state.streaming || !state.abort) return;
+  if (!state.streaming) return;
+  state.stopped = true;
   progressStep(t('停止中…'));
-  try { state.abort.abort(); } catch { /* already gone */ }
+  try { if (state.abort) state.abort.abort(); } catch { /* already gone */ }
+  // 等著人回答的確認卡也要收掉，不然流程停在那個 promise 上，使用者只能按拒絕——
+  // 而拒絕的意思是「這一步不要」，不是「全部不要了」。
+  if (pendingConfirm) { try { pendingConfirm(); } catch { /* 已經收掉了 */ } pendingConfirm = null; }
 }
 
 async function send(message, opts = {}) {
   if (state.streaming) return;
   state.streaming = true;
   state.runId = crypto.randomUUID();
+  state.stopped = false;
   state.abort = new AbortController();
   setSendMode('stop');
 

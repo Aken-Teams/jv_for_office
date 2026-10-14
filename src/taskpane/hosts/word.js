@@ -3490,8 +3490,30 @@ async function reviewLayout(args) {
       heads.push({ p: q, lv, want: label ? label + bare : bare, had: raw, numbered: !!label });
     }
     const renum = heads.filter((h) => h.want !== h.had);
-    // 第一個大章節不換頁——它緊接在目錄後面，而目錄自己已經把頁收掉了。
-    const pagers = heads.filter((h) => h.lv === 1 && h.numbered).slice(1);
+    /**
+     * 換頁的門檻：這一章底下要有小節。
+     *
+     * ── 為什麼不是「所有大章節」 ──
+     * 合約是反例：每一條都是一個大章節，但內容常常只有兩三行。全部換頁的結果是
+     * 一頁一條，整份文件空得發慌——「新章節新一頁」原本要解決的是「讀者找不到
+     * 章節邊界」，一頁只有三行並不會讓邊界更清楚，只是把文件拉長。
+     *
+     * 底下有小節，代表這一章本身有結構、有份量，值得一頁的起手式。沒有小節的章節
+     * 靠標題上那條色線分隔就夠了——那條線本來就是為了這件事做的。
+     *
+     * 第一個大章節仍然不換頁：它緊接在目錄後面，目錄自己已經把頁收掉了。
+     */
+    const hasSub = (i) => {
+      for (let k = i + 1; k < heads.length && heads[k].lv !== 1; k += 1) {
+        if (heads[k].lv === 2) return true;
+      }
+      return false;
+    };
+    const pagers = heads
+      .map((h, i) => ({ h, i }))
+      .filter(({ h, i }) => h.lv === 1 && h.numbered && hasSub(i))
+      .map(({ h }) => h)
+      .slice(1);
 
     /**
      * 封面的標題還夠大嗎。
@@ -5627,12 +5649,18 @@ export async function finishRun() {
      * 但這句話是**窗格主動說的**，使用者沒要求過，它只需要回答「剛剛有東西被改了嗎」。
      * 細節他想知道的話會問。
      */
-    const text = typeof res === 'string' ? res : String(res && res.content ? res.content : '');
-    const did = (text.match(/^\s*[-·]\s*(.+)$/gm) || [])
-      .map((l) => l.replace(/^\s*[-·]\s*/, '').trim())
-      .filter(Boolean);
-    if (!did.length) return '';
-    return `順手把版面收了一次：${did.join('、')}。不要的話按復原。`;
+    /**
+     * 安靜做完，不要報告。
+     *
+     * 一開始我讓它說出做了什麼，理由是「安靜改掉使用者的東西不行，他得先知道有事
+     * 發生才會想到要復原」。那個顧慮本身沒錯，但代價算錯了：這段話在每一輪都會出現，
+     * 而它講的全是**本來就該是那樣**的事——編號連續、章節換頁、封面標題該多大。
+     * 使用者沒有要求過這些，也不需要逐條確認；它讀起來像系統在邀功，不像在報告。
+     *
+     * 真正的安全網是快照，不是這段話——復原鍵一直都在，而且它涵蓋的範圍比這段話
+     * 描述的更完整。
+     */
+    return '';
   } catch {
     // 補跑失敗不該變成使用者看到的錯誤——他沒要求這件事，它只是加分項。
     return '';

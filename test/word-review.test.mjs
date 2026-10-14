@@ -168,16 +168,34 @@ function fakeWord(texts, tableSpecs = []) {
    */
   const H1 = (text) => ({ text, style: 'Heading 1' });
   const H2 = (text) => ({ text, style: 'Heading 2' });
-  const log = fakeWord([H1('產品概述'), '內文', H2('背景'), '內文', H1('目標使用者'), '內文', H1('功能需求')]);
+  /**
+   * 換頁的門檻是「底下有小節」，不是「是個大章節」。
+   *
+   * 合約是反例：每一條都是大章節，但常常只有兩三行。全部換頁就變成一頁一條，整份
+   * 文件空得發慌——「新章節新一頁」要解決的是讀者找不到章節邊界，一頁三行不會讓
+   * 邊界更清楚，只是把文件拉長。
+   *
+   * 這個樣本三個大章節都有編號，但只有兩個底下有小節；再扣掉第一個（它緊接在目錄
+   * 後面，目錄已經把頁收掉了），所以只該有一個換頁。
+   */
+  const log = fakeWord([
+    H1('產品概述'), '內文', H2('背景'), '內文',
+    H1('目標使用者'), '內文', H2('使用者輪廓'), '內文',
+    H1('附則'), '內文',
+  ]);
   await executeTool('word_review_layout', {});
-  // 三個大章節，第一個不換頁——它緊接在目錄後面，目錄自己已經把頁收掉了。
-  ok('只有第二個之後的大章節換頁', log.breaks.length === 2, JSON.stringify(log.breaks));
+  ok('只有「底下有小節」且不是第一個的大章節才換頁',
+    log.breaks.length === 1, JSON.stringify(log.breaks));
+  ok('沒有小節的章節不換頁（合約那種一條三行的不要獨佔一頁）',
+    !log.breaks.some((b) => b.i === 8), JSON.stringify(log.breaks));
   ok('換的是分頁', log.breaks.every((b) => b.kind === 'Page' && b.where === 'Before'),
     JSON.stringify(log.breaks));
   const got = log.rewrites.map((r) => r.txt);
   ok('大章節編成一、二、三', got.includes('一、產品概述') && got.includes('二、目標使用者')
-    && got.includes('三、功能需求'), JSON.stringify(got));
-  ok('小節編成 1.1（跟著所屬的大章節走）', got.includes('1.1 背景'), JSON.stringify(got));
+    && got.includes('三、附則'), JSON.stringify(got));
+  // 編號跟換頁是兩回事：沒有小節的章節照樣有編號，只是不換頁。
+  ok('小節編成 1.1 / 2.1（跟著所屬的大章節走）',
+    got.includes('1.1 背景') && got.includes('2.1 使用者輪廓'), JSON.stringify(got));
 
   // 再跑一次不該變成「一、一、產品概述」——這個工具本來就會被跑很多次。
   const again = fakeWord([H1('一、產品概述'), '內文', H2('1.1 背景'), H1('二、目標使用者')]);
