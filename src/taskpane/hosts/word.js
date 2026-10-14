@@ -948,6 +948,14 @@ const DEFAULT_TABLE_STYLE = 'TableGrid';
  * the eye track across a wide row, and anything darker starts competing with the
  * text instead of carrying it.
  */
+/**
+ * 目前主題的面與線，沒有就是 null（走下面那套預設）。
+ *
+ * 放模組層而不是傳參數：建表格的有三個地方（表格工具、封面的文件事實表、鍵值
+ * 區塊），而「文件裡的表格長得不一致」正是這整套要擋掉的事。
+ */
+let activeInk = null;
+
 const TABLE_INK = {
   headerFill: '#000000',
   headerText: '#FFFFFF',
@@ -966,26 +974,67 @@ const TABLE_INK = {
  * the black band goes and where the stripes start counting from.
  */
 function paintTable(table, rowCount, colCount, hasHeader) {
+  const ink = activeInk || TABLE_INK;
   // Our own stripes, so the style's are switched off — two sets half a row out
   // of phase is worse than either alone.
   table.styleBandedRows = false;
   table.styleFirstColumn = false;
+  /**
+   * 細線在裡面、主色線在外面——不畫滿格子。
+   *
+   * 完整格線會讓每一格都變成一個盒子，眼睛得逐格讀；只留橫線的話，一列才是一個
+   * 單位，橫著掃就讀得完。參考文件裡 0.5pt 淺線出現 24 次、1.25pt 主色線 49 次，
+   * 比例大概就是這樣。
+   *
+   * 包 try：框線 API 不是每個 Word 版本都有，畫不出來就維持原樣，不該讓整張表失敗。
+   */
+  if (activeInk) {
+    try {
+      for (const side of ['InsideHorizontal', 'InsideVertical']) {
+        const b = table.getBorder(side);
+        b.type = side === 'InsideVertical' ? 'None' : 'Single';
+        b.color = ink.hair; b.width = 0.5;
+      }
+      for (const side of ['Top', 'Bottom']) {
+        const b = table.getBorder(side);
+        b.type = 'Single'; b.color = ink.accent; b.width = 1.5;
+      }
+      for (const side of ['Left', 'Right']) table.getBorder(side).type = 'None';
+    } catch { /* 這個版本沒有框線 API，配色照樣套得上 */ }
+  }
   for (let r = 0; r < rowCount; r++) {
     const isHead = hasHeader && r === 0;
     for (let c = 0; c < colCount; c++) {
       const cell = table.getCell(r, c);
+      /**
+       * 左內距 0——文字切齊欄位左緣。
+       *
+       * 參考文件是左 0、右 140 twip。配上「不畫直線」，每一欄的左緣就自己形成一條
+       * 隱形的對齊線，不需要框線去宣告欄位在哪裡。有左內距的話文字會離那條線幾點，
+       * 多欄並排時每一欄都差一點，整體就鬆掉了。
+       *
+       * 只在有 ink 的主題上做，其他文件維持 Word 的預設內距。
+       */
+      if (activeInk) {
+        try {
+          cell.setCellPadding('Left', 0);
+          cell.setCellPadding('Right', 7);
+          cell.setCellPadding('Top', 2.5);
+          cell.setCellPadding('Bottom', 2.5);
+        } catch { /* 舊版沒有這個 API，內距就用預設 */ }
+      }
       if (isHead) {
-        cell.shadingColor = TABLE_INK.headerFill;
+        cell.shadingColor = ink.headerFill;
         const hf = cell.body.font;
-        hf.color = TABLE_INK.headerText;
+        hf.color = ink.headerText;
         hf.bold = true;
       } else {
         // Counted from the first BODY row, not the first table row: with a
         // header present, counting from the table starts the stripes one row
         // out and the banding reads as a mistake.
         const band = (r - (hasHeader ? 1 : 0)) % 2 === 1;
-        cell.shadingColor = band ? TABLE_INK.band : TABLE_INK.plain;
-        cell.body.font.color = TABLE_INK.text;
+        cell.shadingColor = band ? ink.band : ink.plain;
+        cell.body.font.color = ink.text;
       }
     }
   }
@@ -1049,6 +1098,13 @@ async function ensureBaseStyles(ctx, wanted) {
   if (!hasApi('1.5')) return false;
 
   const th = THEMES[String(wanted || 'modern').toLowerCase()] || THEMES.modern;
+  /**
+   * 表格要跟著主題走。
+   *
+   * 沒有這一行的話，套了主題的文件裡還是會冒出黑底灰紋的表格——文字一套配色、
+   * 表格另一套，而表格通常佔掉半頁。`ink` 是選用的，沒帶的主題就維持原狀。
+   */
+  activeInk = th.ink || null;
   try {
     const all = ctx.document.getStyles();
     const found = BASE_STYLES.map((spec) => ({
@@ -1655,6 +1711,21 @@ async function headerFooter(args) {
       if (args.text) {
         const p = body.insertParagraph(String(args.text), 'Start');
         p.alignment = HF_ALIGN[String(args.alignment || 'center').toLowerCase()] || 'Centered';
+        /**
+         * 頁首頁尾要安靜。
+         *
+         * 不設的話它就是 Word 的預設——黑色、跟內文一樣大。可是這行字會出現在**每一
+         * 頁**，跟內文一樣重的話，每翻一頁都要重新把它濾掉一次。它的工作是「需要時
+         * 查得到文件身分」，不是被讀。
+         *
+         * 所以用主題的次要色、縮一級字。沒套主題的文件維持原樣，不去動別人的既有
+         * 文件長相。
+         */
+        if (activeInk) {
+          const f = p.font;
+          f.size = 9;
+          f.color = activeInk.muted;
+        }
       }
       if (args.page_number) {
         body.insertOoxml(pageNumberOoxml(String(args.page_number)), 'End');
@@ -3829,6 +3900,38 @@ const THEMES = {
     lineSpacing: 13, spaceAfter: 4, sectionBefore: 10,
     titleAlign: 'Centered', bodyAlign: 'Left', firstLineIndent: 0,
   },
+  /**
+   * 久億藥局產品規劃書那一份的設計系統。
+   *
+   * ── 為什麼值得單獨做一個主題 ──
+   * 「配色很舒服，而且整個版面有設計過」。拆開來看，它舒服的原因不是用了好看的
+   * 顏色，是**顏色很少而且全部同一個色相家族**：內文是偏綠的近黑、次要是灰綠、
+   * 底色是淡綠，沒有一個純灰。純灰配綠會讀成兩套顏色貼在一起，偏過去才是一套。
+   *
+   * 另一個關鍵是字級幾乎不變：內文 9.5pt、標題 12pt，只差 2.5pt。階層是靠**顏色
+   * 和粗細**撐出來的，不是靠把標題放大。一般自動產生的文件剛好相反——字級拉得很
+   * 開、顏色卻只有黑白，於是看起來像大綱不像文件。
+   *
+   * ── 跟其他主題的差別 ──
+   * 只有這個主題帶 `ink`。其他主題沒有，paintTable 就走原本那套黑底灰紋——既有
+   * 文件的長相一個像素都不會變。標題用色也只發生在這裡：
+   * 「我認為預設標題也不要藍色，用黑色好了」那個決定仍然是預設。
+   */
+  report: {
+    label: '報告書',
+    font: '微軟正黑體', titleSize: 30, headingSize: 12, bodySize: 10,
+    titleColor: '#1F2A24', headingColor: '#1F5F4B', bodyColor: '#1F2A24',
+    lineSpacing: 16, spaceAfter: 6, sectionBefore: 16,
+    titleAlign: 'Left', bodyAlign: 'Left', firstLineIndent: 0,
+    ink: {
+      // 表頭是淡綠底配深綠字，不是黑底白字——表格是資料，不該是文件裡最黑的東西。
+      headerFill: '#EAF1ED', headerText: '#1F5F4B',
+      // 斑馬紋淡到幾乎看不見，它的工作是讓眼睛橫著走，不是分區。
+      band: '#F5F8F6', plain: '#FFFFFF', text: '#1F2A24',
+      // 內部細線 0.5pt 淺色、外框 1.25pt 主色：不畫滿格子，只畫承重的那幾條。
+      accent: '#1F5F4B', hair: '#D7DEDA', muted: '#6E7D76',
+    },
+  },
   compact: {
     label: '緊湊',
     font: '微軟正黑體', titleSize: 20, headingSize: 12, bodySize: 10,
@@ -4088,6 +4191,20 @@ function coverLine(text, opts) {
   if (opts.bold) rPr.push('<w:b/>');
   if (opts.font) rPr.push(`<w:rFonts w:ascii="${xmlEscape(opts.font)}" w:hAnsi="${xmlEscape(opts.font)}" w:eastAsia="${xmlEscape(opts.font)}"/>`);
   const pPr = [`<w:jc w:val="${JC[opts.align || 'Left'] || 'left'}"/>`];
+  /**
+   * 段落下方的那條線。
+   *
+   * 用段落框線而不是另外插一列表格或一個圖形：線跟著字走，字換行、字級改了、
+   * 整段被搬到別處，線都還在它該在的地方。獨立的元素做不到這件事，而封面正是
+   * 最常被人手動搬動的一頁。
+   *
+   * w:sz 的單位是 1/8 點，所以 1.25pt 要寫 10——跟參考文件裡那條線一樣粗。
+   */
+  if (opts.rule) {
+    pPr.push('<w:pBdr>'
+      + `<w:bottom w:val="single" w:sz="10" w:space="6" w:color="${String(opts.rule).replace('#', '')}"/>`
+      + '</w:pBdr>');
+  }
   if (opts.spaceBefore) pPr.push(`<w:spacing w:before="${tw(opts.spaceBefore)}"/>`);
   else if (opts.spaceAfter) pPr.push(`<w:spacing w:after="${tw(opts.spaceAfter)}"/>`);
   return '<w:p>'
@@ -4126,6 +4243,43 @@ async function insertCover(args) {
       lines.push(coverLine(title, { size: 20, color: COVER_INK.title, bold: true, align: 'Centered', font }));
       if (args.subtitle) lines.push(coverLine(args.subtitle, { size: 11, color: COVER_INK.sub, align: 'Centered', font }));
       if (args.note) lines.push(coverLine(args.note, { size: 9, color: COVER_INK.faint, align: 'Centered', font, spaceAfter: 12 }));
+    } else if (args.eyebrow || args.promise) {
+      /**
+       * 設計過的那種封面：五個元素，各自只做一件事。
+       *
+       *   10pt 主色   久億藥局 · 在地健康守護      ← 眉標：誰、什麼定位
+       *   30pt 墨色   個人 AI 健康顧問            ← 主標：這是什麼
+       *   17pt 主色   產品規劃書 ───────         ← 副標：這是哪一種文件，下面一條線
+       *   11pt 灰     讓社區居民在生活裡…          ← 一句話承諾
+       *   [表格]      文件版本 / 提出日期 / 來源    ← 文件事實
+       *
+       * ── 為什麼靠左而不是置中 ──
+       * 置中封面要靠「空」撐場面，所以得留大片空白、字也得放大，不然會顯得空洞。
+       * 靠左的話五個元素疊成一個左邊對齊的區塊，字級可以收斂、資訊密度可以高，
+       * 而且跟內頁同一條左邊界——翻頁的時候視線不用重新找基準。
+       *
+       * ── 為什麼要「一句話承諾」 ──
+       * 它是封面上唯一一句完整的話。標題只說「這是什麼」，承諾說「這是為了誰、
+       * 要達成什麼」。少了它，封面是一張標籤；有了它，封面是文件的第一段。
+       *
+       * 要走這條路得自己給 eyebrow 或 promise——沒給就是原本那個置中版，既有的
+       * 封面一個像素都不會變。
+       */
+      const ink = activeInk || {};
+      const accent = ink.accent || COVER_INK.title;
+      const muted = ink.muted || COVER_INK.meta;
+      lines.push(coverLine('', { spaceBefore: 96 }));
+      if (args.eyebrow) {
+        lines.push(coverLine(String(args.eyebrow), { size: 10, color: accent, bold: true, font }));
+      }
+      lines.push(coverLine(title, { size: 30, color: ink.text || COVER_INK.title, bold: true, font }));
+      if (args.subtitle) {
+        // 線掛在副標上，不是獨立一段：副標往哪走，線就往哪走。
+        lines.push(coverLine(args.subtitle, { size: 17, color: accent, font, rule: accent, spaceAfter: 14 }));
+      }
+      if (args.promise) {
+        lines.push(coverLine(String(args.promise), { size: 11, color: muted, font, spaceAfter: 28 }));
+      }
     } else {
       // 報告: one large title, one quiet subtitle, then the facts in a table.
       lines.push(coverLine('', { spaceBefore: 120 }));
