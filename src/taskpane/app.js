@@ -3068,8 +3068,18 @@ async function ignoreHandoff(id) {
  */
 async function loadSkills() {
   try {
+    /**
+     * 清單也要跟著語言走。
+     *
+     * 聊天那條路一直都有帶 locale（送在 body 裡），但技能清單是另一支 GET，而它
+     * 回的是**給人看的名稱和說明**。沒帶參數的話，使用者把介面切成英文之後，選單
+     * 裡的技能名稱還是中文——半個窗格一種語言，比整個窗格用錯語言更難看。
+     *
+     * 空字串代表「跟著帳號設定」，這時候不要送參數，讓伺服器自己決定。
+     */
+    const lang = state.locale ? `&locale=${encodeURIComponent(state.locale)}` : '';
     const res = await fetch(
-      `${state.apiBase}/api/skills?host=${encodeURIComponent(host.meta.api)}`,
+      `${state.apiBase}/api/skills?host=${encodeURIComponent(host.meta.api)}${lang}`,
       { headers: { Authorization: `Bearer ${state.token}` } },
     );
     if (!res.ok) {
@@ -4183,6 +4193,15 @@ ${typed}` : `/${tpl.name}`) : '';
     renderSourceMenu();
     updateApproveToggle();
     renderSelChip();
+    /**
+     * 伺服器給的文字也要重拿。
+     *
+     * 上面那幾個 render 只重畫窗格自己的字串；技能的名稱和說明是伺服器產的，不重抓
+     * 就會一直停在舊語言，而且使用者沒有任何線索知道該關掉側邊欄重開。
+     *
+     * 只有技能要重抓——常用指令是使用者自己打的字，交接內容也是，那些不該被翻譯。
+     */
+    void loadSkills();
     toggleLangMenu(false);
     const l = LOCALES.find(x => x.id === state.locale) || LOCALES[0];
     // In the transcript, because the change applies from the next message on and
