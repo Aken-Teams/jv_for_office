@@ -250,28 +250,32 @@ console.log(`\n${pass} passed, ${fail} failed`);
 // ── 封面檢查 ──────────────────────────────────────────────────────────────
 {
   /**
-   * 「首頁的標題應該要比較大，但它現在會因為最後檢查而不小心變小」。
+   * 這幾條是一個 bug 留下來的。
    *
-   * 封面用直接格式寫字級，照理說樣式掃描動不到；但只要有任何一步把那幾段重寫過，
-   * 直接格式就跟著原本的 run 一起沒了，剩下樣式層的大小。症狀很難自己發現——
-   * 封面還在、顏色也對，只是標題跟眉標一樣大。
+   * 封面檢查原本用猜的：「文件前十段裡最大的那一段就是封面標題」。那在有封面的文件裡
+   * 剛好成立，在沒有封面的文件裡什麼都不成立——合約沒有封面，於是它抓到本文段落，
+   * 放大成 30pt 粗體置中。而收尾檢查每一輪都跑、文件是一段一段長出來的，所以每一輪
+   * 那個窗口裡都有不同段落，整份合約到處是巨大的句子。
    *
-   * 所以不追是誰弄的，看結果：封面那幾段裡最大的那個沒到主題標題字級的八成就補回去。
-   * 八成是留給使用者自己調的空間——30 改成 26 是他的決定，掉到 10 才是故障。
+   * 修法是改成要有憑據：只修 word_insert_cover 自己做過、而且文字還對得上的那一段。
+   * 下面第一條是這個 bug 的回歸測試，也是這組裡最重要的一條——「不該動的時候不要動」
+   * 比「該修的時候有修」更要緊，因為前者壞掉的時候使用者是整份文件被弄花。
    */
   const T = (text, size) => ({ text, size });
-  const flat = fakeWord([T('產品部 · 自助問卷工具', 10), T('個人問卷平台 PRD', 10), T('一句承諾', 11)]);
-  await executeTool('word_review_layout', {});
-  ok('標題掉到內文大小會被抓到並修回去',
-    flat.fontSets.some((f) => f.bold === true), JSON.stringify(flat.fontSets));
 
-  const fine = fakeWord([T('產品部 · 自助問卷工具', 10), T('個人問卷平台 PRD', 30), T('一句承諾', 11)]);
+  const contract = fakeWord([
+    T('軟體委託開發合約書', 12),
+    T('甲方委託乙方開發軟體系統，雙方同意訂立本合約，條款如下：', 12),
+    T('一、乙方受甲方委託，開發「＿＿＿系統」。', 12),
+  ]);
   await executeTool('word_review_layout', {});
-  ok('標題本來就夠大就不要動它', fine.fontSets.length === 0, JSON.stringify(fine.fontSets));
+  ok('沒有封面的文件一個字都不會被放大', contract.fontSets.length === 0,
+    JSON.stringify(contract.fontSets));
 
-  const tweaked = fakeWord([T('眉標', 10), T('使用者自己調過的標題', 26), T('一句承諾', 11)]);
+  const noCover = fakeWord([T('備忘', 10), T('內容', 10)]);
   await executeTool('word_review_layout', {});
-  ok('使用者自己調小一點不算故障', tweaked.fontSets.length === 0, JSON.stringify(tweaked.fontSets));
+  ok('看起來像標題也不算——沒做過封面就是沒有封面', noCover.fontSets.length === 0,
+    JSON.stringify(noCover.fontSets));
 }
 
 process.exit(fail ? 1 : 0);

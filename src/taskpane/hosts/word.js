@@ -1897,6 +1897,20 @@ function mixHex(hex, toward, t) {
  * 同一份文件裡表格是綠的、圖表是藍橘的。一個概念有兩個判斷點就會長出兩種答案。
  */
 /** 目前套用的主題，沒套過就是預設版面。跟 inkNow() 同一個道理：一個概念一個取用點。 */
+/**
+ * 這份文件有沒有我們做的封面，以及當時標題設多大。
+ *
+ * ── 為什麼需要憑據 ──
+ * 封面檢查原本用猜的：「前十段裡最大的那個就是封面標題」。合約沒有封面，於是它抓到
+ * 本文段落，把它放大成 30pt 粗體置中。而收尾檢查每一輪都跑、文件是一段一段長出來的，
+ * 所以每一輪那個窗口裡都有不同段落——被放大的就不只一個，整份合約到處是巨大的句子。
+ *
+ * 「文件開頭最大的那一段」在有封面的文件裡剛好等於封面標題，在沒有封面的文件裡什麼
+ * 都不等於。這個檢查修的是「我們做的東西被後續步驟弄壞了」，前提是**我們真的做過**。
+ * 沒做過就沒有東西需要修。
+ */
+let coverTitle = null;
+
 let activeTheme = null;
 function themeNow() { return activeTheme || THEMES.report; }
 
@@ -3535,11 +3549,14 @@ async function reviewLayout(args) {
      * 就該是小的。
      */
     const front = [];
-    for (let i = 0; i < Math.min(10, items.length); i += 1) {
+    // 沒有憑據就整段跳過——沒做過封面的文件裡，沒有任何一段是「封面標題」。
+    for (let i = 0; coverTitle && i < Math.min(10, items.length); i += 1) {
       const q = items[i];
       if (Number(q.tableNestingLevel) > 0) continue;
       if (!String(q.text || '').trim()) continue;
       if (headingLevel(q) > 0) break;          // 已經進正文了
+      // 只認文字對得上的那一段。對不上就不是它——標題被改寫過是使用者的決定。
+      if (String(q.text).trim() !== coverTitle.text) continue;
       /**
        * 拿不到字級就不做這項檢查。
        *
@@ -3549,7 +3566,7 @@ async function reviewLayout(args) {
       try { q.font.load('size'); front.push(q); } catch { /* 這一段問不到就跳過 */ }
     }
     if (front.length) { try { await ctx.sync(); } catch { front.length = 0; } }
-    const want = themeNow().titleSize || 30;
+    const want = (coverTitle && coverTitle.size) || themeNow().titleSize || 30;
     const sizeOf = (q) => {
       try { return Number(q.font.size) || 0; } catch { return 0; }
     };
@@ -4717,6 +4734,7 @@ async function insertCover(args) {
       return null;
     });
 
+    coverTitle = { text: title, size: layout === 'letterhead' ? 17 : (args.eyebrow || args.promise) ? 30 : 26 };
     const what = layout === 'letterhead' ? '公司信頭式' : layout === 'form' ? '表單抬頭式' : '報告封面式';
     return `已建立${what}封面：「${title}」`
       + (rows.length ? `，含 ${rows.length} 列文件資訊表` : '')
