@@ -2387,6 +2387,48 @@ function formRows(fields, pairs) {
       rows.push({ kind: 'section', text: String(f.section), cells: [] });
       continue;
     }
+    /**
+     * 表格式區塊：學歷、工作經歷那種「一列一筆、共用欄位名」的東西。
+     *
+     * ── 為什麼要內建，而不是叫模型另外插一張表 ──
+     * 履歷本來就該是**一張大表單**。一段一段各插一張表的話，每張表自己算欄寬，於是
+     * 第一張四欄、第二張兩欄、第三張五欄，左緣全部對不齊——印出來就不像同一份表格，
+     * 而傳統履歷最講究的就是那條對齊線。中間還得用置中標題去隔開，那是報告的章節
+     * 結構，不是表單的結構。
+     *
+     * ── 怎麼塞進同一張表 ──
+     * 一張 Word 表格只有一個欄數，所以表格式區塊的欄位要**攤進既有的欄位格**裡：n 個
+     * 欄位平均分掉 width 個格子，用合併補足餘數。四欄的表單放五欄的學歷會擠，所以
+     * 超過就截掉並讓模型知道——與其畫一張歪的，不如少畫一欄並說清楚。
+     *
+     * 欄位名那一列用 label 的底色，但標上 grid 記號：它不該參與標籤欄寬的計算，
+     * 不然「主要工作內容」會把左邊那欄撐得比值欄還寬。
+     */
+    if (f.grid && typeof f.grid === 'object') {
+      flush();
+      const cols = (Array.isArray(f.grid.columns) ? f.grid.columns : []).map(String);
+      const n = Math.max(1, Math.min(cols.length || 1, width));
+      const at = (k) => Math.floor((k * width) / n);
+      const to = (k) => Math.floor(((k + 1) * width) / n) - 1;
+      if (cols.length) {
+        rows.push({
+          kind: 'fields',
+          cells: cols.slice(0, n).map((t, k) => ({ kind: 'label', grid: true, text: t, at: at(k), to: to(k) })),
+        });
+      }
+      const body = Array.isArray(f.grid.rows) ? f.grid.rows : [];
+      // 沒給資料就留空列讓人手寫——履歷多半是發下去填的，不是填好才印的。
+      const blanks = Math.max(0, Math.min(Number(f.grid.blank_rows) || 0, 20));
+      const all = body.length ? body : Array.from({ length: blanks || 3 }, () => []);
+      for (const r of all) {
+        const cells = [];
+        for (let k = 0; k < n; k += 1) {
+          cells.push({ kind: 'value', grid: true, text: String((r && r[k]) ?? ''), at: at(k), to: to(k), lines: 1 });
+        }
+        rows.push({ kind: 'fields', cells });
+      }
+      continue;
+    }
     if (f.label === undefined && f.value === undefined) continue;
 
     const label = String(f.label ?? '');
@@ -2414,8 +2456,10 @@ function formLabelWidth(rows, totalPt, pairs) {
    * 11-point CJK glyph. Mixing the two scales is how the label column came out
    * at its 28-point floor no matter what the labels said.
    */
+  // 表格式區塊的欄位名不算進來：它們橫跨整列，跟左邊那欄的寬度無關。
+  // 不排除的話「主要工作內容」會把標籤欄撐得比值欄還寬。
   const widest = Math.max(30, ...rows.flatMap((r) => r.cells
-    .filter((c) => c && c.kind === 'label')
+    .filter((c) => c && c.kind === 'label' && !c.grid)
     .map((c) => textWidth(c.text) * 5.6 + 14)));
   // Never more than a third of a pair's share: a form whose labels take most of
   // the page has nowhere left to write.
