@@ -19,14 +19,26 @@ function ok(name, cond, detail) {
 }
 
 function fakeWord(texts, tableSpecs = []) {
-  const log = { deleted: [], headerSet: [], breaks: [] };
-  const paragraphs = texts.map((t, i) => ({
-    text: t,
-    style: '', styleBuiltIn: '',
-    delete: () => log.deleted.push(i),
-    insertBreak: (kind, where) => log.breaks.push({ i, kind, where }),
-    load() {},
-  }));
+  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [] };
+  /**
+   * 字串就是普通段落；要測標題就給 {text, style}。
+   *
+   * 舊的假物件把 styleBuiltIn 寫死成空字串，於是 headingLevel 一律回 0——「不會自己
+   * 插分頁」那條斷言之所以永遠綠的，不是因為程式不插，是因為**這份假文件裡根本沒有
+   * 標題**。斷言測不到它宣稱在測的東西，比沒有斷言更糟。
+   */
+  const paragraphs = texts.map((spec, i) => {
+    const t = typeof spec === 'string' ? spec : spec.text;
+    const node = {
+      text: t,
+      style: '', styleBuiltIn: typeof spec === 'string' ? '' : (spec.style || ''),
+      delete: () => log.deleted.push(i),
+      insertBreak: (kind, where) => log.breaks.push({ i, kind, where }),
+      insertText: (txt) => { node.text = txt; log.rewrites.push({ i, txt }); return node; },
+      load() {},
+    };
+    return node;
+  });
   const tables = tableSpecs.map((spec, i) => {
     const t = {
       rowCount: spec.rows,
@@ -135,18 +147,35 @@ function fakeWord(texts, tableSpecs = []) {
   ok('短表格不會被動到', log.headerSet.length === 0);
 }
 
-// ── 刻意不做的事 ──────────────────────────────────────────────────────────
+// ── 章節編號與大章節換頁 ──────────────────────────────────────────────────
 {
   /**
-   * 「新章節新一頁並沒有真的很需要，因為有時候真的要看，有些適合有些不適合」。
+   * 政策換了，而且是使用者自己換的。
    *
-   * 所以這支一個分頁符號都不可以插。這條斷言比任何一條「有沒有修好」更重要——
-   * 自作主張切開一份文件，使用者要花更多力氣改回來。
+   * 原本這裡釘的是「一個分頁符號都不可以插」，理由是「有些適合有些不適合」。
+   * 後來看到真實產出才發現問題不在「要不要換頁」，在**沒有東西分得出大章節和
+   * 小節**——兩級標題都只有一條線，份量太接近。
+   *
+   * 所以門檻不是「所有標題」，是「這是不是一個大章節」：編得到號的才換頁。
+   * 原本那條顧慮（三行的小節獨佔一頁很空）由這個門檻擋掉，不是靠完全不做。
    */
-  const log = fakeWord(['第一章', '內文', '第二章', '內文', '第三章']);
-  const res = await executeTool('word_review_layout', {});
-  ok('不會自己插分頁', log.breaks.length === 0, JSON.stringify(log.breaks));
-  ok('而且會說明為什麼沒做', /編輯判斷/.test(String(res.content)), String(res.content).slice(-120));
+  const H1 = (text) => ({ text, style: 'Heading 1' });
+  const H2 = (text) => ({ text, style: 'Heading 2' });
+  const log = fakeWord([H1('產品概述'), '內文', H2('背景'), '內文', H1('目標使用者'), '內文', H1('功能需求')]);
+  await executeTool('word_review_layout', {});
+  // 三個大章節，第一個不換頁——它緊接在目錄後面，目錄自己已經把頁收掉了。
+  ok('只有第二個之後的大章節換頁', log.breaks.length === 2, JSON.stringify(log.breaks));
+  ok('換的是分頁', log.breaks.every((b) => b.kind === 'Page' && b.where === 'Before'),
+    JSON.stringify(log.breaks));
+  const got = log.rewrites.map((r) => r.txt);
+  ok('大章節編成一、二、三', got.includes('一、產品概述') && got.includes('二、目標使用者')
+    && got.includes('三、功能需求'), JSON.stringify(got));
+  ok('小節編成 1.1（跟著所屬的大章節走）', got.includes('1.1 背景'), JSON.stringify(got));
+
+  // 再跑一次不該變成「一、一、產品概述」——這個工具本來就會被跑很多次。
+  const again = fakeWord([H1('一、產品概述'), '內文', H2('1.1 背景'), H1('二、目標使用者')]);
+  await executeTool('word_review_layout', {});
+  ok('重複跑不會疊加編號', again.rewrites.length === 0, JSON.stringify(again.rewrites));
 }
 
 // ── 只看不改 ──────────────────────────────────────────────────────────────
@@ -158,4 +187,39 @@ function fakeWord(texts, tableSpecs = []) {
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+// ── 收尾機制：不靠使用者下對 prompt ─────────────────────────────────────────
+{
+  /**
+   * 「我擔心都看使用的 prompt，如果他沒下，產品品質就不穩」。
+   *
+   * 章節編號和大章節換頁都住在 word_review_layout 裡，而它要靠模型自己想到要呼叫。
+   * 這幾條釘的是門檻：動過結構才補、模型跑過就不補、文件太小也不補。寧可少做，
+   * 也不要在使用者只改了一句話的時候重寫他的標題。
+   */
+  const { finishRun } = await import('../src/taskpane/hosts/word.js');
+  const H1 = (text) => ({ text, style: 'Heading 1' });
+
+  // 沒動過結構 → 不補
+  fakeWord([H1('產品概述'), '內文', H1('目標使用者')]);
+  ok('沒動過結構就不補跑', !(await finishRun()));
+
+  // 動過結構、模型沒跑 → 補
+  const a = fakeWord([H1('產品概述'), '內文', H1('目標使用者')]);
+  await executeTool('word_insert_cover', { title: '測試' }).catch(() => {});
+  fakeWord([H1('產品概述'), '內文', H1('目標使用者')], [], a);
+  const note = await finishRun();
+  ok('動過結構就會補跑並說出來', typeof note === 'string');
+
+  // 模型自己跑過 → 不重複
+  fakeWord([H1('產品概述'), '內文', H1('目標使用者')]);
+  await executeTool('word_insert_table', { rows: [['a', 'b']] }).catch(() => {});
+  await executeTool('word_review_layout', {});
+  ok('模型自己跑過就不再補一次', !(await finishRun()));
+
+  // 只有一個大章節 → 不值得編號
+  fakeWord([H1('備忘'), '內文']);
+  await executeTool('word_insert_table', { rows: [['a', 'b']] }).catch(() => {});
+  ok('只有一個大章節就不補', !(await finishRun()));
+}
+
 process.exit(fail ? 1 : 0);

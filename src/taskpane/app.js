@@ -2000,6 +2000,19 @@ async function send(message, opts = {}) {
     state.selectionDropped = false;
     void host.getSelectionRef().then(setSelection).catch(() => {});
     void refreshDocumentName();
+    /**
+     * 收尾：這一輪動過文件結構的話，補跑一次版面檢查。
+     *
+     * 「我擔心都看使用的 prompt，如果他沒下，產品品質就不穩」——對。章節編號、大章節
+     * 換頁、表頭重複這些事都住在 word_review_layout 裡，而它要靠模型自己想到要呼叫。
+     * 使用者講了那句話就有，沒講就沒有，於是同一個產品的輸出品質取決於他知不知道
+     * 那句咒語。
+     *
+     * 宿主自己判斷門檻（動過結構、模型沒跑過、文件有兩個以上大章節），不符合就回空
+     * 字串，什麼都不做。Excel 和 PPT 沒有這個方法，所以 `?.` 不是防禦性寫法，是這個
+     * 介面本來就只有 Word 需要。
+     */
+    void host.finishRun?.().then((note) => { if (note) addNote(note, 'note'); }).catch(() => {});
     // One may have landed while this turn was running.
     void loadHandoffs();
     // 開啟側邊欄的當下連不上伺服器的話，模型和資料來源清單就是空的，而使用者看到的

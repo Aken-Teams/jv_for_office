@@ -1523,6 +1523,16 @@ async function insertToc(args) {
           : ctx.document.body.insertParagraph(text, at));
 
         const host = anchor ? anchor.insertParagraph('', where) : put('', 'Start');
+        /**
+         * 這一段是空的，但它會繼承錨點的樣式。
+         *
+         * 模型通常把目錄錨在第一個章節標題上，於是這個承載欄位的空段落也變成
+         * Heading 1——標題樣式現在帶一條色線，所以目錄後面會憑空多出一條線，而且
+         * 它還會出現在目錄自己的項目裡（空的標題也是標題）。
+         *
+         * 明確壓回內文樣式。它的工作是裝一個欄位，不是當標題。
+         */
+        try { host.styleBuiltIn = 'Normal'; } catch { /* 樣式被鎖住就算了 */ }
         let topmost = host;
         if (heading) {
           const h = host.insertParagraph(heading, 'Before');
@@ -1530,9 +1540,25 @@ async function insertToc(args) {
           topmost = h;
         }
         if (breaks) {
-          // Before: only when something precedes it. `anchor` being absent means
-          // this is going to the very top of the document.
-          if (anchor) topmost.insertBreak('Page', 'Before');
+          /**
+           * 前面那個分頁符要看情況，不是看有沒有錨點。
+           *
+           * ── 空白頁是怎麼來的 ──
+           * 封面自己就會在結尾放一個分頁符（「正文從第二頁開始」是它的承諾）。目錄
+           * 接著又加一個 Page Before，兩個分頁符連在一起，中間就夾出一張空白頁。
+           *
+           * 原本的條件是「有錨點就加」，而模型一定會給錨點，所以這個判斷等於沒有。
+           * 真正要問的是**前面那一頁已經結束了嗎**，而不是前面有沒有東西。
+           *
+           * 判斷方式：看插入點前面那一段是不是空的。封面結尾留下的正是一個空段落，
+           * 而正常的內文不會以空段落結尾。偵測不到就照原本的加——多一張空白頁比目錄
+           * 黏在前一頁的結尾好收拾。
+           */
+          const idx = anchor ? resolveRange(items, args).from - 1 : 0;
+          const prevIdx = where === 'Before' ? idx - 1 : idx;
+          const prev = prevIdx >= 0 ? items[prevIdx] : null;
+          const freshPage = prev ? !String(prev.text || '').trim() : true;
+          if (anchor && !freshPage) topmost.insertBreak('Page', 'Before');
           // After: the body starts on a fresh page whatever the contents page
           // happens to end on.
           host.insertBreak('Page', 'After');
@@ -3337,7 +3363,75 @@ async function reviewLayout(args) {
     });
     if (run.length >= 2) blanks.push(run.slice());   // 結尾那串，門檻放寬
 
+    /**
+     * 章節編號，以及「大章節換頁」。
+     *
+     * ── 為什麼編號比線更能分層 ──
+     * 標題底下那條線只能說「這裡是一個段落的開始」，說不出「這是第幾個」。h1 和 h2
+     * 都有線的時候，兩者的份量太接近，讀者得靠字級差那 1.5pt 去分——那太細了。
+     * 編號同時給了層級和順序，而且在目錄裡也看得到。
+     *
+     * 一級用「一、二、三」、二級用「1.1 / 1.2」：中文天干和阿拉伯數字混在同一份
+     * 文件裡反而好分，兩套各自負責一層，不會看成同一個序列。
+     *
+     * ── 為什麼寫死在文字裡 ──
+     * Word 的多階清單在 Office.js 裡設不可靠，而且它綁在樣式上，使用者手動改一個
+     * 標題就可能整串重編。寫死的代價是插入新章節之後編號會錯——所以這件事放在
+     * 這個工具裡：它本來就是「最後跑一次把版面收乾淨」，再跑一次就重編好了。
+     *
+     * 重編前先把舊的前綴剝掉，不然跑第二次會變成「一、一、產品概述」。
+     */
+    const NUM_H1 = /^[一二三四五六七八九十]+、\s*/;
+    const NUM_H2 = /^\d+\.\d+\s+/;
+    const CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
+      '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十'];
+    const heads = [];
+    let h1n = 0;
+    let h2n = 0;
+    for (const q of items) {
+      const lv = headingLevel(q);
+      if (lv !== 1 && lv !== 2) continue;
+      const raw = String(q.text || '').trim();
+      if (!raw) continue;
+      const bare = raw.replace(lv === 1 ? NUM_H1 : NUM_H2, '');
+      if (!bare) continue;
+      if (lv === 1) { h1n += 1; h2n = 0; } else { h2n += 1; }
+      // 超過二十章就不編了——與其寫出「二十一」這種參差的寬度，不如讓它維持原樣。
+      const label = lv === 1
+        ? (CN[h1n - 1] ? `${CN[h1n - 1]}、` : '')
+        : (h1n ? `${h1n}.${h2n} ` : '');
+      heads.push({ p: q, lv, want: label ? label + bare : bare, had: raw, numbered: !!label });
+    }
+    const renum = heads.filter((h) => h.want !== h.had);
+    // 第一個大章節不換頁——它緊接在目錄後面，而目錄自己已經把頁收掉了。
+    const pagers = heads.filter((h) => h.lv === 1 && h.numbered).slice(1);
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (renum.length) {
+        found.push(`${renum.length} 個章節標題沒有編號或編號不連續`);
+        if (fix) {
+          for (const h of renum) {
+            try { h.p.insertText(h.want, 'Replace'); } catch { /* 改不動就跳過 */ }
+          }
+          fixed.push(`重編 ${renum.length} 個章節編號（一、二、三 ／ 1.1、1.2）`);
+        }
+      }
+      if (pagers.length) {
+        found.push(`${pagers.length} 個大章節沒有從新的一頁開始`);
+        if (fix) {
+          /**
+           * 只有「有編號的大章節」換頁。
+           *
+           * 「有些適合有些不適合」——沒錯，所以門檻不是「所有標題」，是「這是不是一個
+           * 大章節」。編得到號的才是；編號超出二十、或是小節標題，都不換頁。三行的
+           * 小節獨佔一頁會顯得空，大章節不換頁則會讓人讀不到邊界。
+           */
+          for (const h of pagers) {
+            try { h.p.insertBreak('Page', 'Before'); } catch { /* 插不進去就跳過 */ }
+          }
+          fixed.push(`${pagers.length} 個大章節改從新的一頁開始`);
+        }
+      }
       if (blanks.length) {
         const total = blanks.reduce((a, b) => a + b.length, 0);
         found.push(`${blanks.length} 處連續空段落（共 ${total} 段）`);
@@ -5317,7 +5411,60 @@ async function runScript(args, allowWrites) {
  * itself; an exception here would strand the agent waiting for a result that
  * never comes.
  */
+/**
+ * 這一輪有沒有動過文件的結構，以及版面檢查有沒有跑過。
+ *
+ * ── 為什麼要記這個 ──
+ * 編號、章節換頁、表頭重複這些事全都在 word_review_layout 裡，而它要靠模型自己
+ * 想到要呼叫。使用者下「幫我寫一份 PRD，最後跑一次版面檢查」就有，只打「幫我寫一份
+ * PRD」就沒有——同一個產品，品質取決於使用者知不知道那句咒語。
+ *
+ * 寫進提示詞叫模型「最後一定要跑」是規則，而規則會被忘記。這兩個旗標讓窗格在一輪
+ * 結束的時候自己判斷該不該補跑。
+ */
+let structuralWrite = false;
+let reviewRan = false;
+
+/** 會改變文件骨架的工具。純文字修改不算——那種文件不需要章節編號。 */
+const STRUCTURAL = new Set([
+  'word_insert_cover', 'word_insert_toc', 'word_insert_table', 'word_insert_block',
+  'word_insert_layout', 'word_apply_theme', 'word_format_range', 'word_insert_chart',
+]);
+
+/**
+ * 一輪對話結束時補跑版面檢查。
+ *
+ * ── 門檻為什麼這樣定 ──
+ * 只在「這一輪真的動過結構」而且「模型自己沒跑過」的時候做，而且文件要有**兩個以上
+ * 的大章節**才算得上需要編號——一頁便條不需要「一、」。三個條件都成立才動手，寧可
+ * 少做也不要在使用者只是改了一句話的時候重寫他的標題。
+ *
+ * 做完會回一句話讓窗格說出來。安靜地改掉使用者的標題文字是不行的，即使改得對——
+ * 快照還在，但他得先知道有事發生才會想到要復原。
+ */
+export async function finishRun() {
+  const ran = structuralWrite && !reviewRan;
+  structuralWrite = false;
+  reviewRan = false;
+  if (!ran) return '';
+  try {
+    const count = await Word.run(async (ctx) => {
+      const items = await loadParagraphs(ctx);
+      return items.filter((q) => headingLevel(q) === 1 && String(q.text || '').trim()).length;
+    });
+    if (count < 2) return '';
+    const res = await reviewLayout({ fix: true });
+    const text = typeof res === 'string' ? res : String(res && res.content ? res.content : '');
+    return text ? `順手把版面收了一次：${text}` : '';
+  } catch {
+    // 補跑失敗不該變成使用者看到的錯誤——他沒要求這件事，它只是加分項。
+    return '';
+  }
+}
+
 export async function executeTool(tool, args, opts = {}) {
+  if (STRUCTURAL.has(tool)) structuralWrite = true;
+  if (tool === 'word_review_layout') reviewRan = true;
   /** Set before anything that writes, so a half-finished change is undoable. */
   let snapshot;
   const a = args || {};
