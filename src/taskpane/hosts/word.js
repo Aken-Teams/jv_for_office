@@ -985,7 +985,7 @@ function paintTable(table, rowCount, colCount, hasHeader) {
    * 後面，模組初始化時碰它會踩到 TDZ。寫在函式裡就沒這問題，函式一定在初始化之後
    * 才被呼叫。
    */
-  const ink = activeInk || THEMES.report.ink;
+  const ink = inkNow();
   // Our own stripes, so the style's are switched off — two sets half a row out
   // of phase is worse than either alone.
   table.styleBandedRows = false;
@@ -1142,6 +1142,8 @@ async function ensureBaseStyles(ctx, wanted) {
   if (!hasApi('1.5')) return false;
 
   const th = THEMES[String(wanted || 'report').toLowerCase()] || THEMES.report;
+  // 封面檢查要知道「標題本來該多大」，而那是主題定的。
+  activeTheme = th;
   /**
    * 表格要跟著主題走。
    *
@@ -1859,6 +1861,63 @@ async function insertBreak(args) {
  * would put in front of a customer.
  */
 const CHART_COLORS = ['#2563eb', '#16a34a', '#ea580c', '#9333ea', '#0891b2', '#ca8a04', '#dc2626', '#4b5563'];
+
+/** 把一個顏色往某個方向推 t（0~1）。t=0 是原色，t=1 是目標色。 */
+function mixHex(hex, toward, t) {
+  const h = String(hex).replace('#', '');
+  const g = String(toward).replace('#', '');
+  const ch = (i) => {
+    const a = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    const b = parseInt(g.slice(i * 2, i * 2 + 2), 16);
+    return Math.round(a + (b - a) * t).toString(16).padStart(2, '0');
+  };
+  return `#${ch(0)}${ch(1)}${ch(2)}`;
+}
+
+/**
+ * 圖表的系列色，從文件主色長出來。
+ *
+ * ── 為什麼不用固定那組 ──
+ * 原本是藍、綠、橘、紫⋯⋯一組獨立的調色盤。文件本身是黑白的時候那沒問題，但現在
+ * 預設版面有自己的主色，一張藍橘的圖表插進綠色的文件裡，看起來就是從別的地方貼
+ * 過來的——而且圖表通常是整頁最飽和的東西，它不協調，整頁就不協調。
+ *
+ * ── 怎麼長 ──
+ * 同一個色相往亮和暗各推幾階，中間插一個次要色。這樣多系列之間分得開（明度差夠），
+ * 又全部屬於同一家——跟文字那套「顏色很少、全部同一個色相家族」是同一個原則，
+ * 只是換到圖表上。
+ *
+ * 超過六個系列才回去借原本那組：那種圖表本來就該換個呈現方式，但不該因此畫不出來。
+ */
+/**
+ * 現在這份文件的面與線。
+ *
+ * 沒套過主題就是預設版面（report）——跟 paintTable 用的是同一條規則。原本圖表那邊
+ * 各自判斷 `activeInk` 有沒有值，於是「預設版面」在表格上成立、在圖表上不成立，
+ * 同一份文件裡表格是綠的、圖表是藍橘的。一個概念有兩個判斷點就會長出兩種答案。
+ */
+/** 目前套用的主題，沒套過就是預設版面。跟 inkNow() 同一個道理：一個概念一個取用點。 */
+let activeTheme = null;
+function themeNow() { return activeTheme || THEMES.report; }
+
+function inkNow() {
+  return activeInk || THEMES.report.ink;
+}
+
+export function chartColors() {
+  const ink = inkNow();
+  if (!ink || !ink.accent) return CHART_COLORS;
+  const a = ink.accent;
+  return [
+    a,
+    mixHex(a, '#FFFFFF', 0.45),
+    mixHex(a, '#000000', 0.35),
+    ink.muted || mixHex(a, '#FFFFFF', 0.7),
+    mixHex(a, '#FFFFFF', 0.25),
+    mixHex(a, '#000000', 0.6),
+    ...CHART_COLORS,
+  ];
+}
 /** Rendered at 2x so it stays crisp when Word scales it to the text column. */
 const CHART_SCALE = 2;
 
@@ -1894,7 +1953,7 @@ export function drawChart(spec) {
     const widths = series.map(s => c.measureText(s.name).width + 30);
     let x = (W - widths.reduce((a, b) => a + b, 0)) / 2;
     series.forEach((sr, i) => {
-      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fillStyle = chartColors()[i % chartColors().length];
       c.fillRect(x, top + 4, 12, 12);
       c.fillStyle = '#374151';
       c.fillText(sr.name, x + 18, top + 10);
@@ -1916,7 +1975,7 @@ export function drawChart(spec) {
       c.moveTo(cx, cy);
       c.arc(cx, cy, r, angle, angle + slice);
       c.closePath();
-      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fillStyle = chartColors()[i % chartColors().length];
       c.fill();
       c.strokeStyle = '#ffffff';
       c.lineWidth = 2;
@@ -1930,7 +1989,7 @@ export function drawChart(spec) {
     const lx = cx + r + 40;
     let ly = cy - (values.length - 1) * 13;
     values.forEach((v, i) => {
-      c.fillStyle = CHART_COLORS[i % CHART_COLORS.length];
+      c.fillStyle = chartColors()[i % chartColors().length];
       c.fillRect(lx, ly - 6, 12, 12);
       c.fillStyle = '#374151';
       c.fillText(`${cats[i] || ''}　${((v / total) * 100).toFixed(1)}%`, lx + 18, ly);
@@ -1987,7 +2046,7 @@ export function drawChart(spec) {
 
   if (spec.type === 'line') {
     series.forEach((sr, si) => {
-      c.strokeStyle = CHART_COLORS[si % CHART_COLORS.length];
+      c.strokeStyle = chartColors()[si % chartColors().length];
       c.lineWidth = 2.5;
       c.beginPath();
       sr.values.forEach((raw, i) => {
@@ -1996,7 +2055,7 @@ export function drawChart(spec) {
         i === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
       });
       c.stroke();
-      c.fillStyle = CHART_COLORS[si % CHART_COLORS.length];
+      c.fillStyle = chartColors()[si % chartColors().length];
       sr.values.forEach((raw, i) => {
         const x = left + slot * (i + 0.5);
         const y = bottom - plotH * at(Number(raw) || 0);
@@ -2007,7 +2066,7 @@ export function drawChart(spec) {
     const groupPad = slot * 0.22;
     const barSize = (slot - groupPad * 2) / series.length;
     series.forEach((sr, si) => {
-      c.fillStyle = CHART_COLORS[si % CHART_COLORS.length];
+      c.fillStyle = chartColors()[si % chartColors().length];
       sr.values.forEach((raw, i) => {
         const v = Number(raw) || 0;
         if (horizontal) {
@@ -2139,7 +2198,19 @@ async function insertChart(args) {
      * a chart nobody styled still arrives coherent, and `palette: "mono_grey"`
      * is there for the documents that really are printed in black and white.
      */
+    /**
+     * 系列色預設跟著文件主色，不是一組獨立的調色盤。
+     *
+     * 'classic' 是藍綠橘紫——文件是黑白的時候沒問題，但預設版面現在有自己的主色，
+     * 一張藍橘的圖插進綠色文件裡就像從別處貼過來的。而圖表通常是整頁最飽和的東西，
+     * 它不協調，整頁就不協調。
+     *
+     * 使用者明確指定 palette 的話照他的——這只是沒人決定時的預設。
+     */
     palette: 'classic',
+    colors: Array.isArray(args.colors) && args.colors.length
+      ? args.colors
+      : (args.palette ? undefined : chartColors()),
     // Everything the renderers read, copied wholesale — see CHART_DATA_KEYS for
     // why this is a list and not a dozen hand-written lines.
     ...chartData(args),
@@ -2152,7 +2223,23 @@ async function insertChart(args) {
     series: names,
     width,
     height: args.height === undefined ? undefined : Number(args.height),
-  }, DOC_CHART_INK);
+  }, {
+    /**
+     * 結構用的墨色也跟著文件走。
+     *
+     * 座標軸、格線、刻度標籤是家具，不該搶戲——這個判斷沒變。變的是「不搶戲」的
+     * 做法：用文件的墨色和次要色，而不是一組固定的黑灰藍。純黑的軸線配綠色的系列
+     * 會讀成兩套顏色疊在一起，正是文字那邊早就處理掉的問題。
+     */
+    ...DOC_CHART_INK,
+    ...(() => {
+      const k = inkNow();
+      return k && k.accent ? {
+        ink: k.text, strong: k.accent, second: k.muted, muted: k.muted,
+        line: k.hair, tint: k.headerFill, ground: k.band,
+      } : {};
+    })(),
+  });
 
   const png = await svgToPng(svg);
   const base64 = png.data;
@@ -3406,7 +3493,60 @@ async function reviewLayout(args) {
     // 第一個大章節不換頁——它緊接在目錄後面，而目錄自己已經把頁收掉了。
     const pagers = heads.filter((h) => h.lv === 1 && h.numbered).slice(1);
 
+    /**
+     * 封面的標題還夠大嗎。
+     *
+     * ── 為什麼它會變小 ──
+     * 封面是用直接格式（OOXML 的 w:sz）寫的，照理說樣式掃描動不到它。但只要有任何
+     * 一步把那幾段重寫過——換行重排、套樣式、或是把整段文字換掉——直接格式就跟著
+     * 原本的 run 一起沒了，剩下樣式層的字級，也就是內文大小。
+     *
+     * 症狀很難自己發現：封面還在、字還在、顏色也對，只是標題跟眉標一樣大，整頁
+     * 看起來像沒排版。而使用者多半不會想到「這是後面某一步弄的」。
+     *
+     * ── 判斷方式 ──
+     * 不去追是誰弄的，看結果：封面那幾段裡**最大的那一個**如果還沒到主題標題字級的
+     * 八成，就是掉了，補回去。八成是留給使用者自己調整的空間——他把 30 改成 26 是
+     * 他的決定，掉到 10 才是故障。
+     *
+     * 只看前十段、而且只看不在表格裡的：封面就那麼長，再往下是正文，正文的字本來
+     * 就該是小的。
+     */
+    const front = [];
+    for (let i = 0; i < Math.min(10, items.length); i += 1) {
+      const q = items[i];
+      if (Number(q.tableNestingLevel) > 0) continue;
+      if (!String(q.text || '').trim()) continue;
+      if (headingLevel(q) > 0) break;          // 已經進正文了
+      /**
+       * 拿不到字級就不做這項檢查。
+       *
+       * 段落的 font 不是每個 Word 版本、每種段落都給得出來的。這是加分項——為了它
+       * 讓整個版面檢查失敗，等於用一個小功能換掉一堆大功能。
+       */
+      try { q.font.load('size'); front.push(q); } catch { /* 這一段問不到就跳過 */ }
+    }
+    if (front.length) { try { await ctx.sync(); } catch { front.length = 0; } }
+    const want = themeNow().titleSize || 30;
+    const sizeOf = (q) => {
+      try { return Number(q.font.size) || 0; } catch { return 0; }
+    };
+    const biggest = front.reduce((a, b) => (sizeOf(b) > sizeOf(a) ? b : a), front[0] || null);
+    // 0 代表問不出來，不是「字級是 0」——問不出來就不該判它有問題。
+    const coverFlat = !!biggest && sizeOf(biggest) > 0 && sizeOf(biggest) < want * 0.8;
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (coverFlat) {
+        found.push(`封面標題只有 ${sizeOf(biggest)}pt，比版面設定的 ${want}pt 小`);
+        if (fix) {
+          try {
+            biggest.font.size = want;
+            biggest.font.bold = true;
+            biggest.font.color = themeNow().titleColor || (inkNow().text || '#000000');
+            fixed.push(`封面標題改回 ${want}pt`);
+          } catch { /* 改不動就只報告 */ }
+        }
+      }
       if (renum.length) {
         found.push(`${renum.length} 個章節標題沒有編號或編號不連續`);
         if (fix) {
@@ -3444,6 +3584,21 @@ async function reviewLayout(args) {
             : g.slice(1)));
           for (let i = drop.length - 1; i >= 0; i -= 1) {
             try { items[drop[i]].delete(); } catch { /* 刪不掉就算了 */ }
+          }
+          /**
+           * 留下來的那一段要壓回內文樣式。
+           *
+           * ── 那個莫名其妙的小方塊是什麼 ──
+           * 空段落會繼承前一段的樣式。前一段是標題或清單的話，留下來的空段落就還是
+           * 標題或清單——Word 會在它左邊畫一個小方塊（標題的大綱標記）或一個項目符號。
+           * 看起來就是「每個章節結尾都多一個空的條列」。
+           *
+           * 它沒有文字，所以刪空段落的邏輯看不出它有問題；它有樣式，所以畫面上看得出。
+           * 留一段是為了呼吸，不是為了留一個空的標題。
+           */
+          const kept = blanks.flatMap((g) => (g[g.length - 1] === items.length - 1 ? [] : [g[0]]));
+          for (const i of kept) {
+            try { items[i].styleBuiltIn = 'Normal'; } catch { /* 樣式鎖住就算了 */ }
           }
           fixed.push(`刪掉 ${drop.length} 個多餘的空段落`);
         }
@@ -4600,9 +4755,20 @@ async function insertGantt(args) {
     height: args.height === undefined ? undefined : Number(args.height),
     colors: Array.isArray(args.colors) ? args.colors : undefined,
   }, {
-    // A document is black on white; a schedule inside one should not be the
-    // brightest thing on the page. Greys and one accent, same as the tables.
-    ink: '#000000', strong: '#000000', second: '#595959', accent: '#C0392B',
+    /**
+     * 跟著文件主色走。
+     *
+     * 原本是灰底配一點紅——理由是「文件裡的時程不該是整頁最亮的東西」，那個判斷
+     * 現在仍然對，只是「低調」不等於「灰」。用主色的深淺階一樣低調，而且跟表格、
+     * 標題、封面是同一家；一張灰色甘特圖插在綠色文件裡，低調歸低調，就是不像同
+     * 一份文件的東西。
+     *
+     * 今天那條線保留強調色——它是整張圖裡唯一需要被指出來的位置。
+     */
+    ink: inkNow().text || '#000000',
+    strong: inkNow().accent || '#000000',
+    second: inkNow().muted || '#595959',
+    accent: '#C0392B',
     muted: '#595959', line: '#D9D9D9', tint: '#F2F2F2', ground: '#F7F7F7', bg: '#FFFFFF',
   });
 
@@ -5454,8 +5620,19 @@ export async function finishRun() {
     });
     if (count < 2) return '';
     const res = await reviewLayout({ fix: true });
+    /**
+     * 只說做了什麼，不要把報告倒出來。
+     *
+     * reviewLayout 的回傳是寫給模型看的——它要知道查到什麼、還有什麼建議，所以很長。
+     * 但這句話是**窗格主動說的**，使用者沒要求過，它只需要回答「剛剛有東西被改了嗎」。
+     * 細節他想知道的話會問。
+     */
     const text = typeof res === 'string' ? res : String(res && res.content ? res.content : '');
-    return text ? `順手把版面收了一次：${text}` : '';
+    const did = (text.match(/^\s*[-·]\s*(.+)$/gm) || [])
+      .map((l) => l.replace(/^\s*[-·]\s*/, '').trim())
+      .filter(Boolean);
+    if (!did.length) return '';
+    return `順手把版面收了一次：${did.join('、')}。不要的話按復原。`;
   } catch {
     // 補跑失敗不該變成使用者看到的錯誤——他沒要求這件事，它只是加分項。
     return '';

@@ -164,4 +164,26 @@ for (const [name, spec] of CASES) {
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+/**
+ * 圖表的顏色要跟文件同一家。
+ *
+ * 圖表通常是整頁最飽和的東西——它不協調，整頁就不協調。這幾條釘的是「同色相」這個
+ * 性質，不是具體色碼：色碼之後還會調，但「系列色是從主色長出來的」不該變。
+ */
+{
+  const { chartColors } = await import('../src/taskpane/hosts/word.js');
+  const got = chartColors();
+  ok('系列色第一個就是文件主色', got[0] === '#1F5F4B', String(got[0]));
+  ok('至少給得出六個分得開的系列色', new Set(got.slice(0, 6)).size === 6,
+    JSON.stringify(got.slice(0, 6)));
+  // 同色相的驗法：綠通道一直是最大的那個。推亮推暗都不該換掉色相。
+  const greenDominant = (hex) => {
+    const n = (i) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+    return n(1) >= n(0) && n(1) >= n(2);
+  };
+  ok('推亮推暗都還在同一個色相家族',
+    got.slice(0, 3).every(greenDominant) && got.slice(4, 6).every(greenDominant),
+    JSON.stringify(got.slice(0, 6)));
+}
+
 process.exit(fail ? 1 : 0);

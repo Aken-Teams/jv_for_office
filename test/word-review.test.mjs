@@ -19,7 +19,7 @@ function ok(name, cond, detail) {
 }
 
 function fakeWord(texts, tableSpecs = []) {
-  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [] };
+  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [], fontSets: [] };
   /**
    * 字串就是普通段落；要測標題就給 {text, style}。
    *
@@ -35,6 +35,13 @@ function fakeWord(texts, tableSpecs = []) {
       delete: () => log.deleted.push(i),
       insertBreak: (kind, where) => log.breaks.push({ i, kind, where }),
       insertText: (txt) => { node.text = txt; log.rewrites.push({ i, txt }); return node; },
+      // 封面檢查要問字級。沒有 font 的假物件測不到那段，而真實的 Word 一定給得出來。
+      font: typeof spec === 'string' ? undefined : (spec.size === undefined ? undefined : {
+        size: spec.size,
+        load() {},
+        set bold(v) { log.fontSets.push({ i, bold: v }); },
+        set color(v) { log.fontSets.push({ i, color: v }); },
+      }),
       load() {},
     };
     return node;
@@ -220,6 +227,33 @@ console.log(`\n${pass} passed, ${fail} failed`);
   fakeWord([H1('備忘'), '內文']);
   await executeTool('word_insert_table', { rows: [['a', 'b']] }).catch(() => {});
   ok('只有一個大章節就不補', !(await finishRun()));
+}
+
+// ── 封面檢查 ──────────────────────────────────────────────────────────────
+{
+  /**
+   * 「首頁的標題應該要比較大，但它現在會因為最後檢查而不小心變小」。
+   *
+   * 封面用直接格式寫字級，照理說樣式掃描動不到；但只要有任何一步把那幾段重寫過，
+   * 直接格式就跟著原本的 run 一起沒了，剩下樣式層的大小。症狀很難自己發現——
+   * 封面還在、顏色也對，只是標題跟眉標一樣大。
+   *
+   * 所以不追是誰弄的，看結果：封面那幾段裡最大的那個沒到主題標題字級的八成就補回去。
+   * 八成是留給使用者自己調的空間——30 改成 26 是他的決定，掉到 10 才是故障。
+   */
+  const T = (text, size) => ({ text, size });
+  const flat = fakeWord([T('產品部 · 自助問卷工具', 10), T('個人問卷平台 PRD', 10), T('一句承諾', 11)]);
+  await executeTool('word_review_layout', {});
+  ok('標題掉到內文大小會被抓到並修回去',
+    flat.fontSets.some((f) => f.bold === true), JSON.stringify(flat.fontSets));
+
+  const fine = fakeWord([T('產品部 · 自助問卷工具', 10), T('個人問卷平台 PRD', 30), T('一句承諾', 11)]);
+  await executeTool('word_review_layout', {});
+  ok('標題本來就夠大就不要動它', fine.fontSets.length === 0, JSON.stringify(fine.fontSets));
+
+  const tweaked = fakeWord([T('眉標', 10), T('使用者自己調過的標題', 26), T('一句承諾', 11)]);
+  await executeTool('word_review_layout', {});
+  ok('使用者自己調小一點不算故障', tweaked.fontSets.length === 0, JSON.stringify(tweaked.fontSets));
 }
 
 process.exit(fail ? 1 : 0);
