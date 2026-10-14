@@ -34,6 +34,8 @@ function fakeWord(texts, tableSpecs = []) {
       style: '', styleBuiltIn: typeof spec === 'string' ? '' : (spec.style || ''),
       // 內容住在儲存格裡還是正文裡——版面檢查靠這個分辨表單和報告。
       tableNestingLevel: typeof spec === 'string' ? 0 : (spec.inCell ? 1 : 0),
+      // 只裝一張圖的段落 text 是空的——清空段落的邏輯必須看得見這個。
+      inlinePictures: { items: (typeof spec !== 'string' && spec.pic) ? [{}] : [], load() {} },
       delete: () => log.deleted.push(i),
       insertBreak: (kind, where) => log.breaks.push({ i, kind, where }),
       insertText: (txt) => { node.text = txt; log.rewrites.push({ i, txt }); return node; },
@@ -312,6 +314,26 @@ console.log(`\n${pass} passed, ${fail} failed`);
   ]);
   await executeTool('word_review_layout', {});
   ok('報告照樣編號', report.rewrites.length > 0, JSON.stringify(report.rewrites));
+}
+
+// ── 圖片不是空白 ──────────────────────────────────────────────────────────
+{
+  /**
+   * 「月曆也有 BUG，好像被最後檢查刪除了」。
+   *
+   * 年曆、圖表、流程圖都是以行內圖片的形式掛在一個段落上，而那個段落的 text 是空字串。
+   * 空段落清理看的就是 text，於是它把圖整個刪掉——使用者看到「AI 說做好了，但文件是
+   * 空的」，訊息裡還明寫著「多出來的空白段落也清掉了」。
+   *
+   * 前提錯了：段落空不空該看它有沒有內容，不是有沒有文字。
+   */
+  const pic = { text: '', pic: true };
+  const log = fakeWord(['前言', '', '', pic, '', '', '', '結語']);
+  await executeTool('word_review_layout', {});
+  const picIndex = 3;
+  ok('裝著圖的段落不會被當成空白刪掉', !log.deleted.includes(picIndex),
+    JSON.stringify(log.deleted));
+  ok('旁邊真的空白的還是會清掉', log.deleted.length > 0, JSON.stringify(log.deleted));
 }
 
 process.exit(fail ? 1 : 0);

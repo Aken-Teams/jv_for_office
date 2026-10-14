@@ -3527,10 +3527,33 @@ async function reviewLayout(args) {
      * 一整頁空白幾乎都是這個來的——不是有人插了分頁，是連續十幾個空段落剛好把
      * 內容推過一頁。留一個當作段落之間的呼吸，其餘刪掉。
      */
+    /**
+     * 只裝著一張圖的段落，text 是空字串。
+     *
+     * ── 年曆為什麼會消失 ──
+     * 空段落清理看的是 `text`，而圖片不是文字——年曆、圖表、流程圖都是以行內圖片的
+     * 形式掛在一個「空」段落上。於是版面檢查把它們當成多餘的空白刪掉，使用者看到的是
+     * 「AI 說做好了，但文件是空的」，而且訊息裡還明寫著「多出來的空白段落也清掉了」。
+     *
+     * 這是整個清理邏輯的前提錯了：段落空不空該看它有沒有**內容**，不是有沒有**文字**。
+     *
+     * 問不到圖片就當它有圖——寧可留下一個真的空段落，也不要刪掉一張真的圖。前者是
+     * 版面瑕疵，後者是使用者的工作成果不見了。
+     */
+    const pics = items.map((q) => {
+      try { const c = q.inlinePictures; c.load('items'); return c; } catch { return null; }
+    });
+    try { await ctx.sync(); } catch { /* 這個版本問不到就全部當作有圖 */ }
+    const hasPic = (i) => {
+      const c = pics[i];
+      if (!c) return false;
+      try { return Array.isArray(c.items) && c.items.length > 0; } catch { return true; }
+    };
+
     const blanks = [];
     let run = [];
     items.forEach((p, i) => {
-      if (!String(p.text || '').trim()) { run.push(i); return; }
+      if (!String(p.text || '').trim() && !hasPic(i)) { run.push(i); return; }
       if (run.length >= 3) blanks.push(run.slice());
       run = [];
     });
