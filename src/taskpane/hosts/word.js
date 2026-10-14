@@ -974,7 +974,18 @@ const TABLE_INK = {
  * the black band goes and where the stripes start counting from.
  */
 function paintTable(table, rowCount, colCount, hasHeader) {
-  const ink = activeInk || TABLE_INK;
+  /**
+   * 沒套過主題的時候用 report 的配色——這是預設版面。
+   *
+   * 「甚至我認為你可以做成這就是預設版面」。原本的預設是黑底白字的表頭配灰斑馬紋，
+   * 那是 Word 內建樣式的審美，不是我們挑的；挑過的那一套應該是不做決定時得到的
+   * 東西，而不是要特別要求才有。
+   *
+   * 不能寫在宣告處（`let activeInk = THEMES.report.ink`）——THEMES 宣告在這支檔案
+   * 後面，模組初始化時碰它會踩到 TDZ。寫在函式裡就沒這問題，函式一定在初始化之後
+   * 才被呼叫。
+   */
+  const ink = activeInk || THEMES.report.ink;
   // Our own stripes, so the style's are switched off — two sets half a row out
   // of phase is worse than either alone.
   table.styleBandedRows = false;
@@ -988,7 +999,7 @@ function paintTable(table, rowCount, colCount, hasHeader) {
    *
    * 包 try：框線 API 不是每個 Word 版本都有，畫不出來就維持原樣，不該讓整張表失敗。
    */
-  if (activeInk) {
+  if (ink.hair && ink.accent) {
     try {
       for (const side of ['InsideHorizontal', 'InsideVertical']) {
         const b = table.getBorder(side);
@@ -1015,7 +1026,7 @@ function paintTable(table, rowCount, colCount, hasHeader) {
        *
        * 只在有 ink 的主題上做，其他文件維持 Word 的預設內距。
        */
-      if (activeInk) {
+      if (ink.hair) {
         try {
           cell.setCellPadding('Left', 0);
           cell.setCellPadding('Right', 7);
@@ -1038,6 +1049,39 @@ function paintTable(table, rowCount, colCount, hasHeader) {
       }
     }
   }
+}
+
+/**
+ * 章節標題底下那條線。
+ *
+ * ── 為什麼不是只有顏色 ──
+ * 參考文件的標題只比內文大 2.5pt。光靠字級，章節起點在一頁裡幾乎看不出來；它靠的
+ * 是**一條橫跨版心的色線**——線不是裝飾，它是「這裡開始是新的一節」這句話的視覺
+ * 形式。字級拉大是另一種做法，但那會讓文件讀起來像大綱。
+ *
+ * 只給 h1 和 h2：線是分節用的，每一級都畫就不再有分節的意思，只是噪音。h2 用細線
+ * 和淺色，份量比 h1 小一階。
+ *
+ * ── 為什麼包這麼多層 try ──
+ * 樣式層的框線是 WordApi 1.6 才有的，而且集合的取用方式在不同版本的 Office.js 裡
+ * 不一樣（`getByLocation` 與 `getFirst` 都出現過）。拿不到就安靜跳過——標題仍然有
+ * 顏色和粗細，只是少一條線。為了一條線讓整個套用樣式失敗，顯然不划算。
+ */
+function headingRule(style, th, level) {
+  const ink = activeInk;
+  if (!ink || !ink.accent || level > 2) return;
+  if (!hasApi('1.6')) return;
+  try {
+    const col = level === 1 ? ink.accent : (ink.hair || ink.accent);
+    const borders = style.borders;
+    const b = typeof borders.getByLocation === 'function'
+      ? borders.getByLocation('Bottom')
+      : (typeof borders.getFirst === 'function' ? borders.getFirst() : null);
+    if (!b) return;
+    b.type = 'Single';
+    b.color = col;
+    b.width = level === 1 ? 1.5 : 0.5;
+  } catch { /* 這個版本給不了樣式層的框線，顏色和粗細照樣套得上 */ }
 }
 
 /**
@@ -1097,14 +1141,20 @@ async function ensureBaseStyles(ctx, wanted) {
   styledDoc = key;
   if (!hasApi('1.5')) return false;
 
-  const th = THEMES[String(wanted || 'modern').toLowerCase()] || THEMES.modern;
+  const th = THEMES[String(wanted || 'report').toLowerCase()] || THEMES.report;
   /**
    * 表格要跟著主題走。
    *
    * 沒有這一行的話，套了主題的文件裡還是會冒出黑底灰紋的表格——文字一套配色、
    * 表格另一套，而表格通常佔掉半頁。`ink` 是選用的，沒帶的主題就維持原狀。
    */
-  activeInk = th.ink || null;
+  /**
+   * 明確選了沒有 ink 的主題（公文體、學術論文）就回到中性配色。
+   *
+   * 不是 null——null 在 paintTable 裡會退回 report 的綠。公文和論文該是黑白的，
+   * 那是它們的規矩，不是我們的審美可以蓋過去的。
+   */
+  activeInk = th.ink || TABLE_INK;
   try {
     const all = ctx.document.getStyles();
     const found = BASE_STYLES.map((spec) => ({
@@ -1132,6 +1182,7 @@ async function ensureBaseStyles(ctx, wanted) {
         f.size = Math.max(th.bodySize + 1, th.headingSize - (level - 1) * 1.5);
         f.color = th.headingColor;
         f.bold = true;
+        headingRule(style, th, level);
       } else if (spec.role === 'aside') {
         f.size = Math.max(8, th.bodySize - 1.5);
         f.color = th.bodyColor;
@@ -3919,7 +3970,14 @@ const THEMES = {
    */
   report: {
     label: '報告書',
-    font: '微軟正黑體', titleSize: 30, headingSize: 12, bodySize: 10,
+    /**
+     * 標題只比內文大 3.5pt——參考文件是 12 比 9.5，差不多的比例。
+     *
+     * 不是 12：階層公式是每低一級收 1.5pt、最低不低於內文 +1，12 會讓第二級和第三級
+     * 一樣大（11 和 11），於是只剩兩層看得出來。13.5 剛好撐得出 13.5 / 12 / 11 三層，
+     * 又還在「標題不靠放大取勝」的範圍裡。
+     */
+    font: '微軟正黑體', titleSize: 30, headingSize: 13.5, bodySize: 10,
     titleColor: '#1F2A24', headingColor: '#1F5F4B', bodyColor: '#1F2A24',
     lineSpacing: 16, spaceAfter: 6, sectionBefore: 16,
     titleAlign: 'Left', bodyAlign: 'Left', firstLineIndent: 0,
@@ -4265,6 +4323,22 @@ async function insertCover(args) {
        * 要走這條路得自己給 eyebrow 或 promise——沒給就是原本那個置中版，既有的
        * 封面一個像素都不會變。
        */
+      /**
+       * 設計過的封面會把整份文件的配色一起定下來。
+       *
+       * ── 為什麼是機制而不是規則 ──
+       * 封面和主題是兩個工具、兩次決定。模型做完一張設計過的封面，接著插表格的時候
+       * 很可能沒想到要先套 report 主題——於是封面是淡綠細線的，表格是黑底白字的，
+       * 一份文件裡兩套設計語言。這正是使用者看到的「封面有設計、內文還是傳統」。
+       *
+       * 寫在提示詞裡叫模型「記得也要套主題」是規則，規則會被忘記。改成：給了
+       * eyebrow 或 promise 就代表你要的是設計過的版本，那套配色當場生效，後面每一張
+       * 表格、每一個頁首都跟著走，不需要第二次決定。
+       *
+       * 只在還沒套過主題的時候做（`activeInk` 是空的）——使用者自己指定過別的主題
+       * 就不要覆蓋他。
+       */
+      if (!activeInk) activeInk = THEMES.report.ink;
       const ink = activeInk || {};
       const accent = ink.accent || COVER_INK.title;
       const muted = ink.muted || COVER_INK.meta;
@@ -4338,12 +4412,35 @@ async function insertCover(args) {
         await ctx.sync();
       }
 
-      // The body starts on its own page. A run of empty paragraphs would move
-      // the moment anyone edits a word above it.
+      /**
+       * 正文從第二頁開始——分頁符要放在封面的最後一段後面。
+       *
+       * ── 原本錯在哪 ──
+       * 原本是 `all.items[lines.length + rows.length]`，一列表格算一段。但
+       * `body.paragraphs.items` **把表格儲存格裡的段落也算進去**，而文件資訊表是
+       * 兩欄的——5 列是 10 段，不是 5 段。
+       *
+       * 於是索引落在表格中間，分頁符插進表格內部，表格剩下的列和原本那個空段落被
+       * 推到下一頁。症狀就是「目錄前面多一張幾乎空白的頁」，而且只有帶 meta 的封面
+       * 會發生——沒有表格的時候那個算式剛好是對的。
+       *
+       * 這跟上面那個錨點是同一類錯誤（同一個 items 陣列、同一個假設）。所以這次也
+       * 一樣不用算的：從封面文字的後面往前走，找第一個**不在表格裡**的段落。那就是
+       * 表格之後的那一段，也是封面的結尾。
+       */
       const all = ctx.document.body.paragraphs;
       all.load('items');
       await ctx.sync();
-      const last = all.items[Math.min(lines.length + rows.length, all.items.length - 1)];
+      const owner = all.items.map((q) => {
+        const t = q.parentTableOrNullObject;
+        t.load('isNullObject');
+        return t;
+      });
+      await ctx.sync();
+      let at = Math.min(lines.length + rows.length * 2, all.items.length - 1);
+      // 索引估得準不準都沒關係，往後走到第一個在表格外的段落為止。
+      while (at < all.items.length - 1 && owner[at] && owner[at].isNullObject === false) at += 1;
+      const last = all.items[at];
       if (last) last.insertBreak('Page', 'After');
       await ctx.sync();
       return null;

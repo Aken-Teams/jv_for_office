@@ -254,13 +254,27 @@ ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') =
 ok('合計列的深底沒有外溢到明細列',
   [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#1F3864'),
   [0, 1, 2].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
-ok('明細列是白／淡灰相間',
-  at(1, 0, 'shadingColor') === '#FFFFFF' && at(2, 0, 'shadingColor') === '#F2F2F2',
+/**
+ * 預設配色換掉了：黑底白字的表頭 → 淡綠底深綠字。
+ *
+ * 「甚至我認為你可以做成這就是預設版面」。舊的那套是 Word 內建樣式的審美——表頭
+ * 是整份文件裡最黑的東西，可是表格是資料，不該搶走標題的份量。
+ *
+ * 這幾項斷言的是**顏色關係**而不是色碼本身，因為色碼以後還會調，關係不該變：
+ * 表頭要比明細淺（它是欄位名不是重點）、明細的斑馬紋要淡到幾乎看不見（它的工作是
+ * 讓眼睛橫著走，不是分區）、字不能是純黑（純黑配彩色會讀成兩套顏色貼在一起）。
+ */
+ok('明細列是白／極淡底相間',
+  at(1, 0, 'shadingColor') === '#FFFFFF' && at(2, 0, 'shadingColor') === '#F5F8F6',
   `${at(1, 0, 'shadingColor')}|${at(2, 0, 'shadingColor')}`);
-ok('表頭黑底白字',
-  at(0, 0, 'shadingColor') === '#000000' && t.getCell(0, 0).body.font.color === '#FFFFFF',
+ok('表頭是淡底深字，不是黑底白字',
+  at(0, 0, 'shadingColor') === '#EAF1ED' && t.getCell(0, 0).body.font.color === '#1F5F4B',
   `${at(0, 0, 'shadingColor')}|${t.getCell(0, 0).body.font.color}`);
-ok('明細列的字是黑的', t.getCell(1, 0).body.font.color === '#000000',
+ok('表頭的底比明細列的斑馬紋深（欄位名要站得住）',
+  at(0, 0, 'shadingColor') !== at(2, 0, 'shadingColor'));
+ok('內文不是純黑，是帶主色調的墨',
+  t.getCell(1, 0).body.font.color === '#1F2A24'
+  && t.getCell(1, 0).body.font.color !== '#000000',
   String(t.getCell(1, 0).body.font.color));
 ok('合計列白色粗體',
   [3, 4, 5].every((r) => t.getCell(r, 5).body.font.color === '#FFFFFF' && t.getCell(r, 5).body.font.bold === true));
@@ -272,7 +286,7 @@ reset();
 await host.executeTool('word_insert_table', { values: [['A', 'B'], ['1', '2']], total_rows: 99 });
 const t2 = log.tables[0].table;
 ok('total_rows 過大也不會吃掉表頭',
-  t2.getCell(0, 0)._props.shadingColor === '#000000',
+  t2.getCell(0, 0)._props.shadingColor === '#EAF1ED',
   String(t2.getCell(0, 0)._props.shadingColor));
 
 // Ragged input is normal from a model; short rows get padded rather than

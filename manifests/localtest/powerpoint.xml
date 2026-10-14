@@ -44,13 +44,13 @@
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="【本地測試】JVision for PowerPoint" />
   <Description DefaultValue="【本地測試版本，請勿用於正式文件】在 PowerPoint 側邊欄直接問 AI：做投影片、排版對齊、統一配色、畫流程圖。它讀得到每個物件的座標。" />
-  <IconUrl DefaultValue="http://localhost:12054/assets/localtest/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="http://localhost:12054/assets/localtest/icon-64.png" />
-  <SupportUrl DefaultValue="http://localhost:12054/" />
+  <IconUrl DefaultValue="https://localhost:3443/assets/localtest/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/localtest/icon-64.png" />
+  <SupportUrl DefaultValue="https://localhost:3443/" />
 
   <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。 -->
   <AppDomains>
-    <AppDomain>http://localhost:12054</AppDomain>
+    <AppDomain>https://localhost:3443</AppDomain>
   </AppDomains>
 
   <Hosts>
@@ -64,7 +64,7 @@
   </Requirements>
 
   <DefaultSettings>
-    <SourceLocation DefaultValue="http://localhost:12054/src/taskpane/taskpane.html" />
+    <SourceLocation DefaultValue="https://localhost:3443/src/taskpane/taskpane.html" />
   </DefaultSettings>
 
   <!-- 讀寫整份簡報。少於這個等級就改不了投影片。 -->
@@ -117,13 +117,13 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="http://localhost:12054/assets/localtest/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="http://localhost:12054/assets/localtest/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="http://localhost:12054/assets/localtest/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3443/assets/localtest/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3443/assets/localtest/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3443/assets/localtest/icon-80.png" />
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="http://localhost:12054/src/taskpane/taskpane.html" />
-        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="http://localhost:12054/" />
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3443/src/taskpane/taskpane.html" />
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://localhost:3443/" />
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="JVisionGroup.Label" DefaultValue="JVision·本" />
