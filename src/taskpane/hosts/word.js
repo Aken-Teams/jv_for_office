@@ -2320,6 +2320,34 @@ async function insertChart(args) {
  *   · rows are a stated height, not however tall an empty paragraph happens
  *     to be
  */
+/**
+ * 表單的面與線——跟文件其他部分同一家。
+ *
+ * ── 這組常數原本是寫死的 ──
+ * 灰底、黑字、灰框。那在整份文件都是黑白的時候沒問題，但表格早就改成跟著主題走了，
+ * 於是一份履歷裡前兩張表是灰白的、後兩張是綠底的——**同一份文件兩套配色**，而且
+ * 剛好在同一頁上對照得一清二楚。
+ *
+ * 這是「一個概念有兩個判斷點」的第三次：表格、圖表、現在是表單。所以這裡不再自己
+ * 定義顏色，改成從 inkNow() 推出來——主題換了，表單跟著換，不需要有人記得同步。
+ *
+ * 區塊標題帶比欄位名更重的底色：表單的階層只有兩層（區塊、欄位），靠深淺分比靠字級
+ * 分更可靠，因為表單的字本來就該一樣大。
+ */
+function formInk() {
+  const k = inkNow();
+  return {
+    // 欄位名用最淡的那一階、區塊標題用深一階——表單的字本來就一樣大，階層全靠深淺。
+    label: k.band || '#F2F2F2',
+    section: k.headerFill || '#D9D9D9',
+    value: '#FFFFFF',
+    text: k.text || '#000000',
+    border: k.accent || '#808080',
+    hair: k.hair || '#BFBFBF',
+    labelText: k.headerText || k.text || '#000000',
+  };
+}
+
 const FORM_INK = {
   label: '#F2F2F2',
   section: '#D9D9D9',
@@ -2522,7 +2550,7 @@ async function insertForm(args) {
           head.spaceAfter = 6;
           head.font.size = 20;
           head.font.bold = true;
-          head.font.color = FORM_INK.text;
+          head.font.color = formInk().text;
         } catch { /* the style alone is enough */ }
         await ctx.sync();
       }
@@ -2553,11 +2581,11 @@ async function insertForm(args) {
       try {
         const all = table.getBorder('All');
         all.type = 'Single';
-        all.color = FORM_INK.hair;
+        all.color = formInk().hair;
         all.width = 1;
         const out = table.getBorder('Outside');
         out.type = 'Single';
-        out.color = FORM_INK.border;
+        out.color = formInk().border;
         out.width = 1;
       } catch { /* a Word without border control still gets the shading */ }
 
@@ -2599,24 +2627,24 @@ async function insertForm(args) {
           cell.setCellPadding('Top', 2);
           cell.setCellPadding('Bottom', 2);
           const font = cell.body.font;
-          font.color = FORM_INK.text;
+          font.color = formInk().text;
           font.bold = bold;
           if (width) cell.columnWidth = width;
           return cell;
         };
 
         if (r.kind === 'section') {
-          paint(0, FORM_INK.section, true);
+          paint(0, formInk().section, true);
           return;
         }
         let c = 0;
         for (const cell of r.cells) {
           if (!cell) { if (!canMerge) c += 1; continue; }
           if (cell.kind === 'label') {
-            const node = paint(c, FORM_INK.label, true, labelW);
+            const node = paint(c, formInk().label, true, labelW);
             try { node.body.paragraphs.getFirst().alignment = 'Centered'; } catch { /* ok */ }
           } else {
-            const node = paint(c, FORM_INK.value, false,
+            const node = paint(c, formInk().value, false,
               cell.to > cell.at ? undefined : valueW);
             // Room to write: a field asking for eight lines gets eight, rather
             // than one line that the writer has to overflow.
@@ -3482,6 +3510,24 @@ async function reviewLayout(args) {
      *
      * 重編前先把舊的前綴剝掉，不然跑第二次會變成「一、一、產品概述」。
      */
+    /**
+     * 這是一份表單，還是一份報告？
+     *
+     * ── 為什麼要分 ──
+     * 章節編號和大章節換頁是**報告類文件**的規矩。履歷表沒有「章節」——把「基本資料」
+     * 編成「一、基本資料」並讓它獨佔一頁是錯的，那四個字下面只有一張表。
+     *
+     * 一視同仁的檢查在報告上是幫忙，在表單上是破壞。而且破壞得很徹底：編號會寫進
+     * 標題文字裡、換頁會把一頁的表單拆成四頁。
+     *
+     * ── 怎麼認 ──
+     * 看內容住在哪裡。表單的字幾乎全在儲存格裡，正文段落只有零星幾個標題；報告剛好
+     * 相反，表格是插圖式的存在。六成是個寬鬆的門檻——會誤判的是「表格很多的報告」，
+     * 而那種文件不編號的損失，遠小於把一份履歷拆成四頁。
+     */
+    const inCell = items.filter((q) => Number(q.tableNestingLevel) > 0).length;
+    const formLike = items.length >= 4 && inCell / items.length > 0.6;
+
     const NUM_H1 = /^[一二三四五六七八九十]+、\s*/;
     const NUM_H2 = /^\d+\.\d+\s+/;
     const CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
@@ -3489,7 +3535,8 @@ async function reviewLayout(args) {
     const heads = [];
     let h1n = 0;
     let h2n = 0;
-    for (const q of items) {
+    // 表單不編號、不換頁——下面那一整段對它沒有意義，連掃都不用掃。
+    for (const q of (formLike ? [] : items)) {
       const lv = headingLevel(q);
       if (lv !== 1 && lv !== 2) continue;
       const raw = String(q.text || '').trim();
@@ -3574,7 +3621,29 @@ async function reviewLayout(args) {
     // 0 代表問不出來，不是「字級是 0」——問不出來就不該判它有問題。
     const coverFlat = !!biggest && sizeOf(biggest) > 0 && sizeOf(biggest) < want * 0.8;
 
+    /**
+     * 表單該檢查的是別的事：有沒有整列都是空的。
+     *
+     * 報告裡的空段落是版面問題（把內容推過一頁），表單裡的空列是**內容問題**——
+     * 那一列的欄位名沒填，印出來就是一條沒有標籤的空白。這個只報告不自動修：
+     * 欄位要叫什麼名字不是版面檢查該替使用者決定的。
+     */
+    const emptyRows = [];
+    if (formLike) {
+      for (const t of tables.items) {
+        const vals = t.values || [];
+        vals.forEach((row, r) => {
+          if (Array.isArray(row) && row.length && row.every((c) => !String(c || '').trim())) {
+            emptyRows.push(r + 1);
+          }
+        });
+      }
+    }
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (emptyRows.length) {
+        found.push(`表單裡有 ${emptyRows.length} 列是整列空白（欄位名也沒填）`);
+      }
       if (coverFlat) {
         found.push(`封面標題只有 ${sizeOf(biggest)}pt，比版面設定的 ${want}pt 小`);
         if (fix) {

@@ -32,6 +32,8 @@ function fakeWord(texts, tableSpecs = []) {
     const node = {
       text: t,
       style: '', styleBuiltIn: typeof spec === 'string' ? '' : (spec.style || ''),
+      // 內容住在儲存格裡還是正文裡——版面檢查靠這個分辨表單和報告。
+      tableNestingLevel: typeof spec === 'string' ? 0 : (spec.inCell ? 1 : 0),
       delete: () => log.deleted.push(i),
       insertBreak: (kind, where) => log.breaks.push({ i, kind, where }),
       insertText: (txt) => { node.text = txt; log.rewrites.push({ i, txt }); return node; },
@@ -276,6 +278,40 @@ console.log(`\n${pass} passed, ${fail} failed`);
   await executeTool('word_review_layout', {});
   ok('看起來像標題也不算——沒做過封面就是沒有封面', noCover.fontSets.length === 0,
     JSON.stringify(noCover.fontSets));
+}
+
+// ── 檢查要因文件類型而異 ──────────────────────────────────────────────────
+{
+  /**
+   * 「最後檢查有點狹窄，好像什麼類似的資料都這樣檢查，但應該因應不同文件有不同檢查」。
+   *
+   * 章節編號和大章節換頁是報告類文件的規矩。履歷表沒有章節——把「基本資料」編成
+   * 「一、基本資料」並讓它獨佔一頁是錯的，那四個字下面只有一張表。一視同仁的檢查
+   * 在報告上是幫忙，在表單上是破壞，而且破壞得很徹底：編號寫進標題文字裡、換頁把
+   * 一頁的表單拆成四頁。
+   *
+   * 認法是看內容住在哪裡——表單的字幾乎全在儲存格裡。
+   */
+  const H1 = (text) => ({ text, style: 'Heading 1' });
+  const cell = (text) => ({ text, inCell: true });
+
+  // 履歷：兩個區塊標題，其餘全在儲存格裡
+  const form = fakeWord([
+    H1('基本資料'), cell('姓名'), cell(''), cell('員工編號'), cell(''),
+    H1('聯絡資訊'), cell('行動電話'), cell(''), cell('電子郵件'), cell(''),
+  ]);
+  await executeTool('word_review_layout', {});
+  ok('表單不會被編號', form.rewrites.length === 0, JSON.stringify(form.rewrites));
+  ok('表單不會被換頁', form.breaks.length === 0, JSON.stringify(form.breaks));
+
+  // 報告：同樣兩個 H1，但內容在正文段落裡
+  const report = fakeWord([
+    H1('產品概述'), '內文', { text: '背景', style: 'Heading 2' }, '內文',
+    H1('目標使用者'), '內文', { text: '輪廓', style: 'Heading 2' }, '內文',
+    H1('功能需求'), '內文',
+  ]);
+  await executeTool('word_review_layout', {});
+  ok('報告照樣編號', report.rewrites.length > 0, JSON.stringify(report.rewrites));
 }
 
 process.exit(fail ? 1 : 0);

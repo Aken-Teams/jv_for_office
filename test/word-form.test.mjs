@@ -220,11 +220,22 @@ function fakeWord(opts = {}) {
 
   // 標籤欄灰、填寫欄白。
   const cellAt = (r, c) => t.table._cells.get(`${r},${c}`);
-  ok('標籤欄是淡灰', cellAt(1, 0) && cellAt(1, 0).shadingColor === '#F2F2F2',
+  /**
+   * 表單配色改成跟文件主題同一家了。
+   *
+   * 原本是寫死的灰——那在整份文件都黑白的時候沒問題，但表格早就跟著主題走，於是
+   * 一份履歷裡前兩張表是灰白的、後兩張是綠底的，而且剛好在同一頁上對照得一清二楚。
+   *
+   * 這兩條斷言的是**深淺關係**而不是色碼：表單的字一樣大，階層全靠深淺——區塊標題
+   * 要比欄位名深。色碼以後還會調，這個關係不該變。
+   */
+  ok('標籤欄是最淡的那一階', cellAt(1, 0) && cellAt(1, 0).shadingColor === '#F5F8F6',
     cellAt(1, 0) && cellAt(1, 0).shadingColor);
   ok('填寫欄是白的', cellAt(1, 1) && cellAt(1, 1).shadingColor === '#FFFFFF',
     cellAt(1, 1) && cellAt(1, 1).shadingColor);
-  ok('區段帶比標籤深', cellAt(0, 0) && cellAt(0, 0).shadingColor === '#D9D9D9',
+  ok('區段帶比標籤深（表單的階層靠深淺，不靠字級）',
+    cellAt(0, 0) && cellAt(0, 0).shadingColor === '#EAF1ED'
+    && cellAt(0, 0).shadingColor !== cellAt(1, 0).shadingColor,
     cellAt(0, 0) && cellAt(0, 0).shadingColor);
   ok('標籤是粗體', cellAt(1, 0) && cellAt(1, 0)._props['font.bold'] === true);
   ok('填寫欄不是粗體', cellAt(1, 1) && cellAt(1, 1)._props['font.bold'] === false);
