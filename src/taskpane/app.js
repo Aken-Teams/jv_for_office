@@ -146,6 +146,22 @@ const state = {
   sessionId: null,
   runId: null,
   streaming: false,
+  /**
+   * 執行中補的話，等下一班車。
+   *
+   * 每次工具結果回傳都是一個模型一定會讀到的時機，所以補充搭在那上面送過去——
+   * 不用打斷它，它做完手上這件事就會看到。見 postToolResult。
+   */
+  pendingNote: '',
+  /**
+   * 「已排入」那行字本身，送達的時候要改口。
+   *
+   * 排入和送達中間可能隔好幾秒——那段期間畫面上只寫著「已排入」，而 AI 還在做它原本
+   * 的事。使用者看到的是「它沒反應，自己做自己的」，於是會想按停止。
+   *
+   * 記住那個元素，真的夾帶出去的時候把它改成「已送到」。
+   */
+  pendingNoteEl: null,
   /** 使用者按過停止了。見 stopRun()——abort 讓伺服器停，這個旗標讓窗格停。 */
   stopped: false,
   /** Lets the person call off a run that is taking too long. See stopRun(). */
@@ -1260,7 +1276,35 @@ function syncSendButton() {
   const has = !inSlashMode() && (!!input.value.trim() || state.attachments.length > 0
     || !!state.attachedTemplate
     || state.files.some(f => f.status === 'ready'));
-  $('send').disabled = !has || state.streaming;
+  /**
+   * 執行中那顆鍵永遠是可以按的。
+   *
+   * 它在執行中有兩個身分：沒打字是停止、打了字是「排入補充」。兩個都要按得下去，
+   * 所以不能因為 state.streaming 就停用——原本那條規則是在「執行中不能送訊息」的
+   * 年代寫的，那個前提已經不成立了。
+   */
+  $('send').disabled = state.streaming ? false : !has;
+
+  /**
+   * 執行中那顆鍵的圖示跟著「有沒有打字」走。
+   *
+   * ── 為什麼不只是顏色 ──
+   * 執行中它有兩個身分：沒打字是停止、打了字是補充。但圖示一直是停止的方塊——使用者
+   * 打完字看著一個停止鍵，很難相信按下去是「送出去」而不是「不要做了」。那個猶豫會讓
+   * 他乾脆先按停止再重講，而那正是這個功能要省掉的事。
+   *
+   * 紅色留著：它仍然是「這一輪正在跑」的狀態，只是這一下的動作不是中止。顏色說狀態，
+   * 圖示說動作——兩者本來就該分開講。
+   */
+  if (state.streaming) {
+    const ic = $('send-ic');
+    const btn = $('send');
+    if (ic) ic.innerHTML = has ? '<use href="#i-send"/>' : '<use href="#i-stop"/>';
+    if (btn) {
+      btn.title = has ? t('補充給 AI（它做完手上這一步就會看到）') : t('停止（Esc）');
+      btn.setAttribute('aria-label', has ? t('補充給 AI') : t('停止 AI 工作'));
+    }
+  }
 }
 
 /**
@@ -1340,6 +1384,22 @@ function readAttachment(args) {
  * the log agree with itself and disagree with what happened.
  */
 async function postToolResult(runId, callId, result, decision = 'none') {
+  const note = state.pendingNote;
+  const noteEl = state.pendingNoteEl;
+  if (note) {
+    state.pendingNote = '';
+    state.pendingNoteEl = null;
+    /**
+     * 改口，不是再多一行。
+     *
+     * 多一行的話，對話裡會留下「已排入」和「已送到」兩筆講同一件事的紀錄——而使用者
+     * 之後回頭看，分不出那是兩次補充還是同一次。同一件事只佔一行，狀態會變。
+     */
+    if (noteEl) {
+      noteEl.textContent = t('已送到 AI：{0}', note.replace(/\n/g, ' / '));
+      noteEl.classList.add('ok');
+    }
+  }
   try {
     await fetch(`${state.apiBase}/api/${host.meta.api}/tool-result`, {
       method: 'POST',
@@ -1350,6 +1410,16 @@ async function postToolResult(runId, callId, result, decision = 'none') {
         content: result.content,
         error: result.error,
         decision,
+        /**
+         * 使用者在執行中補的話，搭這班車過去。
+         *
+         * 這是一個每隔幾秒就出現、而且模型一定會讀的通道——它正在等這個工具的結果。
+         * 把補充附在結果後面，對模型來說跟一開始就講了幾乎沒有差別，而且**不用打斷它**：
+         * 手上這件事做完，接著就照補的做。
+         *
+         * 送出就清掉，不然同一句話會跟著每一個工具結果重複出現。
+         */
+        note: note || undefined,
         // Only ever set by the two tools that answer with pixels. The bridge
         // passes it through untouched and excel-mcp turns it into an MCP image
         // block, which is what actually puts it in front of the model.
@@ -2076,6 +2146,26 @@ async function send(message, opts = {}) {
     // 是「選單不見了」——跟連線無關的一個症狀。這一輪對話既然跑完了，位址顯然已經
     // 通了，趁這時候把清單補上，不用叫人關掉側邊欄重開。
     if (!state.sourcesLoaded) void loadDataSources();
+    /**
+     * 沒搭到車的補充，自動變成下一句。
+     *
+     * 模型寫完總結之後就不會再呼叫工具了，那時候排進來的話沒有車可以搭。丟掉的話
+     * 使用者得重打一次——而他已經打過了，而且畫面上還寫著「已排入」。
+     *
+     * 自動送出而不是問他要不要送：他本來就是要讓它往下做，問一次只是多一個點擊，
+     * 而且那個時間點他還得回想自己剛剛打了什麼。
+     */
+    if (state.pendingNote && !state.stopped) {
+      const carry = state.pendingNote;
+      if (state.pendingNoteEl) {
+        // 沒搭到車，但也沒被丟掉——說清楚它接下來會怎麼樣。
+        state.pendingNoteEl.textContent = t('這一輪已經結束，接著用這句繼續：{0}',
+          carry.replace(/\n/g, ' / '));
+        state.pendingNoteEl = null;
+      }
+      state.pendingNote = '';
+      setTimeout(() => { void send(carry); }, 0);
+    }
     progressDone(false);
     // The reply to a write-up request is the thing being made. Offering it here
     // is the difference between this feature working and not: left to find it
@@ -4127,8 +4217,28 @@ Office.onReady(async (info) => {
 
   $('composer').addEventListener('submit', (e) => {
     e.preventDefault();
-    // Same button, two jobs — while a run is in flight it stops it.
-    if (state.streaming) { stopRun(); return; }
+    /**
+     * 執行中的送出鍵：有字就排隊，沒字才停止。
+     *
+     * 原本執行中一律當成停止，所以想補一句話的人只能先打斷——而打斷的語意是「不要做了」，
+     * 不是「照這個繼續」。兩件事被同一顆按鈕綁在一起，使用者就只剩打斷這條路。
+     *
+     * 分辨方式就是輸入框裡有沒有東西。那也是直覺：打了字按送出，當然是要送那句話。
+     */
+    if (state.streaming) {
+      const typed = $('input').value.trim();
+      if (!typed) { stopRun(); return; }
+      state.pendingNote = state.pendingNote ? `${state.pendingNote}
+${typed}` : typed;
+      $('input').value = '';
+      autoGrow($('input'));
+      syncSendButton();
+      // 記住這一行，送達的時候改口——見 postToolResult。
+      state.pendingNoteEl = addNote(
+        t('已排入：{0}（它做完手上這一步就會看到）', state.pendingNote.replace(/\n/g, ' / ')),
+        'note');
+      return;
+    }
     const input = $('input');
     // The chip is expanded here, not when it was picked: the composer stayed
     // free for what the person wanted to add, and the full text only has to
