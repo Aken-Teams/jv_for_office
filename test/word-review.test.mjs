@@ -439,4 +439,29 @@ console.log(`\n${pass} passed, ${fail} failed`);
     JSON.stringify(log.styleSets));
 }
 
+// ── 文字裡不該出現的字元 ──────────────────────────────────────────────────
+{
+  /**
+   * 「有些換行很怪，你要記得審查」。
+   *
+   * 入口已經有 cleanText() 了，但那要每個工具都記得呼叫——這幾輪已經三次發現「修在模型
+   * 不會走的那條路上」。這是第二道：檢查看的是結果，不管它從哪個入口進來。
+   *
+   * 字面的換行、落單的 tab、被空格隔開的底線，在一份正常的中文文件裡不可能是故意的，
+   * 所以誤判風險極低，可以自動修。真正的換行和單獨的底線不能被動到——那兩條才是門檻。
+   */
+  const B = String.fromCharCode(92);
+  const log = fakeWord([
+    '正常的一段中文',
+    '請以「精通／中等／略懂」填寫。' + B + 'n二、本表所蒐集之個人資料僅供人事管理使用。',
+    '簽章：_ _ _ _ _ _',
+  ]);
+  await executeTool('word_review_layout', {});
+  const fixedTexts = log.rewrites.map((r) => r.txt);
+  ok('字面的換行被清掉', fixedTexts.some((t) => t.includes(String.fromCharCode(10))
+    && !t.includes(B + 'n')), JSON.stringify(fixedTexts));
+  ok('分開的底線被接起來', fixedTexts.some((t) => /_{6,}/.test(t)), JSON.stringify(fixedTexts));
+  ok('正常的那一段沒被動到', !fixedTexts.includes('正常的一段中文'), JSON.stringify(fixedTexts));
+}
+
 process.exit(fail ? 1 : 0);

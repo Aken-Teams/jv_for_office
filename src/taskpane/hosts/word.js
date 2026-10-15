@@ -662,9 +662,26 @@ function unescapeBreaks(text) {
   return String(text).replace(/\\r\\n|\\n/g, '\n');
 }
 
+/**
+ * 模型給的任何一段文字，進文件之前都走這裡。
+ *
+ * ── 為什麼要有一個共用的入口 ──
+ * 這三道正規化（字面換行、分開的底線、tab）原本只接在 asParagraphs 上，而那只服務
+ * word_insert_text。表格的儲存格、表單的欄位、區塊的內容走的是別的路——於是文件裡
+ * 還是會出現「填寫。
+ 二、本表所蒐集之個人資料…」這種東西。
+ *
+ * 這是同一個教訓的第三次：**修在模型不會走的那條路上，等於沒修**。所以這次不是再補
+ * 一處，是把三道收成一個函式，讓每一個文字入口都呼叫它——以後新增工具也只要記得這
+ * 一個名字。
+ */
+function cleanText(text) {
+  return joinUnderscores(normalizeTabs(unescapeBreaks(text)));
+}
+
 function asParagraphs(args) {
-  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => joinUnderscores(normalizeTabs(unescapeBreaks(t))));
-  const text = args.text === undefined ? '' : joinUnderscores(normalizeTabs(unescapeBreaks(args.text)));
+  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => cleanText(t));
+  const text = args.text === undefined ? '' : cleanText(args.text);
   return text.split(/\r?\n/);
 }
 
@@ -1318,7 +1335,10 @@ function docKeyHint() {
 }
 
 async function insertTable(args) {
-  const values = Array.isArray(args.values) ? args.values.map(r => (Array.isArray(r) ? r.map(String) : [String(r)])) : [];
+  // 儲存格的文字也要洗過——表格是模型最常放長句子的地方，字面換行正是在那裡出現的。
+  const values = Array.isArray(args.values)
+    ? args.values.map(r => (Array.isArray(r) ? r.map((c) => cleanText(c)) : [cleanText(r)]))
+    : [];
   if (!values.length) throw new Error('values 是必要的，格式是二維陣列（第一列通常是表頭）。');
   const cols = Math.max(...values.map(r => r.length));
   const rows = values.map(r => [...r, ...Array(cols - r.length).fill('')]);
@@ -2644,7 +2664,7 @@ function formRows(fields, pairs) {
     if (!f || typeof f !== 'object') continue;
     if (f.section !== undefined) {
       flush();
-      rows.push({ kind: 'section', text: String(f.section), cells: [] });
+      rows.push({ kind: 'section', text: cleanText(f.section), cells: [] });
       continue;
     }
     /**
@@ -2691,8 +2711,8 @@ function formRows(fields, pairs) {
     }
     if (f.label === undefined && f.value === undefined) continue;
 
-    const label = String(f.label ?? '');
-    const value = String(f.value ?? '');
+    const label = cleanText(f.label ?? '');
+    const value = cleanText(f.value ?? '');
     const lines = Math.max(1, Math.min(Number(f.lines) || 1, 24));
     const wide = f.span === true || lines > 1;
 
@@ -4113,7 +4133,38 @@ async function reviewLayout(args) {
       }
     }
 
+    /**
+     * 文件裡有沒有不該出現的字元。
+     *
+     * ── 為什麼需要第二道 ──
+     * 入口已經有 cleanText() 了，但那要每個工具都記得呼叫。這幾輪已經三次發現「修在模型
+     * 不會走的那條路上」——以後新增工具時再漏一次，使用者又會在文件裡看到字面的換行。
+     *
+     * 檢查看的是結果，不管它從哪個入口進來的。而字面的換行、落單的 tab、被空格隔開的
+     * 底線，在一份正常的中文文件裡**不可能是故意的**，所以誤判風險極低，可以自動修。
+     *
+     * ── 為什麼原本抓不到 ──
+     * 現有的檢查全部在看結構（編號、換頁、空段落、欄位對齊），沒有一條在看文字本身。
+     * 所以就算有東西漏進去，檢查也不會響——它根本沒在看那一層。
+     */
+    const DIRTY = /\\[nt]|	|(?:[_＿][ 　]+){2,}[_＿]/;
+    const dirty = [];
+    items.forEach((q, i) => {
+      const txt = String(q.text || '');
+      if (txt && DIRTY.test(txt) && cleanText(txt) !== txt) dirty.push(i);
+    });
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (dirty.length) {
+        found.push(`${dirty.length} 段文字裡有字面的換行、tab 或被切斷的底線`);
+        if (fix) {
+          for (const i of dirty) {
+            try { items[i].insertText(cleanText(String(items[i].text || '')), 'Replace'); }
+            catch { /* 改不動就跳過 */ }
+          }
+          fixed.push(`清掉 ${dirty.length} 段文字裡的多餘字元`);
+        }
+      }
       if (oddOnes.length) {
         found.push(`${oddOnes.length} 段編號條款的樣式跟同一組的其他段不一樣`);
         if (fix) {
@@ -5327,7 +5378,19 @@ async function insertCover(args) {
       let at = Math.min(lines.length + rows.length * 2, all.items.length - 1);
       // 索引估得準不準都沒關係，往後走到第一個在表格外的段落為止。
       while (at < all.items.length - 1 && owner[at] && owner[at].isNullObject === false) at += 1;
-      const last = all.items[at];
+      /**
+       * 信頭不是封面，後面不該換頁。
+       *
+       * ── 症狀 ──
+       * 報價單的第一頁只有公司抬頭和「報　價　單」四個字，其餘全白，內容從第二頁開始。
+       *
+       * ── 原因 ──
+       * 這一行對 report 封面是對的——封面本來就該獨佔一頁。但 letterhead 和 form 是
+       * **文件開頭的抬頭**，不是封面：報價單的抬頭底下就該接客戶資料，中間不換頁。
+       *
+       * 一個分頁符對三種版面一視同仁，就會有兩種是錯的。
+       */
+      const last = layout === 'report' ? all.items[at] : null;
       if (last) last.insertBreak('Page', 'After');
       await ctx.sync();
       return null;
@@ -5337,7 +5400,10 @@ async function insertCover(args) {
     const what = layout === 'letterhead' ? '公司信頭式' : layout === 'form' ? '表單抬頭式' : '報告封面式';
     return `已建立${what}封面：「${title}」`
       + (rows.length ? `，含 ${rows.length} 列文件資訊表` : '')
-      + '，後面接了分頁符號，正文從第二頁開始。\n'
+      + (layout === 'report'
+        ? '，後面接了分頁符號，正文從第二頁開始。\n'
+        // 信頭不是封面——報價單的抬頭底下就該接客戶資料，中間不換頁。
+        : '，內容接著往下排，沒有另起一頁。\n')
       + '封面的字級和顏色是刻意壓低的——一頁上只有一個大字級，其餘都是小字，'
       + '那是這幾份參考文件共通的做法。不要再另外套 word_format_range 把它放大。'
       + trackingNote(result);

@@ -716,5 +716,25 @@ ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thick
     data.includes('網站系統規劃與需求訪談') && data.includes('維運'), JSON.stringify(data));
 }
 
+/**
+ * 儲存格的文字也要洗過。
+ *
+ * 三道正規化原本只接在 asParagraphs 上，而那只服務 word_insert_text。表格的儲存格走的是
+ * 另一條路——於是文件裡還是會出現「填寫。\\n 二、本表所蒐集之個人資料…」這種東西。
+ *
+ * 同一個教訓的第三次：修在模型不會走的那條路上，等於沒修。所以三道收成了 cleanText()，
+ * 每一個文字入口都呼叫它。
+ */
+{
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['項目', '說明'],
+      ['語言能力', '請以「精通／中等／略懂」填寫。\\n二、本表所蒐集之個人資料僅供人事管理使用。']],
+  });
+  const cell = String(log.tables[0].values[1][1]);
+  ok('儲存格裡字面的反斜線 n 變成真的換行',
+    cell.includes('\n') && !cell.includes('\\n'), JSON.stringify(cell));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

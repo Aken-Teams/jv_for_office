@@ -162,6 +162,20 @@ const state = {
    * 記住那個元素，真的夾帶出去的時候把它改成「已送到」。
    */
   pendingNoteEl: null,
+  /**
+   * 已經送出去、但這一輪還要繼續提醒的補充。
+   *
+   * ── 為什麼要黏著 ──
+   * 原本補充只跟著一次工具結果送過去，之後模型就再也看不到它。但使用者補的多半是
+   * **整份文件的要求**（「資料都用假資料」「要能印在兩頁內」），不是「這一步的要求」——
+   * 它應該在這一輪剩下的每一步都成立。
+   *
+   * 只送一次的話，模型往下做五六步之後就漂走了，使用者看到的是「它忘記我中途說的話」。
+   * 而那不是記性問題，是我們只讓它看了一眼。
+   *
+   * 這一輪結束就清掉——下一輪他會重新講，或者那件事已經做完了。
+   */
+  runNote: '',
   /** 使用者按過停止了。見 stopRun()——abort 讓伺服器停，這個旗標讓窗格停。 */
   stopped: false,
   /** Lets the person call off a run that is taking too long. See stopRun(). */
@@ -1384,9 +1398,13 @@ function readAttachment(args) {
  * the log agree with itself and disagree with what happened.
  */
 async function postToolResult(runId, callId, result, decision = 'none') {
-  const note = state.pendingNote;
+  const fresh = state.pendingNote;
+  // 新補的接在舊的後面——兩次補充都要算數，不是後面蓋掉前面。
+  if (fresh) state.runNote = state.runNote ? `${state.runNote}
+${fresh}` : fresh;
+  const note = state.runNote;
   const noteEl = state.pendingNoteEl;
-  if (note) {
+  if (fresh) {
     state.pendingNote = '';
     state.pendingNoteEl = null;
     /**
@@ -1396,7 +1414,7 @@ async function postToolResult(runId, callId, result, decision = 'none') {
      * 之後回頭看，分不出那是兩次補充還是同一次。同一件事只佔一行，狀態會變。
      */
     if (noteEl) {
-      noteEl.textContent = t('已送到 AI：{0}', note.replace(/\n/g, ' / '));
+      noteEl.textContent = t('已送到 AI：{0}', fresh.replace(/\n/g, ' / '));
       noteEl.classList.add('ok');
     }
   }
@@ -2120,6 +2138,8 @@ async function send(message, opts = {}) {
     }
   } finally {
     state.streaming = false;
+    // 補充只在這一輪有效——下一輪他會重新講，或者那件事已經做完了。
+    state.runNote = '';
     state.runId = null;
     state.abort = null;
     state.startFresh = false;
