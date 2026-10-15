@@ -606,13 +606,39 @@ export async function inspectWrite(_tool, args) {
  * 只處理 \n 和 \r\n。\t 不轉：它在文件裡本來就該是一個 tab。而使用者真的想寫出
  * 「\n」這兩個字的機率，遠低於模型多轉義一次的機率。
  */
+/**
+ * 分開的底線要接成一條。
+ *
+ * ── 症狀 ──
+ * 文件裡出現「簽章：＿ ＿ ＿ ＿ ＿」而不是「簽章：__________」。模型送來的是一串
+ * 被空格隔開的底線——每一段都是獨立的小橫線，中間有縫。那在螢幕上看起來只是醜，
+ * 印出來簽名的時候筆會卡在縫上，而且縫的位置還會隨字型變。
+ *
+ * 真正的 Word 文件是一條連續的底線。
+ *
+ * ── 為什麼在這裡修 ──
+ * 跟字面 `
+` 同一類：模型不是不知道該怎麼寫，是它在組字串的時候用空格去「排版」。
+ * 叫它別這樣是一條會被忘記的規則；這裡一行判斷就永遠不會發生。
+ *
+ * 三個以上才合併——「A_ B_」這種單獨的底線是別的意思，不要動它。
+ * 合併後的長度取原本的底線總數，所以版面寬度不會因為這個修正而改變。
+ */
+function joinUnderscores(text) {
+  return String(text).replace(/(?:[_＿][ 　]+){2,}[_＿]/g, (m) => {
+    const n = (m.match(/[_＿]/g) || []).length;
+    // 空格原本也佔寬度，補一些回去，不然整條線會比原本短一截。
+    return '_'.repeat(n + Math.round(n * 0.6));
+  });
+}
+
 function unescapeBreaks(text) {
   return String(text).replace(/\\r\\n|\\n/g, '\n');
 }
 
 function asParagraphs(args) {
-  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => unescapeBreaks(t));
-  const text = args.text === undefined ? '' : unescapeBreaks(args.text);
+  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => joinUnderscores(unescapeBreaks(t)));
+  const text = args.text === undefined ? '' : joinUnderscores(unescapeBreaks(args.text));
   return text.split(/\r?\n/);
 }
 
@@ -1308,20 +1334,60 @@ async function insertTable(args) {
         : null;
 
       /**
-       * Paint only when the look was left to us.
+       * 指定了內建樣式也照樣上色。
        *
-       * Somebody who named a style chose a look, and overwriting it with ours
-       * would make the argument unwinnable. `paint: false` is the same escape
-       * for anybody who wants the bare style back.
+       * ── 原本的理由，以及它為什麼不成立 ──
+       * 「指定樣式的人選了一個長相，拿我們的蓋掉等於不給他選」。聽起來合理，但實際上
+       * 選樣式的不是使用者，是模型——而工具描述裡就寫著 style 這個參數，它自然會填。
+       * 結果是一份會議紀錄裡，我們畫的表格是淡底細線、模型指定的是 Word 內建深藍斑馬紋，
+       * 兩套設計語言並排在同一頁。
+       *
+       * 內建樣式負責**結構**（框線粗細、斑馬紋的節奏、首欄要不要加重），我們負責**顏色**。
+       * 這兩件事不衝突；衝突的是「有一條路可以繞過整份文件的配色」。
+       *
+       * `paint: false` 留著——那是明確說「我就是要原樣」的逃生口，而且不是隨手填的。
        */
-      const paint = !args.style && args.paint !== false;
+      /**
+       * 一張表只能有一套顏色。
+       *
+       * ── 症狀 ──
+       * 模型挑了深藍當總計列，表頭卻還是文件預設的淡綠——表頭淡綠、內部淡綠、表尾深藍，
+       * 三段各自為政。使用者看到的是「這張表不像一體的」，而他是對的：那確實是兩個獨立
+       * 的決定擺在一起，沒有人負責讓它們一致。
+       *
+       * ── 為什麼是 total_fill 說了算 ──
+       * 模型願意為合計列特地指定一個顏色，代表它對這張表有想法。那個想法應該貫穿整張表，
+       * 而不是只落在最後一列。所以這裡反過來：拿它指定的顏色當這張表的主色，表頭、
+       * 斑馬紋、細線全部從它推出來——跟文件主題同一套推導規則，只是來源換成它。
+       *
+       * 整體感不是規則教得會的，是**讓不一致變成不可能**。
+       */
+      const localInk = args.total_fill ? inkFromAccent(args.total_fill) : null;
+      const prevInk = activeInk;
+      if (localInk) activeInk = localInk;
+      const paint = args.paint !== false;
       // Totals are painted afterwards in the loop below, so they win.
       if (paint) paintTable(table, rows.length, cols, hasHeader);
+      // 這張表用完就還原——它的顏色是這一次的決定，不該變成整份文件的新預設。
+      const restoreInk = () => { if (localInk) activeInk = prevInk; };
 
       // Per-cell work. Queued in one batch — getCell is cheap and the sync below
       // is the only round trip.
       for (let r = 0; r < rows.length; r++) {
         const isTotal = totals > 0 && r >= rows.length - totals;
+        /**
+         * 只有最後一列是「總計」，前面那些是小計。
+         *
+         * ── 為什麼要分 ──
+         * 小計、營業稅、總計三列一視同仁塗滿的話，表格底下就多出一塊三倍高的深色磚，
+         * 而它比表頭還重——看起來像出了什麼事，不像一份報價單的收尾。
+         *
+         * 真正的報價單是有階層的：小計和稅是**靠右的普通列**，只有總計拿到那條帶。
+         * 讀的人要找的是最後那個數字，前面兩列是它的算式。
+         *
+         * 所以前面幾列只給粗體和一點點底，份量留給最後一列。
+         */
+        const isGrand = isTotal && r === rows.length - 1;
         const isHead = hasHeader && r === 0;
         for (let c = 0; c < cols; c++) {
           const cell = table.getCell(r, c);
@@ -1349,8 +1415,28 @@ async function insertTable(args) {
              * 粗體仍然保留——份量交給字重，不交給底色，這本來就是比較耐看的做法。
              */
             const tink = inkNow();
-            const fill = String(args.total_fill
-              || (tink.accent ? mixHex(tink.accent, '#FFFFFF', 0.70) : '#D9D9D9'));
+            /**
+             * 指定的顏色是給**總計**的，不是給每一列合計的。
+             *
+             * 原本只要給了 total_fill，小計、稅、總計三列全部塗成那個顏色——又回到那塊
+             * 三倍高的磚。模型指定深藍的時候心裡想的是「總計那一條」，不是「底下三列」。
+             *
+             * 所以：總計用它指定的原色，小計和稅用同一色相的淡階。階層還在，顏色是一家。
+             */
+            /**
+             * 模型自己挑的顏色用原色，我們推的用淡階。
+             *
+             * 差別在「這是誰的決定」：模型特地指定深藍，那就是它要那個份量，照給；
+             * 沒指定的時候用文件主色的原色會太重（那是上一輪修掉的那塊磚），所以推淡。
+             *
+             * 兩種情況下，小計和稅都比總計再淡一階——階層跟顏色來源無關。
+             */
+            const chosen = !!args.total_fill;
+            const base = args.total_fill || tink.accent;
+            const grandFill = chosen ? base : mixHex(base, '#FFFFFF', 0.70);
+            const subFill = mixHex(base, '#FFFFFF', chosen ? 0.86 : 0.92);
+            const fill = String(base ? (isGrand ? grandFill : subFill)
+              : (isGrand ? '#D9D9D9' : '#F2F2F2'));
             cell.shadingColor = fill;
             const f = cell.body.font;
             f.color = String(args.total_color || readableOn(fill, tink.text));
@@ -1359,6 +1445,8 @@ async function insertTable(args) {
         }
       }
       await ctx.sync();
+      // 這張表用完就還原——它的顏色是這一次的決定，不該變成整份文件的新預設。
+      restoreInk();
       return null;
     });
 
@@ -3816,7 +3904,81 @@ async function reviewLayout(args) {
       }
     }
 
+    /**
+     * 同一張表裡的格式一不一致。
+     *
+     * ── 為什麼原本查不到 ──
+     * 現有的檢查全部是「整份文件」層級的：封面標題、章節編號、章節換頁、空段落、
+     * 長表格表頭。沒有一條在看**一張表的內部**，所以「出席／列席那兩列是標籤配值，
+     * 請假那列的值卻跑到別的欄」這種毛病，從頭到尾沒有人看得見。
+     *
+     * ── 為什麼只報告不自動修 ──
+     * 自動修要把文字從一格搬到另一格，而「該搬到哪一格」得看那張表在講什麼。這個
+     * 檢查已經在同一個函式裡誤判過三次（封面標題、章節換頁、空段落），每次都是
+     * **自動修正的範圍比它能判斷的範圍大**。
+     *
+     * 所以這裡停在偵測：把不一致的列號講出來，讓模型決定怎麼修——它看得到表格在講
+     * 什麼，我們只看得到格子空不空。偵測不需要語意，修正需要。
+     */
+    const ragged = [];
+    for (const t of tables.items) {
+      const vals = Array.isArray(t.values) ? t.values : [];
+      if (vals.length < 3) continue;
+      const filled = (row) => (Array.isArray(row) ? row : []).map((c) => !!String(c || '').trim());
+      const body = vals.slice(t.headerRowCount ? 1 : 0);
+      // 這張表是不是「標籤配值」的形狀：多數列的第一格都有字，而且是短的。
+      const labelish = body.filter((r) => {
+        const f = String((r || [])[0] || '').trim();
+        return f && f.length <= 12;
+      }).length;
+      if (labelish < body.length * 0.6) continue;
+      body.forEach((row, i) => {
+        const f = filled(row);
+        // 第一格空的、後面卻有內容——那一列的值掉進了標籤欄，或整列被往右推了一格。
+        if (!f[0] && f.slice(1).some(Boolean)) ragged.push(i + 1 + (t.headerRowCount ? 1 : 0));
+      });
+    }
+
+    /**
+     * 整張都是空的表格。
+     *
+     * ── 為什麼原本留著 ──
+     * 空段落清理看的是段落，而表格不是段落。一張 20 列 4 欄的空表格在 items 裡是 80 個
+     * 「段落」，但它們全部 tableNestingLevel > 0，所以連空段落那條路都走不到——它就這樣
+     * 整張留在文件裡，而且佔掉一整頁。使用者看到的是「檔案多一個空白的沒完整刪除」。
+     *
+     * ── 怎麼分辨「空表格」和「等著填的表單」 ──
+     * 表單一定有欄位名——履歷的「姓名」「電話」在那裡，只有值是空的。整張表**連一個字
+     * 都沒有**的才是殘留物，那種表格沒有任何資訊，刪掉不會失去東西。
+     *
+     * 這個條件嚴格到幾乎不可能誤判，所以這一條可以自動修——跟前面那些「偵測容易、
+     * 修正需要語意」的不一樣。
+     */
+    const blankTables = [];
+    tables.items.forEach((t, i) => {
+      const vals = Array.isArray(t.values) ? t.values : [];
+      if (!vals.length) return;
+      const anyText = vals.some((row) => (Array.isArray(row) ? row : [])
+        .some((c) => String(c || '').trim()));
+      if (!anyText) blankTables.push(i);
+    });
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (blankTables.length) {
+        found.push(`${blankTables.length} 張整張空白的表格（一個字都沒有）`);
+        if (fix) {
+          // 由後往前刪，前面的索引才不會跟著位移——跟空段落同一個道理。
+          for (let i = blankTables.length - 1; i >= 0; i -= 1) {
+            try { tables.items[blankTables[i]].delete(); } catch { /* 刪不掉就算了 */ }
+          }
+          fixed.push(`刪掉 ${blankTables.length} 張空白表格`);
+        }
+      }
+      if (ragged.length) {
+        found.push(`表格裡有 ${ragged.length} 列的欄位對不齊（第 ${ragged.join('、')} 列：`
+          + '第一欄是空的，內容卻從第二欄開始，跟同一張表的其他列不一樣）'
+          + '——這幾列要自己看一下該搬到哪一格，我不會替你猜');
+      }
       if (emptyRows.length) {
         found.push(`表單裡有 ${emptyRows.length} 列是整列空白（欄位名也沒填）`);
       }

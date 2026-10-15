@@ -19,7 +19,7 @@ function ok(name, cond, detail) {
 }
 
 function fakeWord(texts, tableSpecs = []) {
-  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [], fontSets: [] };
+  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [], fontSets: [], deletedTables: [] };
   /**
    * 字串就是普通段落；要測標題就給 {text, style}。
    *
@@ -52,6 +52,7 @@ function fakeWord(texts, tableSpecs = []) {
   });
   const tables = tableSpecs.map((spec, i) => {
     const t = {
+      delete: () => log.deletedTables.push(i),
       rowCount: spec.rows,
       values: spec.values,
       _header: spec.headerRowCount ?? 0,
@@ -334,6 +335,74 @@ console.log(`\n${pass} passed, ${fail} failed`);
   ok('裝著圖的段落不會被當成空白刪掉', !log.deleted.includes(picIndex),
     JSON.stringify(log.deleted));
   ok('旁邊真的空白的還是會清掉', log.deleted.length > 0, JSON.stringify(log.deleted));
+}
+
+// ── 表格內部的格式一致性 ──────────────────────────────────────────────────
+{
+  /**
+   * 「出席人員的請假那列就是跟上面格式呈現不一致，但 AI 沒有檢查和修正」。
+   *
+   * 原本的檢查全部是「整份文件」層級的——封面標題、章節編號、章節換頁、空段落、
+   * 長表格表頭。沒有一條在看一張表的內部，所以這種毛病從頭到尾沒有人看得見。
+   *
+   * 偵測條件要可以量，不能是「看起來怪怪的」：這張表多數列的第一格都有短字（標籤配值
+   * 的形狀），而某幾列的第一格是空的、內容卻從第二欄開始——那就是對不齊。
+   *
+   * 只報告不自動修。自動修要把文字從一格搬到另一格，而「該搬到哪一格」得看那張表在講
+   * 什麼；同一個函式已經因為「自動修正的範圍比判斷的範圍大」誤判過三次。偵測不需要
+   * 語意，修正需要——所以修正留給看得到語意的那一方。
+   */
+  const tbl = (values) => ({ rows: values.length, values, headerRowCount: 0 });
+
+  const bad = fakeWord(['表格前'], [tbl([
+    ['出席', '林志豪、陳怡君'],
+    ['列席', '周俊廷'],
+    ['', '吳宗翰（財務部）'],
+  ])]);
+  const res = await executeTool('word_review_layout', {});
+  ok('抓得到對不齊的那一列', /欄位對不齊/.test(String(res.content)), String(res.content).slice(0, 160));
+  ok('不會自己動手搬格子', bad.rewrites.length === 0, JSON.stringify(bad.rewrites));
+
+  const good = fakeWord(['表格前'], [tbl([
+    ['出席', '林志豪、陳怡君'],
+    ['列席', '周俊廷'],
+    ['請假', '吳宗翰（財務部）'],
+  ])]);
+  const res2 = await executeTool('word_review_layout', {});
+  ok('整齊的表格不會被誤報', !/欄位對不齊/.test(String(res2.content)),
+    String(res2.content).slice(0, 160));
+  void good;
+
+  // 空白表單不是對不齊——標籤有、值沒填，那是等著人填的。
+  fakeWord(['表格前'], [tbl([['姓名', ''], ['電話', ''], ['地址', '']])]);
+  const res3 = await executeTool('word_review_layout', {});
+  ok('留白等人填的表單不會被誤報', !/欄位對不齊/.test(String(res3.content)),
+    String(res3.content).slice(0, 160));
+}
+
+// ── 整張空白的表格 ────────────────────────────────────────────────────────
+{
+  /**
+   * 「檔案多一個空白的沒完整刪除，但她還是留著」。
+   *
+   * 空段落清理看的是段落，而表格不是段落。一張 20 列 4 欄的空表格在 items 裡是 80 個
+   * 段落，但它們全部在表格裡，所以連空段落那條路都走不到——整張留在文件裡佔掉一頁。
+   *
+   * 分辨「空表格」和「等著填的表單」靠的是：表單一定有欄位名（履歷的「姓名」「電話」
+   * 在那裡，只有值是空的），整張連一個字都沒有的才是殘留物。這個條件嚴格到幾乎不可能
+   * 誤判，所以它可以自動修——跟那些「偵測容易、修正需要語意」的不一樣。
+   */
+  const tbl = (values) => ({ rows: values.length, values, headerRowCount: 0 });
+
+  const junk = fakeWord(['前言'], [tbl([['', '', ''], ['', '', ''], ['', '', '']])]);
+  await executeTool('word_review_layout', {});
+  ok('整張空白的表格會被刪掉', junk.deletedTables.length === 1,
+    JSON.stringify(junk.deletedTables));
+
+  const form = fakeWord(['前言'], [tbl([['姓名', ''], ['電話', ''], ['地址', '']])]);
+  await executeTool('word_review_layout', {});
+  ok('等著填的表單不會被刪', form.deletedTables.length === 0,
+    JSON.stringify(form.deletedTables));
 }
 
 process.exit(fail ? 1 : 0);

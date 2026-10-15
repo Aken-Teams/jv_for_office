@@ -248,8 +248,20 @@ ok('欄寬逐欄對上', [36, 180, 40, 36, 78, 80].every((w, c) => at(0, c, 'col
 
 // total_rows counts from the BOTTOM. Row 2 is the last line item and must stay
 // plain; rows 3–5 are 小計/稅/總計.
-ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#BCCFC9'),
-  [0, 1, 2, 3, 4, 5].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
+/**
+ * 合計列有階層：小計和稅是算式，總計才是答案。
+ *
+ * 三列一視同仁塗滿的話，表格底下會多出一塊三倍高的深色磚，而它比表頭還重——
+ * 看起來像出了什麼事，不像一份報價單的收尾。真正的報價單裡，小計和稅是靠右的
+ * 普通列，只有總計拿到那條帶：讀的人要找的是最後那個數字，前面兩列是它的算式。
+ */
+ok('小計和稅是淡的，不是整塊深色磚',
+  [3, 4].every((r) => at(r, 0, 'shadingColor') === '#EDF2F1'),
+  [3, 4, 5].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
+ok('只有最後一列拿到那條帶', at(5, 0, 'shadingColor') === '#BCCFC9',
+  String(at(5, 0, 'shadingColor')));
+ok('總計比小計重，但兩者同一個色相家族',
+  at(5, 0, 'shadingColor') !== at(3, 0, 'shadingColor'));
 // 明細列現在也會上色（白／淡灰相間），但絕不能沾到合計列的深底。
 ok('合計列的深底沒有外溢到明細列',
   [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#BCCFC9'),
@@ -285,9 +297,9 @@ ok('內文不是純黑，是帶主色調的墨',
  *
  * 斷言的是**關係**不是色碼：比表頭深、比純色淡、字色要在那個底上讀得到。
  */
-ok('合計列比表頭深，但不是飽和的深色',
-  at(3, 0, 'shadingColor') === '#BCCFC9' && at(3, 0, 'shadingColor') !== '#1F5F4B',
-  String(at(3, 0, 'shadingColor')));
+ok('總計列比表頭深，但不是飽和的深色',
+  at(5, 0, 'shadingColor') === '#BCCFC9' && at(5, 0, 'shadingColor') !== '#1F5F4B',
+  String(at(5, 0, 'shadingColor')));
 ok('合計列是粗體，份量交給字重',
   [3, 4, 5].every((r) => t.getCell(r, 5).body.font.bold === true));
 ok('合計列的字在那個底上讀得到（淡底配深字）',
@@ -558,13 +570,30 @@ ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thick
 }
 
 {
-  // 指定了樣式就是選了一個外觀，不該被我們蓋掉。
+  /**
+   * 指定了內建樣式也照樣上色。
+   *
+   * 原本這裡釘的是「指定樣式就是選了一個外觀，不該被我們蓋掉」。那個理由聽起來合理，
+   * 但選樣式的不是使用者，是模型——而工具描述裡就寫著 style 這個參數，它自然會填。
+   * 結果是一份文件裡我們畫的表格是淡底細線、模型指定的是 Word 內建深藍斑馬紋。
+   *
+   * 內建樣式負責結構（框線、斑馬紋節奏），我們負責顏色。真正的逃生口是 paint: false，
+   * 那是明確說「我就是要原樣」，不是隨手填的參數。
+   */
   reset();
   await host.executeTool('word_insert_table',
     { values: [['a'], ['1']], style: 'GridTable4_Accent1' });
   const t3 = log.tables[0].table;
-  ok('指定樣式時不自己上色', t3.getCell(0, 0)._props.shadingColor === undefined,
+  ok('指定樣式也要套上文件的配色', t3.getCell(0, 0)._props.shadingColor === '#EAF1ED',
     String(t3.getCell(0, 0)._props.shadingColor));
+
+  reset();
+  await host.executeTool('word_insert_table',
+    { values: [['a'], ['1']], style: 'GridTable4_Accent1', paint: false });
+  ok('paint: false 才是真的逃生口',
+    log.tables[0].table.getCell(0, 0)._props.shadingColor === undefined,
+    String(log.tables[0].table.getCell(0, 0)._props.shadingColor));
+
 }
 
 {
@@ -612,6 +641,39 @@ ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thick
   ok('封面沒有藍色文字', !/w:color w:val="(1F3864|2E5C9A|4F81BD|16314F)"/.test(xml),
     (xml.match(/w:color w:val="[0-9A-Fa-f]{6}"/g) || []).slice(0, 6).join(' '));
   ok('封面有黑色文字', /w:color w:val="000000"/.test(xml));
+}
+
+/**
+ * 一張表只能有一套顏色。
+ *
+ * 「表尾深藍色，但表頭表內部都是預設的淡綠色，這樣搭配超奇怪」——使用者是對的，
+ * 那確實是兩個獨立的決定擺在一起，沒有人負責讓它們一致。
+ *
+ * 模型願意為合計列特地指定一個顏色，代表它對這張表有想法；那個想法應該貫穿整張表，
+ * 而不是只落在最後一列。所以反過來拿它當這張表的主色，表頭、斑馬紋、細線全部從它推。
+ *
+ * 整體感不是規則教得會的，是讓不一致變成不可能。
+ */
+{
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['品名', '金額'], ['A', '100'], ['小計', '100'], ['總計', '105']],
+    total_rows: 2,
+    total_fill: '#1F3864',
+  });
+  const t = log.tables[0].table;
+  const sh = (r, c) => t.getCell(r, c)._props.shadingColor;
+  ok('指定深藍之後，表頭也跟著變成深藍家族',
+    sh(0, 0) !== '#EAF1ED' && /^#[0-9A-F]{6}$/.test(String(sh(0, 0))), String(sh(0, 0)));
+  ok('總計用它指定的原色', sh(3, 0) === '#1F3864', String(sh(3, 0)));
+  ok('小計比總計淡一階，階層還在', sh(2, 0) !== sh(3, 0), `${sh(2, 0)}|${sh(3, 0)}`);
+
+  // 下一張表沒指定顏色，要回到文件主色——那次決定只屬於那一張表。
+  reset();
+  await host.executeTool('word_insert_table', { values: [['a', 'b'], ['1', '2']] });
+  ok('下一張表回到文件預設，不會被上一張染色',
+    log.tables[0].table.getCell(0, 0)._props.shadingColor === '#EAF1ED',
+    String(log.tables[0].table.getCell(0, 0)._props.shadingColor));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
