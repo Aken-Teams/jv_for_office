@@ -1134,16 +1134,23 @@ let styledDoc = null;
  * Runs once per document per session, and never throws: a document whose styles
  * are locked still gets its content, just in whatever it was already using.
  */
-async function ensureBaseStyles(ctx, wanted) {
+async function ensureBaseStyles(ctx, wanted, accent) {
   const key = `${docKeyHint()}::${wanted || 'modern'}`;
   if (styledDoc === key) return false;
   // Marked up front: a build that cannot do this must not retry on every write.
   styledDoc = key;
   if (!hasApi('1.5')) return false;
 
-  const th = THEMES[String(wanted || 'report').toLowerCase()] || THEMES.report;
+  let th = THEMES[String(wanted || 'report').toLowerCase()] || THEMES.report;
   // 封面檢查要知道「標題本來該多大」，而那是主題定的。
   activeTheme = th;
+  /**
+   * 使用者（或模型）自己指定的主色優先。
+   *
+   * 這是把設計判斷還給模型的那一行：報價單該是藏青、合約該是黑白、年報該是深紅，
+   * 這些決定本來就該由「正在做這份文件的人」來下，而不是由七個罐頭主題的清單來限制。
+   */
+  const custom = accent ? inkFromAccent(accent) : null;
   /**
    * 表格要跟著主題走。
    *
@@ -1156,7 +1163,12 @@ async function ensureBaseStyles(ctx, wanted) {
    * 不是 null——null 在 paintTable 裡會退回 report 的綠。公文和論文該是黑白的，
    * 那是它們的規矩，不是我們的審美可以蓋過去的。
    */
-  activeInk = th.ink || TABLE_INK;
+  activeInk = custom || th.ink || TABLE_INK;
+  if (custom) {
+    // 標題和內文也要跟著走，不然字還是綠的、表格已經是藏青的。
+    th = { ...th, headingColor: custom.accent, bodyColor: custom.text, titleColor: custom.text };
+    activeTheme = th;
+  }
   try {
     const all = ctx.document.getStyles();
     const found = BASE_STYLES.map((spec) => ({
@@ -1277,7 +1289,8 @@ async function insertTable(args) {
           if (widths[c]) cell.columnWidth = Number(widths[c]);
           else if (auto) cell.columnWidth = auto[c];
           if (isTotal) {
-            cell.shadingColor = String(args.total_fill || '#1F3864');
+            // 寫死藏青的話，淡綠表頭配藏青總計——一份文件兩套顏色。跟著主色走。
+            cell.shadingColor = String(args.total_fill || inkNow().accent || '#1F3864');
             const f = cell.body.font;
             f.color = String(args.total_color || '#FFFFFF');
             f.bold = true;
@@ -1913,6 +1926,40 @@ let coverTitle = null;
 
 let activeTheme = null;
 function themeNow() { return activeTheme || THEMES.report; }
+
+/**
+ * 從一個主色長出一整套面與線。
+ *
+ * ── 為什麼需要這個 ──
+ * 原本只有七個罐頭主題。模型遇到「報價單」這種我們沒做過模板的文件時，它沒有辦法
+ * 說「這份該是藏青的」——只能從七個裡面挑一個，或者什麼都不挑然後拿到預設的綠。
+ * 於是一份報價單的表頭是淡綠、總計列是藏青，兩套顏色擺在同一頁上。
+ *
+ * 問題不在那個綠選得好不好，在**模型失去了決定權**。AI AGENTS 的 worker 應付得了
+ * 沒看過的文件，靠的就是它可以自己決定長什麼樣；增益集這邊把那件事收成了一張選單。
+ *
+ * ── 為什麼一個色就夠 ──
+ * 久億那份文件的六個色，全部可以從主色推出來（推白 88% 是表頭底、推黑 78% 是內文、
+ * 推灰 55% 是次要色⋯⋯）。那不是巧合——「顏色很少而且同一個色相家族」本來就是一條
+ * 推導規則，不是一組挑出來的值。所以模型只要決定**一個**顏色，其餘自動成立，
+ * 而且不可能配出不協調的組合。
+ */
+function inkFromAccent(hex) {
+  const a = String(hex).trim();
+  if (!/^#?[0-9A-Fa-f]{6}$/.test(a)) return null;
+  const c = a.startsWith('#') ? a : `#${a}`;
+  return {
+    headerFill: mixHex(c, '#FFFFFF', 0.88),
+    headerText: c,
+    band: mixHex(c, '#FFFFFF', 0.96),
+    plain: '#FFFFFF',
+    // 近黑但帶著主色的體溫——純黑配彩色會讀成兩套顏色疊在一起。
+    text: mixHex(c, '#1A1A1A', 0.78),
+    accent: c,
+    hair: mixHex(c, '#FFFFFF', 0.80),
+    muted: mixHex(c, '#8A8A8A', 0.55),
+  };
+}
 
 function inkNow() {
   return activeInk || THEMES.report.ink;
@@ -5882,7 +5929,7 @@ export async function executeTool(tool, args, opts = {}) {
          * — somebody asking for a different look still gets the full sweep.
          */
         if (tool !== 'word_apply_theme') {
-          await Word.run((c) => ensureBaseStyles(c, a.base_style))
+          await Word.run((c) => ensureBaseStyles(c, a.base_style, a.accent))
             .catch(() => {});
         }
         const run = {

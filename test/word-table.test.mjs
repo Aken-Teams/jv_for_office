@@ -248,11 +248,11 @@ ok('欄寬逐欄對上', [36, 180, 40, 36, 78, 80].every((w, c) => at(0, c, 'col
 
 // total_rows counts from the BOTTOM. Row 2 is the last line item and must stay
 // plain; rows 3–5 are 小計/稅/總計.
-ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#1F3864'),
+ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#1F5F4B'),
   [0, 1, 2, 3, 4, 5].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
 // 明細列現在也會上色（白／淡灰相間），但絕不能沾到合計列的深底。
 ok('合計列的深底沒有外溢到明細列',
-  [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#1F3864'),
+  [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#1F5F4B'),
   [0, 1, 2].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
 /**
  * 預設配色換掉了：黑底白字的表頭 → 淡綠底深綠字。
