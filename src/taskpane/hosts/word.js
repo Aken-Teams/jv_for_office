@@ -590,9 +590,29 @@ export async function inspectWrite(_tool, args) {
 }
 
 /** Split incoming text into paragraphs the way the model most likely meant it. */
+/**
+ * 字面的 `\n` 也要當成換行。
+ *
+ * ── 為什麼需要 ──
+ * 模型送來的有時候是**兩個字元**（反斜線加 n），不是一個換行字元。原因在工具參數那層：
+ * JSON 字串裡的跳脫被多轉了一次，於是到我們手上成了字面文字，接著原封不動寫進文件——
+ * 使用者看到的是「⋯30 天內有效。\n2. 報價範圍以本單為限⋯」整段擠在一行。
+ *
+ * ── 為什麼在這裡修 ──
+ * 這跟模型好壞無關：同一個模型在同一句話裡有時正常有時不正常，因為那取決於中間經過了
+ * 幾層字串編碼。叫模型「不要輸出字面的 \n」是一條會被忘記的規則，而這裡一行判斷就能
+ * 讓它永遠不發生——規則擋不住的事，機制擋得住。
+ *
+ * 只處理 \n 和 \r\n。\t 不轉：它在文件裡本來就該是一個 tab。而使用者真的想寫出
+ * 「\n」這兩個字的機率，遠低於模型多轉義一次的機率。
+ */
+function unescapeBreaks(text) {
+  return String(text).replace(/\\r\\n|\\n/g, '\n');
+}
+
 function asParagraphs(args) {
-  if (Array.isArray(args.paragraphs)) return args.paragraphs.map(String);
-  const text = args.text === undefined ? '' : String(args.text);
+  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => unescapeBreaks(t));
+  const text = args.text === undefined ? '' : unescapeBreaks(args.text);
   return text.split(/\r?\n/);
 }
 
@@ -973,6 +993,29 @@ const TABLE_INK = {
  * stop. The cover table has no header row, so `hasHeader` decides both where
  * the black band goes and where the stripes start counting from.
  */
+/**
+ * 這個底色上該用什麼字色。
+ *
+ * ── 為什麼要算，不能直接指定 ──
+ * 表頭的底色現在是從主色推出來的，而主色由模型決定。推出來的底可能很淡，也可能因為
+ * 某一層樣式覆蓋而變得很深。字色寫死的話，總有一種組合會變成深底配深字——那就是
+ * 「表格文字看不清楚」。
+ *
+ * 用相對亮度決定：底亮用深字、底暗用白字。這條規則沒有例外，所以不管哪一層贏了，
+ * 字一定讀得到。
+ */
+function readableOn(fill, prefer) {
+  const h = String(fill || '').replace('#', '');
+  if (!/^[0-9A-Fa-f]{6}$/.test(h)) return prefer || '#000000';
+  const v = (i) => {
+    const c = parseInt(h.slice(i * 2, i * 2 + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const L = 0.2126 * v(0) + 0.7152 * v(1) + 0.0722 * v(2);
+  // 0.45 而不是 0.5：中間調的底配白字比配黑字好讀，因為字比底細。
+  return L > 0.45 ? (prefer || '#000000') : '#FFFFFF';
+}
+
 function paintTable(table, rowCount, colCount, hasHeader) {
   /**
    * 沒套過主題的時候用 report 的配色——這是預設版面。
@@ -1037,7 +1080,8 @@ function paintTable(table, rowCount, colCount, hasHeader) {
       if (isHead) {
         cell.shadingColor = ink.headerFill;
         const hf = cell.body.font;
-        hf.color = ink.headerText;
+        // 算出來的，不是指定的——深底一定配白字。見 readableOn。
+        hf.color = readableOn(ink.headerFill, ink.headerText);
         hf.bold = true;
       } else {
         // Counted from the first BODY row, not the first table row: with a
@@ -1289,10 +1333,27 @@ async function insertTable(args) {
           if (widths[c]) cell.columnWidth = Number(widths[c]);
           else if (auto) cell.columnWidth = auto[c];
           if (isTotal) {
-            // 寫死藏青的話，淡綠表頭配藏青總計——一份文件兩套顏色。跟著主色走。
-            cell.shadingColor = String(args.total_fill || inkNow().accent || '#1F3864');
+            /**
+             * 合計列是「比較重的一列」，不是「另一種顏色」。
+             *
+             * ── 原本為什麼刺眼 ──
+             * 填滿飽和的深色（原本寫死藏青，後來改成主色本身），結果是淡色表頭配一塊
+             * 深色實心磚，而那塊磚是整張表最黑的東西——合計列是**總結**，不是警示，
+             * 它不該比表頭還搶眼。表頭是欄位的名字，合計是欄位的收尾，兩者份量該相當。
+             *
+             * ── 現在的做法 ──
+             * 用同一個色相再深一階：表頭推白 88%，合計推白 70%。看得出是同一家、
+             * 看得出比表頭重，但不會變成一塊黑磚。字色一樣用亮度算出來（見 readableOn），
+             * 所以不管主色深淺，字一定讀得到。
+             *
+             * 粗體仍然保留——份量交給字重，不交給底色，這本來就是比較耐看的做法。
+             */
+            const tink = inkNow();
+            const fill = String(args.total_fill
+              || (tink.accent ? mixHex(tink.accent, '#FFFFFF', 0.70) : '#D9D9D9'));
+            cell.shadingColor = fill;
             const f = cell.body.font;
-            f.color = String(args.total_color || '#FFFFFF');
+            f.color = String(args.total_color || readableOn(fill, tink.text));
             f.bold = true;
           }
         }
@@ -1884,7 +1945,8 @@ function mixHex(hex, toward, t) {
     const b = parseInt(g.slice(i * 2, i * 2 + 2), 16);
     return Math.round(a + (b - a) * t).toString(16).padStart(2, '0');
   };
-  return `#${ch(0)}${ch(1)}${ch(2)}`;
+  // 大寫：推導出來的顏色要跟手寫的色碼長得一樣，否則比對和閱讀都會多一道轉換。
+  return `#${ch(0)}${ch(1)}${ch(2)}`.toUpperCase();
 }
 
 /**
@@ -4879,7 +4941,17 @@ async function insertCover(args) {
         table.headerRowCount = 0;
         // No header row — these are label/value pairs, so the stripes run from
         // the top and nothing gets the black band.
-        if (!args.table_style) paintTable(table, rows.length, 2, false);
+        /**
+         * 指定了內建樣式也照樣上色。
+         *
+         * 原本是「有指定樣式就不畫」——那等於在設計系統上開一道後門，而工具描述裡就寫著
+         * table_style 這個參數，模型自然會用。結果是一份文件裡我們畫的表格是淡底細線、
+         * 模型指定的是 Word 內建的深藍斑馬紋，兩套設計語言並排。
+         *
+         * 內建樣式負責結構（框線、斑馬紋的節奏），我們負責顏色。衝突的不是這兩件事，
+         * 是「有一條路可以繞過配色」。
+         */
+        paintTable(table, rows.length, 2, false);
         await ctx.sync();
       }
 
@@ -5171,7 +5243,17 @@ async function insertBlock(args) {
         const table = anchor.insertTable(rows.length, 2, 'After', rows);
         table.styleBuiltIn = String(args.table_style || DEFAULT_TABLE_STYLE).replace(/\s+/g, '');
         table.headerRowCount = 0;
-        if (!args.table_style) paintTable(table, rows.length, 2, false);
+        /**
+         * 指定了內建樣式也照樣上色。
+         *
+         * 原本是「有指定樣式就不畫」——那等於在設計系統上開一道後門，而工具描述裡就寫著
+         * table_style 這個參數，模型自然會用。結果是一份文件裡我們畫的表格是淡底細線、
+         * 模型指定的是 Word 內建的深藍斑馬紋，兩套設計語言並排。
+         *
+         * 內建樣式負責結構（框線、斑馬紋的節奏），我們負責顏色。衝突的不是這兩件事，
+         * 是「有一條路可以繞過配色」。
+         */
+        paintTable(table, rows.length, 2, false);
         summary = `${rows.length} 列的資訊表`;
       } else if (kind === 'note') {
         // A callout: smaller, indented, with a coloured rule down the left so it

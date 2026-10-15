@@ -248,11 +248,11 @@ ok('欄寬逐欄對上', [36, 180, 40, 36, 78, 80].every((w, c) => at(0, c, 'col
 
 // total_rows counts from the BOTTOM. Row 2 is the last line item and must stay
 // plain; rows 3–5 are 小計/稅/總計.
-ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#1F5F4B'),
+ok('最後三列是合計列', [3, 4, 5].every((r) => at(r, 0, 'shadingColor') === '#BCCFC9'),
   [0, 1, 2, 3, 4, 5].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
 // 明細列現在也會上色（白／淡灰相間），但絕不能沾到合計列的深底。
 ok('合計列的深底沒有外溢到明細列',
-  [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#1F5F4B'),
+  [1, 2].every((r) => at(r, 0, 'shadingColor') !== '#BCCFC9'),
   [0, 1, 2].map((r) => at(r, 0, 'shadingColor') || '-').join('|'));
 /**
  * 預設配色換掉了：黑底白字的表頭 → 淡綠底深綠字。
@@ -276,8 +276,23 @@ ok('內文不是純黑，是帶主色調的墨',
   t.getCell(1, 0).body.font.color === '#1F2A24'
   && t.getCell(1, 0).body.font.color !== '#000000',
   String(t.getCell(1, 0).body.font.color));
-ok('合計列白色粗體',
-  [3, 4, 5].every((r) => t.getCell(r, 5).body.font.color === '#FFFFFF' && t.getCell(r, 5).body.font.bold === true));
+/**
+ * 合計列是「比較重的一列」，不是「另一種顏色」。
+ *
+ * 原本填飽和的深色，結果是淡色表頭配一塊深色實心磚，而那塊磚是整張表最黑的東西——
+ * 合計列是總結不是警示，不該比表頭還搶眼。現在用同一色相再深一階（表頭推白 88%、
+ * 合計推白 70%），份量靠字重撐，不靠底色。
+ *
+ * 斷言的是**關係**不是色碼：比表頭深、比純色淡、字色要在那個底上讀得到。
+ */
+ok('合計列比表頭深，但不是飽和的深色',
+  at(3, 0, 'shadingColor') === '#BCCFC9' && at(3, 0, 'shadingColor') !== '#1F5F4B',
+  String(at(3, 0, 'shadingColor')));
+ok('合計列是粗體，份量交給字重',
+  [3, 4, 5].every((r) => t.getCell(r, 5).body.font.bold === true));
+ok('合計列的字在那個底上讀得到（淡底配深字）',
+  [3, 4, 5].every((r) => t.getCell(r, 5).body.font.color === '#1F2A24'),
+  String(t.getCell(3, 5).body.font.color));
 ok('合計列仍然靠右', at(5, 5, 'horizontalAlignment') === 'Right',
   '深底白字不該覆蓋掉對齊');
 
