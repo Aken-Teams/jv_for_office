@@ -371,4 +371,35 @@ function fakeWord(opts = {}) {
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+/**
+ * 標籤要撐成同一個寬度——中文表單的分散對齊。
+ *
+ * 「我真的不知道為甚麼兩欄設計的最後一列就是沒有 tab」。放大看才發現：不是最後一列
+ * 跑掉，是前面幾列被撐開了而它沒有——**最後一列才是正常的**。那表示分散對齊是模型
+ * 一列一列設的，設到最後漏了。這正是「一段一段決定」會出錯的典型：每列分開看都對，
+ * 合起來就是不齊。
+ *
+ * Word JS 的 Alignment 沒有 Distributed，所以真的對齊屬性設不了。中文表單傳統上本來
+ * 就是手動補全形空白做出來的——這裡做同一件事，只是由程式統一做，不會漏掉任何一列。
+ */
+{
+  const log = fakeWord();
+  await executeTool('word_insert_form', {
+    fields: [
+      { label: '客戶名稱', value: '強合科技' },
+      { label: '聯絡人', value: '王小明' },
+      { label: '電話', value: '02-8765-4321' },
+      { label: '統一編號', value: '87654321' },
+    ],
+    columns: 1,
+  });
+  const cells = (log.tables[0] && log.tables[0].values) || [];
+  const labels = cells.map((r) => String((r || [])[0] || ''));
+  ok('每個標籤都被撐到同一個寬度',
+    new Set(labels.filter(Boolean).map((t) => [...t].length)).size === 1,
+    JSON.stringify(labels));
+  ok('最長的那個不會被動到', labels.includes('客戶名稱') || labels.includes('統一編號'),
+    JSON.stringify(labels));
+}
+
 process.exit(fail ? 1 : 0);

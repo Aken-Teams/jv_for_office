@@ -19,7 +19,7 @@ function ok(name, cond, detail) {
 }
 
 function fakeWord(texts, tableSpecs = []) {
-  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [], fontSets: [], deletedTables: [] };
+  const log = { deleted: [], headerSet: [], breaks: [], rewrites: [], fontSets: [], deletedTables: [], styleSets: [] };
   /**
    * 字串就是普通段落；要測標題就給 {text, style}。
    *
@@ -31,7 +31,7 @@ function fakeWord(texts, tableSpecs = []) {
     const t = typeof spec === 'string' ? spec : spec.text;
     const node = {
       text: t,
-      style: '', styleBuiltIn: typeof spec === 'string' ? '' : (spec.style || ''),
+      style: '',
       // 內容住在儲存格裡還是正文裡——版面檢查靠這個分辨表單和報告。
       tableNestingLevel: typeof spec === 'string' ? 0 : (spec.inCell ? 1 : 0),
       // 只裝一張圖的段落 text 是空的——清空段落的邏輯必須看得見這個。
@@ -48,6 +48,10 @@ function fakeWord(texts, tableSpecs = []) {
       }),
       load() {},
     };
+    Object.defineProperty(node, 'styleBuiltIn', {
+      get() { return node._style ?? (typeof spec === 'string' ? '' : (spec.style || '')); },
+      set(v) { node._style = v; log.styleSets.push({ i, v }); },
+    });
     return node;
   });
   const tables = tableSpecs.map((spec, i) => {
@@ -403,6 +407,36 @@ console.log(`\n${pass} passed, ${fail} failed`);
   await executeTool('word_review_layout', {});
   ok('等著填的表單不會被刪', form.deletedTables.length === 0,
     JSON.stringify(form.deletedTables));
+}
+
+// ── 同一組編號條款的樣式一致 ──────────────────────────────────────────────
+{
+  /**
+   * 「五、客戶確認本報價後⋯」那裡沒有 | 的標示。
+   *
+   * 備註一到四左邊都有區塊線，第五條沒有——模型一段一段套樣式，套到最後一段漏了。
+   * 跟標籤分散對齊漏掉最後一列、跟字型字級忽大忽小，是同一個病的第三次出現。
+   *
+   * 修在檢查裡而不是某個工具裡：這些條款可能是 word_insert_block 做的、也可能是
+   * word_insert_text 做的，修在其中一個工具裡，模型走另一條路就又漏掉。檢查看的是
+   * 結果，不管它怎麼來的。
+   *
+   * 多數決在這裡是對的：漏掉的永遠是少數，而「大家都長這樣」本來就是要的答案。
+   */
+  const P = (text, style) => ({ text, style });
+  const log = fakeWord([
+    '備註',
+    P('一、本報價有效期限為 30 天。', 'Quote'),
+    P('二、付款方式：簽約後支付 40%。', 'Quote'),
+    P('三、交付時程：45 個工作天。', 'Quote'),
+    P('四、不含文案撰寫。', 'Quote'),
+    P('五、客戶確認後請簽章回傳。', ''),
+  ]);
+  await executeTool('word_review_layout', {});
+  ok('漏掉樣式的那一段被拉回來', log.styleSets.some((x) => x.i === 5 && x.v === 'Quote'),
+    JSON.stringify(log.styleSets));
+  ok('本來就一致的不會被動到', log.styleSets.filter((x) => x.i !== 5).length === 0,
+    JSON.stringify(log.styleSets));
 }
 
 process.exit(fail ? 1 : 0);

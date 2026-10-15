@@ -104,4 +104,37 @@ for (const [name, style, text, shouldBlock] of HEADINGS) {
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+/**
+ * 文字入口的三道正規化：字面換行、分開的底線、tab。
+ *
+ * 三者同一類——模型不是不知道怎麼排，是它在組字串的時候用了「在純文字裡有效、
+ * 在 Word 裡沒效」的手法。tab 尤其隱蔽：Word 的 tab 是跳到下一個定位停駐點，
+ * 而停駐點由段落樣式決定，模型看不到那些點在哪裡——所以同一段文字在不同樣式下
+ * 落點不一樣，使用者看到的就是「有時候會因為 tab 而不小心把樣式跑版」。
+ *
+ * 這種事規則擋不住，入口擋得住。
+ */
+{
+  const u = cut('function joinUnderscores', 'function asParagraphs')
+    + '\nexport { normalizeTabs, unescapeBreaks, joinUnderscores };\n';
+  const f = new URL('./.text-normalize-under-test.mjs', import.meta.url);
+  fs.writeFileSync(f, u);
+  const { normalizeTabs, unescapeBreaks, joinUnderscores } = await import(f);
+
+  ok('開頭的 tab 被拿掉（縮排該交給 left_indent）',
+    normalizeTabs('\t匯款帳戶') === '匯款帳戶');
+  ok('中間的 tab 換成看得見的間隔，不是會跑的定位點',
+    normalizeTabs('戶名\t恆遠資訊') === '戶名\u3000恆遠資訊');
+  ok('沒有 tab 的文字原樣不動', normalizeTabs('一、付款方式') === '一、付款方式');
+
+  ok('字面的反斜線 n 變成真的換行',
+    unescapeBreaks('A。\\n2. B。') === 'A。\n2. B。');
+  ok('真的換行不受影響', unescapeBreaks('A\nB') === 'A\nB');
+
+  ok('分開的底線接成一條', /^簽章：_{6,}$/.test(joinUnderscores('簽章：_ _ _ _ _ _')));
+  ok('單獨的底線不動', joinUnderscores('A_ B_ 正常') === 'A_ B_ 正常');
+
+  fs.unlinkSync(f);
+}
+
 process.exit(fail ? 1 : 0);

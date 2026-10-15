@@ -676,5 +676,45 @@ ok('後端規格宣告了 rule', spec.includes("'rule'") && spec.includes('thick
     String(log.tables[0].table.getCell(0, 0)._props.shadingColor));
 }
 
+/**
+ * 兩欄的「標籤｜值」面板，標籤要撐齊。
+ *
+ * 分散對齊已經做在 insertForm 裡，但模型做報價單的客戶面板時用的是 insertTable——
+ * 那個修正它根本走不到，使用者看到的仍然是「最後一列跟其他不一樣」。
+ *
+ * 修在模型不會走的那條路上，等於沒修。與其要求它改用某個工具，不如讓兩條路做同一件事。
+ */
+{
+  /**
+   * 第一列是區塊標題（客戶資料），不是表頭——它要一起參與寬度計算。
+   *
+   * 第一版的條件寫了 !hasHeader，而 hasHeader 預設 true、模型也不會關掉，於是整段
+   * 永遠不執行。這題用模型真正會送的形狀（帶標題列、不傳 header）來測，才測得到。
+   */
+  reset();
+  await host.executeTool('word_insert_table', {
+    values: [['客戶資料', ''], ['客戶名稱', '△△公司'], ['聯絡人', '王小明'],
+      ['電話', '02-8765'], ['統一編號', '87654321']],
+  });
+  const t = log.tables[0].table;
+  const labels = [0, 1, 2, 3].map((r) => String(t.getCell(r, 0)._props.values || t.values?.[r]?.[0] || ''));
+  void labels;
+  const given = log.tables[0].values.map((r) => [...String(r[0])].length);
+  ok('標題列和每個標籤都撐到同一個寬度', new Set(given).size === 1, JSON.stringify(given));
+  ok('最長的那個沒被動到',
+    log.tables[0].values.some((r) => String(r[0]) === '統一編號'),
+    JSON.stringify(log.tables[0].values.map((r) => r[0])));
+
+  // 資料表不該被當成面板——第一欄長短不一，而且那是內容不是標籤。
+  reset();
+  await host.executeTool('word_insert_table', {
+    header: false,
+    values: [['網站系統規劃與需求訪談', '30,000'], ['前台切版', '48,000'], ['維運', '18,000']],
+  });
+  const data = log.tables[0].values.map((r) => String(r[0]));
+  ok('長短不一的資料表不會被誤判成面板',
+    data.includes('網站系統規劃與需求訪談') && data.includes('維運'), JSON.stringify(data));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

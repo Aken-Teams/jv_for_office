@@ -632,13 +632,39 @@ function joinUnderscores(text) {
   });
 }
 
+/**
+ * Tab 不要留在文字裡。
+ *
+ * ── 為什麼會跑版 ──
+ * Word 的 tab 是「跳到下一個定位停駐點」，而停駐點的位置由段落樣式決定——模型看不到
+ * 那些點在哪裡。所以它用 tab 排出來的縮排，在實際版面上會落在別的位置：有時候剛好，
+ * 有時候整段推出去半個版心，而且同一段文字在不同樣式下落點還不一樣。
+ *
+ * ── 怎麼處理 ──
+ * 開頭的 tab 是在做縮排——那件事該由 left_indent 做，所以拿掉。句子中間的 tab 是在
+ * 做欄位對齊，但在一段連續的文字裡沒有欄可以對，換成一個全形空格就是它實際想要的
+ * 效果，而且不會因為樣式變化而跑掉。
+ *
+ * 跟字面 `\n`、分開的底線同一類：模型不是不知道怎麼排，是它在組字串的時候用了
+ * 「在純文字裡有效、在 Word 裡沒效」的手法。這種事規則擋不住，入口擋得住。
+ */
+function normalizeTabs(text) {
+  return String(text)
+    // 多轉義一次的 \t，跟 \n 同樣的來源。
+    .replace(/\t/g, '\t')
+    // 開頭的縮排交給 left_indent，不要用 tab 做。
+    .replace(/^[\t]+/gm, '')
+    // 中間的 tab 換成全形空格——它想要的是一個看得見的間隔，不是一個會跑的定位點。
+    .replace(/\t+/g, '\u3000');
+}
+
 function unescapeBreaks(text) {
   return String(text).replace(/\\r\\n|\\n/g, '\n');
 }
 
 function asParagraphs(args) {
-  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => joinUnderscores(unescapeBreaks(t)));
-  const text = args.text === undefined ? '' : joinUnderscores(unescapeBreaks(args.text));
+  if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => joinUnderscores(normalizeTabs(unescapeBreaks(t))));
+  const text = args.text === undefined ? '' : joinUnderscores(normalizeTabs(unescapeBreaks(args.text)));
   return text.split(/\r?\n/);
 }
 
@@ -1300,6 +1326,43 @@ async function insertTable(args) {
   const align = Array.isArray(args.align) ? args.align : [];
   const widths = Array.isArray(args.widths) ? args.widths : [];
   const hasHeader = args.header !== false;
+
+  /**
+   * 兩欄的「標籤｜值」面板，標籤也要撐齊。
+   *
+   * ── 為什麼要在這裡再做一次 ──
+   * 分散對齊已經做在 insertForm 裡了，但模型做報價單的客戶面板時用的是 insertTable，
+   * 所以那個修正它根本走不到——使用者看到的仍然是「最後一列跟其他不一樣」。
+   *
+   * 這是這段期間反覆出現的一件事：**修在模型不會走的那條路上，等於沒修**。與其繼續
+   * 要求它改用某個工具，不如讓兩條路做同一件事——它走哪一條都對。
+   *
+   * ── 認得很保守 ──
+   * 剛好兩欄、沒有表頭、每一列的第一格都有字而且都在六個字以內、而且至少三列。
+   * 那幾乎只會是「標籤｜值」面板。資料表的第一欄是資料（品名、日期），長短不一，
+   * 很容易就超過門檻；真的誤判了，結果也只是標籤欄的字被撐開，不會弄壞內容。
+   */
+  /**
+   * 第一列是「客戶資料」這種區塊標題，不是表頭——它照樣算進來。
+   *
+   * ── 第一版為什麼沒生效 ──
+   * 原本的條件寫了 `!hasHeader`，而 hasHeader 預設是 true、模型也不會特地關掉。
+   * 於是這段永遠不會執行，使用者看到的仍然是「統一編號、承辦電話比較靠近標籤」。
+   *
+   * 這種面板的第一列本來就是個標題（客戶資料、報價資訊、客戶確認），它跟下面的
+   * 標籤同屬一欄、要對齊在同一條線上，所以**要一起參與寬度計算**——「客戶確認」
+   * 四個字在那裡，「簽章」「日期」就該撐到四個字寬。
+   *
+   * 值欄有沒有東西不重要（簽名欄的值本來就是空的），所以只看第一欄。
+   */
+  const labelCells = rows.map((r) => String(r[0] || '').trim());
+  const panelish = cols === 2 && rows.length >= 3
+    && labelCells.every((label) => label && [...label].length <= 6);
+  if (panelish) {
+    const cells = rows.map((r) => ({ kind: 'label', text: r[0] }));
+    padLabels([{ cells }]);
+    cells.forEach((c, i) => { rows[i][0] = c.text; });
+  }
   const totals = Math.max(0, Math.min(Number(args.total_rows) || 0, rows.length - (hasHeader ? 1 : 0)));
 
   return Word.run(async (ctx) => {
@@ -2644,6 +2707,49 @@ function formRows(fields, pairs) {
   return rows;
 }
 
+/**
+ * 標籤欄的字要撐滿同一個寬度——中文表單的分散對齊。
+ *
+ * ── 這是在修什麼 ──
+ * 一份報價單的面板裡，「客 戶 名 稱」「聯 絡 人」「電　話」三列的標籤都被撐滿整欄，
+ * 最後一列「統一編號」沒有。使用者看到的是「最後一列跟前面不一樣」——而實際上**最後
+ * 一列才是正常的**，前面三列被特別處理過。
+ *
+ * 那表示分散對齊是模型一列一列設的，設到最後一列漏了。這正是「一段一段決定」會出錯的
+ * 典型：每一列分開看都對，合起來就是不齊。
+ *
+ * ── 為什麼用補空白，不用對齊屬性 ──
+ * Word JS 的 Alignment 只有 Left/Centered/Right/Justified，**沒有 Distributed**。
+ * 所以真正的分散對齊設不了。中文表單傳統上本來就是手動補全形空白做出來的，
+ * 這裡做的就是那件事，只是由程式統一做，不會漏掉任何一列。
+ *
+ * ── 範圍 ──
+ * 只處理同一張表裡**都很短**的標籤（最長不超過 6 個字）。長標籤撐開會變成一排稀疏的
+ * 字，比不齊更難看；而且長標籤本來就佔滿了欄寬，不需要撐。
+ */
+function padLabels(rows) {
+  const cells = rows.flatMap((r) => (r.cells || []).filter((c) => c && c.kind === 'label' && !c.grid));
+  const texts = cells.map((c) => String(c.text || ''));
+  const widest = Math.max(0, ...texts.map((t) => t.length));
+  // 最長的超過 6 個字就不做——撐開長標籤會變成一排稀疏的字。
+  if (widest < 2 || widest > 6) return rows;
+  for (const c of cells) {
+    const chars = [...String(c.text || '')];
+    const gaps = chars.length - 1;
+    const extra = widest - chars.length;
+    if (gaps < 1 || extra < 1) continue;
+    const each = Math.floor(extra / gaps);
+    let rest = extra - each * gaps;
+    c.text = chars.reduce((acc, ch, i) => {
+      if (i === 0) return ch;
+      const n = each + (rest > 0 ? 1 : 0);
+      if (rest > 0) rest -= 1;
+      return acc + '　'.repeat(n) + ch;
+    }, '');
+  }
+  return rows;
+}
+
 /** How wide the label columns have to be for the labels they hold. */
 function formLabelWidth(rows, totalPt, pairs) {
   /**
@@ -2747,7 +2853,8 @@ async function insertForm(args) {
   const note = args.note !== undefined ? String(args.note) : (carry ? carry.note : '');
   const pairs = Math.max(1, Math.min(
     Number(args.columns) || (carry ? carry.pairs : 0) || 2, 3));
-  const rows = formRows(fields, pairs);
+  // 標籤撐成同一個寬度——由程式統一做，不會像一列一列設那樣漏掉最後一列。
+  const rows = padLabels(formRows(fields, pairs));
   if (!rows.length) throw new Error('fields 裡沒有任何可以畫的欄位。');
   const cols = pairs * 2;
   const rowH = Math.max(14, Math.min(
@@ -3963,7 +4070,59 @@ async function reviewLayout(args) {
       if (!anyText) blankTables.push(i);
     });
 
+    /**
+     * 同一組編號條款，樣式要一致。
+     *
+     * ── 症狀 ──
+     * 備註「一、二、三、四」左邊都有一條區塊線，「五、」沒有。模型是一段一段套樣式的，
+     * 套到最後一段漏了——跟標籤分散對齊漏掉最後一列、跟字型字級忽大忽小，是同一個病的
+     * 第三次出現：**每一段分開看都對，合起來就是不齊**。
+     *
+     * ── 為什麼放在檢查裡而不是某個工具裡 ──
+     * 這些條款可能是 word_insert_block 做的、也可能是 word_insert_text 加縮排做的，
+     * 修在其中一個工具裡，模型走另一條路就又漏掉。檢查看的是**結果**，不管它怎麼來的。
+     *
+     * ── 修法 ──
+     * 取那一組裡出現最多次的樣式，把少數派拉過去。多數決在這裡是對的：漏掉的永遠是
+     * 少數，而且「大家都長這樣」本來就是我們要的那個答案。
+     */
+    const NUM_ITEM = /^[一二三四五六七八九十]+、/;
+    const groups = [];
+    let run2 = [];
+    items.forEach((q, i) => {
+      if (Number(q.tableNestingLevel) > 0) { run2 = []; return; }
+      if (NUM_ITEM.test(String(q.text || '').trim())) { run2.push(i); return; }
+      if (run2.length >= 3) groups.push(run2.slice());
+      run2 = [];
+    });
+    if (run2.length >= 3) groups.push(run2.slice());
+
+    const oddOnes = [];
+    for (const g of groups) {
+      const tally = new Map();
+      for (const i of g) {
+        const k = String(items[i].styleBuiltIn || items[i].style || '');
+        tally.set(k, (tally.get(k) || 0) + 1);
+      }
+      if (tally.size < 2) continue;
+      const [winner] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0];
+      for (const i of g) {
+        if (String(items[i].styleBuiltIn || items[i].style || '') !== winner) {
+          oddOnes.push({ at: i, want: winner });
+        }
+      }
+    }
+
     const result = await withTracking(ctx, optIn(args), async () => {
+      if (oddOnes.length) {
+        found.push(`${oddOnes.length} 段編號條款的樣式跟同一組的其他段不一樣`);
+        if (fix) {
+          for (const o of oddOnes) {
+            try { items[o.at].styleBuiltIn = o.want || 'Normal'; } catch { /* 鎖住就跳過 */ }
+          }
+          fixed.push(`把 ${oddOnes.length} 段條款拉回跟同組一致的樣式`);
+        }
+      }
       if (blankTables.length) {
         found.push(`${blankTables.length} 張整張空白的表格（一個字都沒有）`);
         if (fix) {
@@ -4990,7 +5149,30 @@ async function insertCover(args) {
       // Full-width spaces between the characters: what those documents do to a
       // short document name so it reads as a heading rather than a label.
       const spaced = title.length <= 6 ? [...title].join('\u3000') : title;
-      lines.push(coverLine(spaced, { size: 17, color: COVER_INK.title, bold: true, align: 'Centered', font, spaceAfter: 12 }));
+      /**
+       * 標題底下那條線。
+       *
+       * ── 為什麼對外文件需要它 ──
+       * 原本只有 report 封面的副標有線，letterhead 沒有。可是 letterhead 正是對外文件
+       * 走的那條路——報價單、通知函、估價單。那些文件的標題是整頁的錨點，一行加粗的
+       * 置中字撐不起來；一條橫跨版心的線才讓它看起來像「這是一份正式文件的開頭」，
+       * 而不是「一行比較大的字」。
+       *
+       * 線用主色、掛在標題那一段上——字搬到哪線就跟到哪。英文名接在線下面，
+       * 所以線是標題和內容之間的分界，不是裝飾。
+       */
+      const lineInk = inkNow();
+      lines.push(coverLine(spaced, {
+        size: 17, color: COVER_INK.title, bold: true, align: 'Centered', font,
+        rule: lineInk.accent || COVER_INK.title,
+        spaceAfter: args.subtitle ? 4 : 12,
+      }));
+      // 英文名在線下面，小、淡、置中——它是標題的註腳，不是第二個標題。
+      if (args.subtitle) {
+        lines.push(coverLine(String(args.subtitle), {
+          size: 9, color: lineInk.muted || COVER_INK.meta, align: 'Centered', font, spaceAfter: 12,
+        }));
+      }
     } else if (layout === 'form') {
       // 表單: everything centred, everything small, the timestamp smallest.
       lines.push(coverLine(title, { size: 20, color: COVER_INK.title, bold: true, align: 'Centered', font }));

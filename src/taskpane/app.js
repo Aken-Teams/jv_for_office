@@ -134,6 +134,8 @@ const state = {
   sourcesLoaded: false,
   /** config.json 說的位址，跟使用者覆寫的分開存——判斷覆寫過期了沒有要靠它。 */
   deployedApiBase: '',
+  /** 帳號設定的語言（伺服器給的），只拿來顯示「跟隨帳號設定」實際是哪一個。 */
+  accountLocale: '',
   /** 目前用的是使用者手動填的位址，不是部署設定的。 */
   apiOverridden: false,
   /** 哪一套環境，從 config.json 來。prod 以外都會在窗格頂端掛一條橫幅。 */
@@ -2908,13 +2910,24 @@ function renderModelMenu() {
     </button>`).join('');
 }
 
+/**
+ * 「跟隨帳號設定」要講出來那是哪一個。
+ *
+ * 一個選項如果看不出它實際會做什麼，它就不是一個選擇，是一個賭注。
+ */
+function noteFor(l) {
+  if (l.id) return l.note ? t(l.note) : '';
+  const acc = LOCALES.find((x) => x.id && x.id === state.accountLocale);
+  return acc ? t('目前是{0}', acc.label) : t(l.note);
+}
+
 function renderLangMenu() {
   const current = LOCALES.find(l => l.id === state.locale) || LOCALES[0];
   $('lang-menu').innerHTML = LOCALES.map(l => `
     <button type="button" class="lang-item" role="menuitemradio" data-id="${escapeHtml(l.id)}"
             aria-checked="${l.id === current.id}">
       ${escapeHtml(l.id ? l.label : t(l.label))}
-      ${l.note ? `<span class="l-note">${escapeHtml(t(l.note))}</span>` : ''}
+      ${noteFor(l) ? `<span class="l-note">${escapeHtml(noteFor(l))}</span>` : ''}
     </button>`).join('');
 }
 
@@ -3901,6 +3914,14 @@ async function loadDataSources() {
           trouble = t('伺服器尚未套用更新，請重新啟動 server 後再試。');
         } else {
           state.models = body.models;
+        /**
+         * 帳號設定的語言，只拿來顯示。
+         *
+         * 「跟隨帳號設定」這個選項原本是個陷阱：窗格送出空的 locale，伺服器改用帳號設定；
+         * 但窗格介面在沒指定語言時會退回預設字典（中文）。於是中文介面配英文回覆，
+         * 而且沒有任何一個設定看起來是錯的——使用者也查不出來，因為那個值只存在伺服器。
+         */
+        state.accountLocale = typeof body.locale === 'string' ? body.locale : '';
           /**
            * 一個模型不值得一個控制項，所以選單會藏起來——但那時候畫面上沒有任何
            * 東西說明為什麼。這是最後一個安靜的分支，補上。
