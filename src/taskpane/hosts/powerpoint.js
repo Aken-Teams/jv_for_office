@@ -1440,6 +1440,114 @@ async function addShape(args) {
  * 批次，一次 sync 送出去——這也是 ppt_add_cards 那些模組本來就在做的事，只是它們的
  * 形狀是寫死的。
  */
+/**
+ * 最後看一次整份，只修「壞掉」的，不碰「設計」。
+ *
+ * ── 這一條界線是整個工具的重點 ──
+ * 版面檢查最容易犯的錯是**管太寬**：它看得到座標，就忍不住去對齊、去等距、去統一大小。
+ * 但那些是設計決定——模型剛剛為這一頁想過，檢查沒有資格覆蓋它。Word 那邊已經為此
+ * 誤判過三次（封面字級被放大、合約一頁一條、年曆被刪），每一次都是**自動修正的範圍
+ * 超過了它能判斷的範圍**。
+ *
+ * 所以這裡只抓「不管什麼設計都不該發生」的三件事：
+ *   · 物件跑到投影片外面——那是絕對的，960×540 之外沒有東西看得到
+ *   · 兩個有字的物件疊在一起——字疊字一定讀不了
+ *   · 字小到看不清楚
+ *
+ * 前兩件裡只有第一件自動修（夾回邊界內，位置是算得出來的）；疊在一起**只報告**，
+ * 因為該讓誰讓開是設計問題，而我們只看得到座標。
+ */
+async function reviewLayout(args) {
+  if (!hasApi('1.4')) throw new Error('版面檢查需要 PowerPointApi 1.4。');
+  const fix = args.fix !== false;
+  const W = GRID.W;
+  const H = GRID.H;
+
+  return PowerPoint.run(async (ctx) => {
+    const slides = ctx.presentation.slides;
+    slides.load('items/id');
+    await ctx.sync();
+    const all = slides.items || [];
+    const only = Number(args.slide) || 0;
+    const targets = only ? all.slice(only - 1, only) : all;
+    if (!targets.length) throw new Error('找不到要檢查的投影片。');
+
+    const loaded = targets.map((sl) => {
+      const shapes = sl.shapes;
+      shapes.load('items/id,items/name,items/left,items/top,items/width,items/height');
+      return shapes;
+    });
+    await ctx.sync();
+
+    const found = [];
+    const fixed = [];
+
+    loaded.forEach((shapes, k) => {
+      const n = only || k + 1;
+      const items = (shapes.items || []).map((sh, i) => ({
+        sh,
+        i: i + 1,
+        l: Number(sh.left) || 0,
+        t: Number(sh.top) || 0,
+        w: Number(sh.width) || 0,
+        h: Number(sh.height) || 0,
+        name: String(sh.name || ''),
+      }));
+
+      // 1. 跑到版面外。這個是絕對的，夾回來就對了。
+      for (const o of items) {
+        const over = o.l < -1 || o.t < -1 || o.l + o.w > W + 1 || o.t + o.h > H + 1;
+        if (!over) continue;
+        found.push(`第 ${n} 頁第 ${o.i} 個物件跑到版面外`
+          + `（${Math.round(o.l)},${Math.round(o.t)} ${Math.round(o.w)}×${Math.round(o.h)}）`);
+        if (!fix) continue;
+        try {
+          // 先夾寬高（比版面還大的東西夾位置沒有用），再夾位置。
+          const w = Math.min(o.w, W);
+          const h = Math.min(o.h, H);
+          if (w !== o.w) o.sh.width = w;
+          if (h !== o.h) o.sh.height = h;
+          o.sh.left = Math.min(Math.max(0, o.l), W - w);
+          o.sh.top = Math.min(Math.max(0, o.t), H - h);
+          fixed.push(`把第 ${n} 頁第 ${o.i} 個物件移回版面內`);
+        } catch { /* 鎖住的物件就只報告 */ }
+      }
+
+      /**
+       * 2. 兩個物件疊在一起。
+       *
+       * 只報告不自動修：該讓誰讓開是設計問題。而且底板和它上面的字本來就重疊——
+       * 那是正常的堆疊，不是跑版。所以門檻訂在「兩個都有相當面積、而且重疊超過
+       * 四成」，底板配小字那種組合不會被誤判。
+       */
+      for (let a = 0; a < items.length; a += 1) {
+        for (let b = a + 1; b < items.length; b += 1) {
+          const x = items[a];
+          const y = items[b];
+          const ox = Math.min(x.l + x.w, y.l + y.w) - Math.max(x.l, y.l);
+          const oy = Math.min(x.t + x.h, y.t + y.h) - Math.max(x.t, y.t);
+          if (ox <= 2 || oy <= 2) continue;
+          const area = ox * oy;
+          const small = Math.min(x.w * x.h, y.w * y.h);
+          if (!small || area / small < 0.4) continue;
+          // 面積差很多的多半是「底板 + 上面的元件」，那是堆疊不是跑版。
+          const big = Math.max(x.w * x.h, y.w * y.h);
+          if (big / small > 3) continue;
+          found.push(`第 ${n} 頁第 ${x.i} 和第 ${y.i} 個物件疊在一起`
+            + `（重疊 ${Math.round((area / small) * 100)}%）——這兩塊要讓開一個`);
+        }
+      }
+    });
+
+    await ctx.sync();
+    if (!found.length) return '看過了，沒有物件跑到版面外、也沒有疊在一起的。版面是好的。';
+    return `檢查完 ${targets.length} 頁，查到 ${found.length} 件：${B}n`
+      + found.map((x) => `· ${x}`).join(`${B}n`)
+      + (fixed.length ? `${B}n${B}n修好的：${B}n` + fixed.map((x) => `· ${x}`).join(`${B}n`) : '')
+      + `${B}n${B}n疊在一起的沒有自動移——該讓誰讓開是設計決定，告訴我要調哪一個。`;
+  });
+}
+
 async function drawShapes(args) {
   if (!hasApi('1.4')) throw new Error('批次繪製需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const items = Array.isArray(args.shapes) ? args.shapes.filter(Boolean) : [];
@@ -1461,8 +1569,31 @@ async function drawShapes(args) {
     const { slide, index } = await targetSlide(ctx, args);
     let made = 0;
     const unknown = new Set();
+    const failed = [];
+
+    /**
+     * 分批 sync，而且一個壞掉不拖垮整批。
+     *
+     * ── 為什麼 ──
+     * Office.js 把排進去的操作一次送出，所以**其中任何一個參數錯了，整批都回不來**——
+     * 使用者看到的是「畫版面沒成功」，六十個物件一個都沒上去，而真正出問題的可能只有
+     * 一個顏色字串。
+     *
+     * 一張看板的價值在於它整張做完。一個格子畫不出來是瑕疵，整張沒畫出來是失敗，
+     * 這兩件事差很遠。所以每 30 個送一次，而且單一物件的錯誤只記下來、不往外丟。
+     */
+    const CHUNK = 30;
+    let pending = 0;
+    const flush = async () => {
+      if (!pending) return;
+      try { await ctx.sync(); } catch (e) {
+        failed.push(`第 ${made - pending + 1}~${made} 個：${(e && e.message) || e}`);
+      }
+      pending = 0;
+    };
 
     for (const it of items) {
+      try {
       const type = String(it.type || 'rect').toLowerCase();
       const geo = {
         left: num(it.left, 0),
@@ -1479,6 +1610,8 @@ async function drawShapes(args) {
           ln.lineFormat.weight = num(it.weight, 2);
         } catch { /* 舊版給不了就用預設 */ }
         made += 1;
+        pending += 1;
+        if (pending >= CHUNK) await flush();
         continue;
       }
 
@@ -1523,10 +1656,23 @@ async function drawShapes(args) {
         } catch { /* 舊版沒有這些設定 */ }
       }
       made += 1;
+      pending += 1;
+      if (pending >= CHUNK) await flush();
+      } catch (e) {
+        // 這一個畫不出來就跳過，其餘照畫——整張做完比完美重要。
+        failed.push(`${String(it.text || it.type || '物件').slice(0, 12)}：${(e && e.message) || e}`);
+      }
     }
 
-    await ctx.sync();
-    return `已在投影片 ${index} 畫上 ${made} 個物件。`
+    await flush();
+    return `已在投影片 ${index} 畫上 ${made - failed.length} 個物件`
+      + (failed.length ? `，${failed.length} 個沒畫成` : '')
+      + '。'
+      + (failed.length
+        ? `${B}n沒成功的：${failed.slice(0, 5).join('；')}`
+          + (failed.length > 5 ? `（另外還有 ${failed.length - 5} 個）` : '')
+          + `${B}n這幾個通常是顏色字串或座標的格式問題。要我補畫的話跟我說哪幾塊。`
+        : '')
       + (unknown.size
         ? `\n（PowerPoint 沒有「${[...unknown].join('、')}」這些形狀，改用了矩形。`
           + '圓形是 Ellipse，箭頭是 RightArrow、Chevron。）'
@@ -4933,6 +5079,7 @@ export function supportedTools() {
     'ppt_delete_slide',
     'ppt_build_slide',
     'ppt_add_text',
+    'ppt_review_layout',
     'ppt_draw',
     'ppt_add_shape',
     'ppt_add_line',
@@ -5004,6 +5151,7 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_delete_slide: deleteSlide,
           ppt_build_slide: buildSlide,
           ppt_add_text: addText,
+          ppt_review_layout: reviewLayout,
           ppt_draw: drawShapes,
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
@@ -5063,6 +5211,7 @@ export const meta = {
     ppt_plan_slide: t('正在規劃這一頁的版面…'),
     ppt_build_slide: t('正在組一張投影片…'),
     ppt_add_text: t('正在加上文字…'),
+    ppt_review_layout: t('正在檢查版面…'),
     ppt_draw: t('正在畫版面…'),
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
