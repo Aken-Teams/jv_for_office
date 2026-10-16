@@ -1612,6 +1612,148 @@ async function reviewLayout(args) {
   });
 }
 
+/**
+ * 常見的資訊圖，座標算好的。
+ *
+ * ── 為什麼這個該是模組，而版面不該 ──
+ * 「不要用模組、自己畫」那條針對的是**版面**——一頁該分成幾塊、各佔哪裡，那是每一頁
+ * 都該重新想的事。但 SWOT、金字塔、環形流程是**圖表類型**，跟長條圖同一類：它們的
+ * 結構本來就該一致，而且座標算一次就不用每次重算。
+ *
+ * 實測證明模型畫得出來（給了座標之後），但每次都要重算一遍三角函數和梯形寬度，
+ * 算錯一個數字就會有縫或重疊。把算好的放進來，模型的心力就能花在**這一頁其餘的
+ * 部分**——而那才是它該想的。
+ *
+ * 一個工具五種圖，不是五個工具：它們共用同一套配色推導和同一套回傳格式，拆開只會
+ * 讓工具清單變長、而模型更難挑。
+ */
+async function addInfographic(args) {
+  if (!hasApi('1.4')) throw new Error('資訊圖需要 PowerPointApi 1.4。');
+  const kind = String(args.kind || '').toLowerCase();
+  const KINDS = ['swot', 'pyramid', 'cycle', 'steps', 'venn'];
+  if (!KINDS.includes(kind)) throw new Error(`kind 必須是：${KINDS.join('、')}。`);
+  const items = Array.isArray(args.items) ? args.items.filter(Boolean) : [];
+  if (!items.length) throw new Error('items 是必要的，每個至少要有 label。');
+
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
+  const ink = args.text_color || th.ink;
+  const onBlock = args.block_text || th.onCover;
+  // 每個區塊的顏色：給了就用，沒給就從主色推一組同色相的深淺階。
+  const tone = (i, n) => {
+    const given = items[i] && items[i].color;
+    if (given) return colour(given);
+    const base = colour(args.accent, th.strong);
+    return mixHex(base, '#FFFFFF', n > 1 ? (i / (n - 1)) * 0.55 : 0);
+  };
+
+  const L = num(args.left, 40);
+  const T = num(args.top, 120);
+  /**
+   * 預設寬度分三種，因為這三種圖的旁邊通常放不一樣的東西。
+   *
+   * ── cycle 要再往左一點 ──
+   * 環形圖右邊幾乎一定有一份編號清單（01~05 配說明），而圓形的視覺重心比它的外框
+   * 更往外——一個 110 寬的圓繞在半徑 150 上，實際佔的視覺寬度是 520，比方形的同尺寸
+   * 元件更顯得「滿」。照 560 置中的話，整簇會往右頂到清單。
+   *
+   * 所以 cycle 收窄到 500：圓簇的中心落在 290 附近，右邊留得出清單的位置，
+   * 而左邊也不會空一大塊。
+   */
+  const W = num(args.width, kind === 'cycle' ? 500 : (kind === 'swot' ? 560 : 880));
+
+  const plan = [];
+  const push = (o) => plan.push(o);
+
+  if (kind === 'swot') {
+    // 四個六角形聚成一簇，說明在兩側。實測過的座標。
+    const hw = 150;
+    const hh = 130;
+    const cx = L + W / 2;
+    const spots = [[cx - hw, T + 60], [cx, T + 60], [cx - hw, T + 180], [cx, T + 180]];
+    items.slice(0, 4).forEach((it, i) => {
+      push({ type: 'rect', shape: 'Hexagon', left: spots[i][0], top: spots[i][1],
+        width: hw, height: hh, fill: tone(i, 4),
+        text: String(it.key || it.label || '').slice(0, 2), color: onBlock, size: 40, bold: true });
+    });
+  } else if (kind === 'pyramid') {
+    /**
+     * 梯形寬度遞增，置中疊起來。
+     *
+     * 層高固定、寬度等差：這樣每一層的斜邊角度一致，疊起來才像一個完整的三角形。
+     * 寬度用比例算而不是寫死，整張圖才縮放得了。
+     */
+    const n = Math.min(items.length, 6);
+    const hFull = num(args.height, 290);
+    const rowH = hFull / n;
+    const halfW = W * 0.42;
+    const cx = L + W / 2;
+    items.slice(0, n).forEach((it, i) => {
+      const w = halfW * (0.3 + (0.7 * (i + 1)) / n) * 2;
+      push({ type: 'rect', shape: 'Trapezoid', left: cx - w / 2, top: T + rowH * i,
+        width: w, height: rowH - 4, fill: tone(n - 1 - i, n),
+        text: String(it.value || ''), color: onBlock, size: 20, bold: true });
+      // 引線接到右邊的說明，顏色跟著那一層走。
+      push({ type: 'rect', left: cx + w / 2 + 8, top: T + rowH * i + rowH / 2 - 1,
+        width: Math.max(12, L + W - (cx + w / 2) - 20), height: 1, fill: tone(n - 1 - i, n) });
+      push({ type: 'text', left: L + W + 16, top: T + rowH * i + 2,
+        width: 300, height: rowH - 8, text: String(it.label || ''),
+        color: ink, size: 14, bold: true, align: 'left' });
+    });
+  } else if (kind === 'cycle') {
+    const n = Math.min(Math.max(items.length, 3), 7);
+    const d = num(args.node, 110);
+    const cx = L + W / 2;
+    const cy = T + 190;
+    const r = num(args.radius, 150);
+    items.slice(0, n).forEach((it, i) => {
+      const a = (-Math.PI / 2) + (i * 2 * Math.PI) / n;
+      push({ type: 'rect', shape: 'Ellipse',
+        left: cx + r * Math.cos(a) - d / 2, top: cy + r * Math.sin(a) - d / 2,
+        width: d, height: d, fill: tone(i, n),
+        text: String(it.label || ''), color: onBlock, size: 13, bold: true });
+    });
+    if (args.hub) {
+      push({ type: 'rect', shape: 'Ellipse', left: cx - 60, top: cy - 60,
+        width: 120, height: 120, fill: args.hub_fill || '#FFFFFF',
+        line_color: colour(args.accent, th.strong), line_width: 1.5,
+        text: String(args.hub), color: ink, size: 14, bold: true });
+    }
+  } else if (kind === 'steps') {
+    const n = Math.min(items.length, 6);
+    const w = (W + 30 * (n - 1)) / n;
+    items.slice(0, n).forEach((it, i) => {
+      push({ type: 'rect', shape: 'Chevron', left: L + (w - 30) * i, top: T,
+        width: w, height: num(args.height, 80), fill: tone(i, n),
+        text: String(it.label || ''), color: onBlock, size: 14, bold: true });
+    });
+  } else {
+    /**
+     * 文氏圖：三個圓，交集另外補。
+     *
+     * fill 設不了半透明，所以交集不會自己變色——要手算混色另外疊一塊上去。
+     * 不補的話三個圓就只是互相遮住，看不出交集在哪裡。
+     */
+    const d = num(args.node, 220);
+    const cx = L + W / 2;
+    const pos = [[cx - d * 0.38, T], [cx - d * 0.62 + d, T], [cx - d / 2, T + d * 0.55]];
+    const cols = [tone(0, 3), tone(1, 3), tone(2, 3)];
+    pos.forEach((pt, i) => {
+      push({ type: 'rect', shape: 'Ellipse', left: pt[0], top: pt[1], width: d, height: d,
+        fill: cols[i], text: String((items[i] && items[i].label) || ''),
+        color: onBlock, size: 14, bold: true, valign: i === 2 ? 'bottom' : 'top' });
+    });
+    // 三圓共同的中心，用三色的平均——那一塊是整張圖的重點。
+    const mid = mixHex(mixHex(cols[0], cols[1], 0.5), cols[2], 0.34);
+    push({ type: 'rect', shape: 'Ellipse', left: cx - 42, top: T + d * 0.42,
+      width: 84, height: 84, fill: mid,
+      text: String(args.center || ''), color: onBlock, size: 13, bold: true });
+  }
+
+  return drawShapes({ ...args, shapes: plan, theme: args.theme, font: face });
+}
+
 async function drawShapes(args) {
   if (!hasApi('1.4')) throw new Error('批次繪製需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const items = Array.isArray(args.shapes) ? args.shapes.filter(Boolean) : [];
@@ -5193,6 +5335,7 @@ export function supportedTools() {
     'ppt_build_slide',
     'ppt_add_text',
     'ppt_review_layout',
+    'ppt_add_infographic',
     'ppt_draw',
     'ppt_add_shape',
     'ppt_add_line',
@@ -5265,6 +5408,7 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_build_slide: buildSlide,
           ppt_add_text: addText,
           ppt_review_layout: reviewLayout,
+          ppt_add_infographic: addInfographic,
           ppt_draw: drawShapes,
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
@@ -5325,6 +5469,7 @@ export const meta = {
     ppt_build_slide: t('正在組一張投影片…'),
     ppt_add_text: t('正在加上文字…'),
     ppt_review_layout: t('正在檢查版面…'),
+    ppt_add_infographic: t('正在畫資訊圖…'),
     ppt_draw: t('正在畫版面…'),
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
