@@ -72,6 +72,7 @@ if (!files.length) {
 }
 
 const urlBase = String(env.DEPLOY_URL_BASE || '').trim().replace(/\/+$/, '');
+let missingIcons = false;
 
 for (const file of files) {
   let xml = fs.readFileSync(path.join(SRC, file), 'utf-8');
@@ -108,7 +109,25 @@ for (const file of files) {
    * 增益集的挑選畫面是磁磚，名字會被截斷——光靠名字分辨不夠可靠。assets/<頻道>/
    * 底下那幾個圖示在下緣壓了一條橘色，縮到 16 像素或灰階列印都還看得出來。
    */
-  xml = xml.replace(/assets\/(icon-\d+\.png)/g, `assets/${channel}/$1`);
+  /**
+   * 只有在那組圖示真的存在時才改寫路徑。
+   *
+   * ── 不檢查的代價 ──
+   * 這一行原本無條件改寫，於是 `localtest` 這種沒有人做過圖示的頻道，manifest 會指向
+   * assets/localtest/icon-32.png——一個不存在的檔案。Office 每次載入增益集都去要那四個
+   * 檔、每次都 404，清單裡顯示的是空白圖示。
+   *
+   * 功能不受影響，所以它可以安靜地壞很久——而那正是最該被擋下來的那種問題。
+   *
+   * 沒有就維持原本的路徑：圖示跟正式區一樣（看不出是測試版），但至少看得見。
+   * 要有標記的話在 assets/<頻道>/ 放四個檔就會自動接上。
+   */
+  const iconDir = path.join(ROOT, 'assets', channel);
+  if (fs.existsSync(iconDir)) {
+    xml = xml.replace(/assets\/(icon-\d+\.png)/g, `assets/${channel}/$1`);
+  } else {
+    missingIcons = true;
+  }
 
   /**
    * 5. 功能區按鈕上的字。
@@ -147,6 +166,11 @@ for (const file of files) {
 
 console.log(`\n已產生 ${files.length} 份 manifest 到 manifests/${channel}/`);
 console.log(`  名稱後面會加上「（${suffix}）」，說明開頭加上「【${suffix}版本，請勿用於正式文件】」`);
+if (missingIcons) {
+  console.log(`  assets/${channel}/ 不存在，所以圖示路徑沒有改寫——`
+    + '清單裡的圖示會跟正式區一樣。');
+  console.log(`  要有「${suffix}」標記的話，在 assets/${channel}/ 放 icon-16/32/64/80.png。`);
+}
 if (!urlBase) {
   console.log('  位址維持 https://localhost:3443——要部署到別台機器請設 DEPLOY_URL_BASE。');
 }
