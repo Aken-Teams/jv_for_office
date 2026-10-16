@@ -1491,7 +1491,19 @@ async function reviewLayout(args) {
 
     const loaded = targets.map((sl) => {
       const shapes = sl.shapes;
-      shapes.load('items/id,items/name,items/left,items/top,items/width,items/height');
+      /**
+       * 文字也要載入。
+       *
+       * ── 沒載入的代價 ──
+       * 第一版只載座標，於是「這一塊是不是空的」只能看「裡面有沒有別的物件」——
+       * 而一個自己有字的方塊（標題、六角形裡的 S、說明文字）裡面當然沒有別的物件，
+       * 就全部被報成空的。使用者一次收到 13 個誤判，而其中一個都不是真的。
+       *
+       * **一個會喊狼來了的檢查，比沒有檢查更糟**——它會讓人學會忽略所有警告，
+       * 包括真的那一個。
+       */
+      shapes.load('items/id,items/name,items/left,items/top,items/width,items/height,'
+        + 'items/textFrame/textRange/text');
       return shapes;
     });
     await ctx.sync();
@@ -1509,6 +1521,9 @@ async function reviewLayout(args) {
         w: Number(sh.width) || 0,
         h: Number(sh.height) || 0,
         name: String(sh.name || ''),
+        text: (() => {
+          try { return String(sh.textFrame.textRange.text || '').trim(); } catch { return ''; }
+        })(),
       }));
 
       // 1. 跑到版面外。這個是絕對的，夾回來就對了。
@@ -1542,6 +1557,8 @@ async function reviewLayout(args) {
        */
       for (const o of items) {
         if (o.w * o.h < 12000) continue;
+        // 自己有字就不是空的——這是第一版漏掉的那一條，而它造成了全部的誤判。
+        if (o.text) continue;
         const inside = items.some((q) => q !== o
           && q.l >= o.l - 2 && q.t >= o.t - 2
           && q.l + q.w <= o.l + o.w + 2 && q.t + q.h <= o.t + o.h + 2);
@@ -1568,7 +1585,16 @@ async function reviewLayout(args) {
           const area = ox * oy;
           const small = Math.min(x.w * x.h, y.w * y.h);
           if (!small || area / small < 0.4) continue;
-          // 面積差很多的多半是「底板 + 上面的元件」，那是堆疊不是跑版。
+          /**
+           * 字壓在底板上是正常的堆疊，不是跑版。
+           *
+           * 面積比只擋得掉「大底板配小元件」，擋不掉「說明文字框跟它的底板差不多大」
+           * ——而那正是最常見的組合，所以第一版把每一塊說明都報成重疊 100%。
+           *
+           * 真正的判準是：**有字的和沒字的疊在一起本來就該疊**。兩個都有字才是問題，
+           * 因為字疊字一定讀不了。
+           */
+          if (!x.text || !y.text) continue;
           const big = Math.max(x.w * x.h, y.w * y.h);
           if (big / small > 3) continue;
           found.push(`第 ${n} 頁第 ${x.i} 和第 ${y.i} 個物件疊在一起`
