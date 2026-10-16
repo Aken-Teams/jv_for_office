@@ -303,8 +303,25 @@ const THEMES = {
  */
 const LOOKS = {
   business: {
+    /**
+     * 預設風格不帶裝飾性的曲線。
+     *
+     * ── 為什麼把 waves 拿掉 ──
+     * 波浪是**裝飾**——它不承擔任何資訊。而一頁上其他的東西都在工作：色條標示層級、
+     * 底板分隔區塊、箭頭表示順序。波浪跟它們不是同一種語言，擺在一起會打架。
+     *
+     * 直線和方塊的好處是跟內容同一套語彙：一條線可以是分隔、底線、色條；一個方塊
+     * 可以是底板、卡片、表格的一格。**而波浪只能是波浪。**
+     *
+     * 換成 grid（方格點陣）而不是拿掉：母題有沒有會改變骨架的繪製路徑（有母題時
+     * 底色進裝飾層、沒有就自己鋪一塊），直接設 none 會連帶影響其他版型的格子數。
+     * grid 保留同一條路徑，但畫的是直線和方塊。
+     *
+     * 這是預設風格，所以它影響的是每一份沒特別指定的簡報——拿掉的收益最大。
+     * 想要曲線的場合仍然有（soft、handmade），那些要明確指定才會出現。
+     */
     label: '企業', desc: '雙色頂條、短底線、方角卡片。給客戶、主管、對外提案。',
-    theme: 'corporate', motif: 'waves',
+    theme: 'corporate', motif: 'grid',
     masthead: 'double', rule: 'short', ground: 'tint',
     titleSize: 25, titleBold: true, titleAlign: 'left', eyebrowCase: 'upper',
     shape: 'Rectangle', card: 'tint', cover: 'panel', topPad: 0,
@@ -1514,6 +1531,27 @@ async function reviewLayout(args) {
       }
 
       /**
+       * 2. 有底色、夠大、裡面一個字都沒有的區塊。
+       *
+       * ── 為什麼這也算壞掉 ──
+       * 使用者看到的是「右邊那塊只有標題，底下是空的」——那通常是某一步失敗了，
+       * 或者畫了底板卻忘了填內容。而縮圖上看不出來，是打開檔案才發現。
+       *
+       * 只報告不自動修：裡面該放什麼不是檢查能決定的。而且條件刻意訂得嚴（面積要
+       * 夠大、範圍內真的一個東西都沒有），不然每一塊底板都會被誤報。
+       */
+      for (const o of items) {
+        if (o.w * o.h < 12000) continue;
+        const inside = items.some((q) => q !== o
+          && q.l >= o.l - 2 && q.t >= o.t - 2
+          && q.l + q.w <= o.l + o.w + 2 && q.t + q.h <= o.t + o.h + 2);
+        if (inside) continue;
+        found.push(`第 ${n} 頁第 ${o.i} 個區塊是空的`
+          + `（${Math.round(o.w)}×${Math.round(o.h)}，裡面沒有任何東西）`
+          + '——把內容補上，或是把這塊刪掉。不要留著一個空框交出去。');
+      }
+
+      /**
        * 2. 兩個物件疊在一起。
        *
        * 只報告不自動修：該讓誰讓開是設計問題。而且底板和它上面的字本來就重疊——
@@ -1544,7 +1582,7 @@ async function reviewLayout(args) {
     return `檢查完 ${targets.length} 頁，查到 ${found.length} 件：\n`
       + found.map((x) => `· ${x}`).join(`\n`)
       + (fixed.length ? `\n\n修好的：\n` + fixed.map((x) => `· ${x}`).join(`\n`) : '')
-      + `\n\n疊在一起的沒有自動移——該讓誰讓開是設計決定，告訴我要調哪一個。`;
+      + `\n\n疊在一起和空的區塊沒有自動修——那是設計決定，我只看得到座標。**你自己判斷該怎麼改，然後動手**：讓開一個、補上內容、或是刪掉。改完再跑一次這個工具確認。`;
   });
 }
 
@@ -1671,7 +1709,7 @@ async function drawShapes(args) {
       + (failed.length
         ? `\n沒成功的：${failed.slice(0, 5).join('；')}`
           + (failed.length > 5 ? `（另外還有 ${failed.length - 5} 個）` : '')
-          + `\n這幾個通常是顏色字串或座標的格式問題。要我補畫的話跟我說哪幾塊。`
+          + `\n這幾個通常是顏色字串或座標的格式問題。**把它們重畫一次**——修正參數之後再呼叫 ppt_draw，只畫沒成功的那幾個就好。`
         : '')
       + (unknown.size
         ? `\n（PowerPoint 沒有「${[...unknown].join('、')}」這些形狀，改用了矩形。`
@@ -4984,8 +5022,31 @@ async function planDeck(args) {
    *
    * 第一步擋下來不會換來更好的決定，只會換來不用這個工具。
    */
+  /**
+   * 沒指定配色的話，從主題推一個——而不是永遠落回同一個預設。
+   *
+   * ── 為什麼不能只有一個預設 ──
+   * 「不指定就用預設」聽起來合理，但預設只有一個值，所以旅遊、財報、資安、產品發表
+   * 全部長成同一套藍綠。使用者的感受是「不管我下什麼需求，PPT 都一樣」——而那不是
+   * 模型沒創意，是這條路上只有一個出口。
+   *
+   * ── 為什麼用雜湊而不是隨機 ──
+   * 隨機的話同一份簡報重跑一次就換色，使用者會以為是 bug，而且沒辦法重現。
+   * 從主題文字推導：同一個主題永遠同一套（可重現），不同主題自然不同（有變化）。
+   *
+   * 模型自己指定的仍然優先——這只是「沒人決定時」的出口，而那個出口現在有九個方向。
+   */
   const picked = !args.theme && !args.look;
-  deckPalette = args.theme ? String(args.theme) : null;
+  if (picked) {
+    const seed = `${args.headline || ''}${args.audience || ''}`
+      + slides.map((x) => String((x && x.purpose) || '')).join('');
+    let hash = 0;
+    for (const ch of seed) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+    const pool = Object.keys(THEMES);
+    if (pool.length) deckPalette = pool[hash % pool.length];
+  }
+  if (args.theme) deckPalette = String(args.theme);
+  else if (!picked) deckPalette = null;
   deckLook = args.look ? String(args.look) : null;
   deckPlan = {
     headline: String(args.headline || ''),
@@ -5005,7 +5066,7 @@ async function planDeck(args) {
   return `整份規劃好了（${tone}），共 ${lines.length} 頁：\n${lines.join('\n')}\n\n`
     + '接下來每做一頁之前，先用 ppt_plan_slide 規劃那一頁的版面。'
     + (picked
-      ? '\n\n沒指定配色，所以用預設。這份要給誰看？對外提案、內部檢討、財報分析，'
+      ? `\n\n沒指定配色，所以照主題挑了「${deckPalette}」。這份要給誰看？對外提案、內部檢討、財報分析，`
         + '該長的樣子完全不同——想換的話再跑一次這個工具並帶上 theme 或 look，'
         + '整份都會跟著改，不用一頁一頁調。'
       : '');
