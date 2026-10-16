@@ -1541,10 +1541,10 @@ async function reviewLayout(args) {
 
     await ctx.sync();
     if (!found.length) return '看過了，沒有物件跑到版面外、也沒有疊在一起的。版面是好的。';
-    return `檢查完 ${targets.length} 頁，查到 ${found.length} 件：${B}n`
-      + found.map((x) => `· ${x}`).join(`${B}n`)
-      + (fixed.length ? `${B}n${B}n修好的：${B}n` + fixed.map((x) => `· ${x}`).join(`${B}n`) : '')
-      + `${B}n${B}n疊在一起的沒有自動移——該讓誰讓開是設計決定，告訴我要調哪一個。`;
+    return `檢查完 ${targets.length} 頁，查到 ${found.length} 件：\n`
+      + found.map((x) => `· ${x}`).join(`\n`)
+      + (fixed.length ? `\n\n修好的：\n` + fixed.map((x) => `· ${x}`).join(`\n`) : '')
+      + `\n\n疊在一起的沒有自動移——該讓誰讓開是設計決定，告訴我要調哪一個。`;
   });
 }
 
@@ -1669,9 +1669,9 @@ async function drawShapes(args) {
       + (failed.length ? `，${failed.length} 個沒畫成` : '')
       + '。'
       + (failed.length
-        ? `${B}n沒成功的：${failed.slice(0, 5).join('；')}`
+        ? `\n沒成功的：${failed.slice(0, 5).join('；')}`
           + (failed.length > 5 ? `（另外還有 ${failed.length - 5} 個）` : '')
-          + `${B}n這幾個通常是顏色字串或座標的格式問題。要我補畫的話跟我說哪幾塊。`
+          + `\n這幾個通常是顏色字串或座標的格式問題。要我補畫的話跟我說哪幾塊。`
         : '')
       + (unknown.size
         ? `\n（PowerPoint 沒有「${[...unknown].join('、')}」這些形狀，改用了矩形。`
@@ -2010,6 +2010,18 @@ const CHROME = {
  *     who joins halfway still knows where they are.
  *   · a big number → `kpi`, next to the content it came from, where it has a
  *     context instead of a whole slide to itself.
+ */
+/**
+ * 封面版型留著——但它不是「一種」封面，是八種構圖。
+ *
+ * ── 我差點把它拿掉，然後發現不該 ──
+ * 「每一份封面都長一樣」是真的，所以我一度把這個版型移掉，想逼它用 ppt_draw 自己畫。
+ * 測試立刻指出代價：`cover` 參數底下有 panel / stack / bleed / triptych / split /
+ * imageleft / imagetop 八種構圖，而它們全都掛在這個版型上。拿掉 title 等於一次砍掉
+ * 八種封面，換來「每次重畫」——那是用更少的選擇去換更多的變化，不划算。
+ *
+ * 所以問題不是「沒有選擇」，是**模型從來不換**：八種構圖它每次都挑同一種。
+ * 那要靠提示詞和規劃階段解決，不是靠刪掉能力。
  */
 const RECIPES = new Set(['title', 'section', 'bullets', 'two_column', 'compare',
   'statement', 'quote', 'timeline', 'quadrant', 'zigzag', 'feature', 'list_image']);

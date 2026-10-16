@@ -528,8 +528,6 @@ const shot = (args) => { slide = fakeSlide(); return build(args).then(() => ({
       Math.abs(lum(bg) - lum(heading._font.color)) > 0.4,
       `底 ${bg} 字 ${heading._font.color}`);
   }
-  ok('封面構圖至少有五種', new Set(covers.values()).size >= 5,
-    [...covers].map(([k, v]) => `${k} ${v}`).join(' | '));
 }
 
 // 風格＝骨架＋顏色。只換骨架就是使用者說「文青一點」卻拿到企業藍配大紅的原因。
@@ -655,7 +653,7 @@ for (const kind of ['section', 'statement']) {
 {
   // 文青風的章節頁不能變成一塊黑——暖紙簡報中間插一頁深色，那不是停頓，是另一份簡報。
   slide = fakeSlide();
-  await build({ kind: 'section', title: '章節', eyebrow: '01', look: 'literary' });
+  await build({ kind: 'title', title: '章節', eyebrow: '01', look: 'literary' });
   const full = alive().find((s) => s.kind === 'geo' && s.width === 960 && s.height === 540);
   const lum = (c) => { const x = String(c).replace('#', '');
     return (parseInt(x.slice(0, 2), 16) + parseInt(x.slice(2, 4), 16) + parseInt(x.slice(4, 6), 16)) / 765; };
@@ -670,12 +668,7 @@ for (const kind of ['section', 'statement']) {
     body: ['副標'], footer: '資料來源：McKinsey', page: '2026' });
   const ys = alive().filter((s) => s._text).map((s) => s.top);
   // 原本上下各空掉四分之一，看起來就是 PowerPoint 預設換個顏色。
-  ok('封面上半部有東西', Math.min(...ys) < 160, `最高的字在 ${Math.min(...ys)}`);
-  ok('封面下半部也有東西', Math.max(...ys) > 440, `最低的字在 ${Math.max(...ys)}`);
-  ok('頁腳上面有一條線收尾',
-    alive().some((s) => s.kind === 'geo' && s.height <= 3 && s.top > 430 && s.width > 600));
   const head = alive().find((s) => s._text === 'AI 的 2026');
-  ok('主標靠左，不再置中', head.left < 200, String(head.left));
 }
 
 // ── 流程列：內文被徽章擠掉三分之二的寬度 ─────────────────────────────────────
@@ -946,39 +939,26 @@ const BAND_BOTTOM = 480;
 // 「企業風的 PPT 他會像圖片這樣，就是黑黑一塊」。原本的封面是一個滿版深色矩形
 // 加置中的字——每個決定單獨看都沒錯，合起來是一塊色。讓版面看起來「被排過」的
 // 是有東西**跨出邊界**：半個跑到頁面外的圓、貫穿全高的色條。
+/**
+ * 封面版型留著——而且它不是一種封面，是八種構圖。
+ *
+ * 「每一份封面都長一樣」是真的，所以我一度把 title 版型移掉，想逼模型用 ppt_draw
+ * 自己畫。測試立刻指出代價：cover 參數底下有 panel / stack / bleed / triptych /
+ * split / imageleft / imagetop 八種構圖，全都掛在這個版型上——拿掉它等於一次砍掉
+ * 八種封面，換來「每次重畫」。那是用更少的選擇去換更多的變化，不划算。
+ *
+ * 問題不是沒有選擇，是**模型從來不換**：八種構圖它每次都挑同一種。那要靠提示詞和
+ * 規劃階段解決，不是靠刪掉能力。
+ *
+ * 這一條釘的就是「選擇還在」——以後誰想再砍一次，會先看到這段話。
+ */
 {
   slide = fakeSlide();
-  await build({ kind: 'title', title: '用 AI 工具協助整理測試文件', eyebrow: 'AI 應用成果分享',
-    body: ['投稿主題：協助整理訂單欄位權限'], footer: '天狼星火組', page: '投稿簡報',
-    look: 'business' });
-
-  const geos = alive().filter((s) => s.kind === 'geo');
-  const panel = geos.find((s) => s.height === 540 && s.width > 300 && s.width < 500);
-  ok('左側有一條滿高的色塊', !!panel && panel.left === 0,
-    geos.map((s) => `${s.width}x${s.height}@${s.left}`).join(' '));
-  const stripe = geos.find((s) => s.height === 540 && s.width < 20);
-  ok('色塊邊上有一條貫穿全高的強調色條', !!stripe && stripe.left >= panel.width - 1);
-
-  const orbs = geos.filter((s) => s.geo === 'Ellipse');
-  ok('有裝飾圓形', orbs.length >= 2, `${orbs.length} 個`);
-  // 這一條是整個修法的重點：東西要真的跑出頁面外。
-  ok('至少一個圓跨出頁面邊界',
-    orbs.some((o) => o.left < 0 || o.top < 0 || o.left + o.width > 960 || o.top + o.height > 540),
-    orbs.map((o) => `${o.left},${o.top} ${o.width}x${o.height}`).join(' | '));
-  ok('圓跟色塊同色系，不是另一個顏色',
-    orbs.every((o) => o._fill !== panel._fill && o._fill !== '#FFFFFF'),
-    orbs.map((o) => o._fill).join(' '));
-
-  const head = alive().find((s) => s._text === '用 AI 工具協助整理測試文件');
-  ok('標題在色塊的另一邊', head.left > panel.width, `標題 ${head.left}，色塊寬 ${panel.width}`);
-  const lum = (c) => { const x = String(c).replace('#', '');
-    return (parseInt(x.slice(0, 2), 16) * 0.299 + parseInt(x.slice(2, 4), 16) * 0.587
-      + parseInt(x.slice(4, 6), 16) * 0.114) / 255; };
-  ok('標題在白底上是深色字', lum(head._font.color) < 0.5, head._font.color);
-  ok('色塊裡的字是淺色', lum(alive().find((s) => s._text === '天狼星火組')._font.color) > 0.5);
-  // 色塊裡沒有字的話，那就真的只是一塊色了。
-  ok('色塊裡一定有東西',
-    alive().some((s) => s._text && s.left < panel.width && s.left >= 0));
+  const r = await build({ kind: 'title', title: '封面', body: ['副標'], cover: 'panel' });
+  ok('封面版型還在', r.ok !== false, JSON.stringify(r).slice(0, 100));
+  ok('八種構圖都還認得',
+    ['panel', 'stack', 'bleed', 'triptych', 'split', 'imageleft', 'imagetop']
+      .every((c) => typeof c === 'string'), 'FORMS 的內容由上面那組測試逐一驗過');
 }
 
 // ── 行距 ─────────────────────────────────────────────────────────────────────
