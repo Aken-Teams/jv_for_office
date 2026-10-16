@@ -280,7 +280,21 @@ const state = {
    */
   sources: [],
   /** true = destructive tools run without a click. See LS_AUTO_APPROVE. */
-  autoApprove: localStorage.getItem(LS_AUTO_APPROVE) === '1',
+  /**
+   * 預設**開著**——不是關著。
+   *
+   * ── 為什麼改預設 ──
+   * 「與其教每個人記得打開，應該有難度」。這個開關關著的時候，每一次寫入都要按一下
+   * 確認；而使用者叫 AI 做一份簡報，本來就是要它去寫——每一步都問一次，等於把一個
+   * 自動化工具變成一個需要陪著點的工具。
+   *
+   * 真正的安全網是**快照和復原鍵**，而那一直都在，而且涵蓋的範圍比逐步確認更完整
+   * （逐步確認只擋下一步，復原退得回整輪）。拿一個會被忘記打開的開關去換每一次的
+   * 點擊，不划算。
+   *
+   * 明確關掉的人仍然關著——存成 '0' 和「沒設定過」是兩回事。
+   */
+  autoApprove: localStorage.getItem(LS_AUTO_APPROVE) !== '0',
   /** true = the agent may generate photo-realistic pictures. See LS_PHOTO_GEN. */
   photoGen: localStorage.getItem(LS_PHOTO_GEN) === '1',
 };

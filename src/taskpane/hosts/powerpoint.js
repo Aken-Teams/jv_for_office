@@ -3848,8 +3848,22 @@ async function addCards(args) {
       // does not sit flush against the corner radius.
       const sk = skin(th, lk, accent,
         colour(card.fill, bar === 'top' ? th.bg : th.tint));
+      /**
+       * 圓角交給風格決定，不要因為色條在上面就自己圓起來。
+       *
+       * ── 症狀 ──
+       * 一排卡片裡，編號那塊是方的、說明那塊是圓的——因為編號走的是另一條路徑。
+       * 兩種圓角混在同一組元件上，看起來不是設計，是沒對齊。
+       *
+       * ── 原本為什麼這樣寫 ──
+       * 「上色條配圓角」在只有卡片的那一頁是好看的。但卡片很少單獨出現——它旁邊通常
+       * 有編號塊、底板、表格，而那些都是方的。一個元件自己決定圓角，就會跟鄰居打架。
+       *
+       * 圓角是整份的語彙，不是單一元件的裝飾。要圓角就選 soft 或 courseware，
+       * 那時候整份都會圓；其餘情況一律方角。
+       */
       const panel = add(slide.shapes.addGeometricShape(
-        boxOf(lk, bar === 'top' ? 'RoundRectangle' : 'Rectangle'),
+        boxOf(lk, 'Rectangle'),
         { left: x, top: y, width: cw, height: ch }));
       panel.name = stamp('card');
       if (sk.fill) panel.fill.setSolidColor(card.fill ? colour(card.fill) : sk.fill);
