@@ -587,6 +587,32 @@ const snip = (text, n) => {
 };
 
 /** PowerPoint wants #RRGGBB; models write 'red', '1F3864', '#1f3864'. */
+/**
+ * 把一個顏色往某個方向推 t（0~1）。t=0 是原色，t=1 是目標色。
+ *
+ * ── 這個函式為什麼在這裡出現第二份 ──
+ * 原本只寫在 word.js 裡。我在 ppt_add_infographic 用了它，卻沒有在這支檔案裡定義——
+ * 結果是五種資訊圖**全部**在推導顏色那一步炸掉，而 Office 的錯誤訊息是空的，
+ * 所以模型只看到「未知的失敗」。
+ *
+ * 有趣的是它不是每次都炸：`tone()` 在 items 自己帶了 color 的時候會提早回傳，
+ * 根本不會走到這裡。所以「指定顏色就成功、不指定就失敗」——那正是模型回報的現象，
+ * 而我花了三輪在猜座標和 schema。
+ *
+ * 不從 word.js 匯入是因為那會把整個 Word 宿主拉進 PowerPoint 的載入路徑。
+ * 十行的顏色工具，兩邊各放一份比綁在一起好。
+ */
+function mixHex(hex, toward, t) {
+  const h = String(hex).replace('#', '');
+  const g = String(toward).replace('#', '');
+  const ch = (i) => {
+    const a = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    const b = parseInt(g.slice(i * 2, i * 2 + 2), 16);
+    return Math.round(a + (b - a) * t).toString(16).padStart(2, '0');
+  };
+  return `#${ch(0)}${ch(1)}${ch(2)}`.toUpperCase();
+}
+
 function colour(value, fallback) {
   const s = String(value || '').trim();
   if (!s) return fallback;
@@ -1737,12 +1763,25 @@ async function addInfographic(args) {
     const cx = L + W / 2;
     const cy = T + 190;
     const r = num(args.radius, 150);
+    /**
+     * 先畫軌道，再畫節點——順序就是疊的順序。
+     *
+     * 沒有那條環的話，五個圓只是五個圓，看不出它們是一個循環。用一個比節點圈大一點的
+     * 空心圓當軌道，節點蓋在上面，缺口自然就被節點補起來。
+     */
+    push({ type: 'rect', shape: 'Ellipse', left: cx - r, top: cy - r,
+      width: r * 2, height: r * 2, fill: null,
+      line_color: colour(args.track_color, th.line || th.muted), line_width: 1.5 });
     items.slice(0, n).forEach((it, i) => {
       const a = (-Math.PI / 2) + (i * 2 * Math.PI) / n;
+      // 編號寫進標籤裡，而不是另外畫一個小圓——那會變成第二層要對齊的東西。
+      const seq = String(i + 1).padStart(2, '0');
+      const label = it.no === false ? String(it.label || '') : `${seq}
+${String(it.label || '')}`;
       push({ type: 'rect', shape: 'Ellipse',
         left: cx + r * Math.cos(a) - d / 2, top: cy + r * Math.sin(a) - d / 2,
         width: d, height: d, fill: tone(i, n),
-        text: String(it.label || ''), color: onBlock, size: 13, bold: true });
+        text: label, color: onBlock, size: 13, bold: true });
     });
     if (args.hub) {
       /**
@@ -5508,8 +5547,33 @@ export async function executeTool(tool, args, opts = {}) {
       }
     }
   } catch (e) {
+    /**
+     * Office 的錯誤要把 debugInfo 挖出來。
+     *
+     * ── 為什麼非做不可 ──
+     * 「兩次失敗都只回報『未知的失敗』，沒有說哪裡出錯，所以我沒辦法確定原因」——
+     * 這是模型自己的話，而它是對的。RichApi 的錯誤常常 `message` 是空的或極短，
+     * 真正有用的（哪個屬性、哪個呼叫、Office 的說法）全在 `debugInfo` 裡。
+     *
+     * 不挖出來的話，模型只能猜：它改參數、改寫法、再試一次，失敗三輪之後放棄改用
+     * 手畫——而使用者看到的是「這個功能好像壞了」，沒有人知道為什麼。
+     *
+     * 我自己也為此繞了三圈：猜過座標越界、猜過顏色、猜過 schema 擋掉，
+     * 全都不是。**一個不說原因的錯誤，會讓所有人一起用猜的。**
+     *
+     * Word 的宿主早就這樣做了，PPT 這邊漏了。
+     */
     const code = e && e.code ? `[${e.code}] ` : '';
-    return { ok: false, content: `${code}${(e && e.message) || String(e)}` };
+    let msg = (e && e.message) || String(e);
+    const info = e && e.debugInfo;
+    if (info) {
+      const where = info.errorLocation ? `在 ${info.errorLocation}` : '';
+      const detail = info.message && info.message !== (e && e.message) ? info.message : '';
+      const extra = [where, detail].filter(Boolean).join('：');
+      if (extra) msg += `（${extra}）`;
+    }
+    if (!String(msg).trim()) msg = 'Office 沒有給錯誤訊息——通常是某個屬性的值超出範圍。';
+    return { ok: false, content: `${code}${msg}` };
   }
 }
 

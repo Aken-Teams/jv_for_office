@@ -1514,4 +1514,46 @@ console.log(`\n${pass} passed, ${fail} failed`);
     && /2 問題/.test(String(deck.content)), String(deck.content).slice(0, 120));
 }
 
+/**
+ * 五種資訊圖都要畫得出來——不給顏色的時候也要。
+ *
+ * ── 這組測試是一個 bug 留下來的 ──
+ * mixHex（推導同色相深淺階的工具）只寫在 word.js 裡，我在 ppt_add_infographic 用了它
+ * 卻沒在這支檔案定義，於是五種圖全部在推導顏色那一步炸掉。而 Office 的錯誤訊息是
+ * 空的，模型只看到「未知的失敗」。
+ *
+ * 最難查的地方在於**它不是每次都炸**：tone() 在 items 自己帶了 color 的時候會提早
+ * 回傳，根本走不到 mixHex。所以現象是「指定顏色就成功、不指定就失敗」——而我花了
+ * 三輪猜座標、猜 schema、猜透明度，全都不是。最後是直接跑一次才看到那一行。
+ *
+ * 所以這裡刻意**不給 color**：那才是會走到推導那條路的輸入，也才是模型最常送的形狀。
+ */
+{
+  const kinds = {
+    swot: { kind: 'swot', items: [{ key: 'S', label: '優勢' }, { key: 'W', label: '劣勢' },
+      { key: 'O', label: '機會' }, { key: 'T', label: '威脅' }] },
+    pyramid: { kind: 'pyramid', items: [{ label: '基礎', value: '40%' },
+      { label: '優化', value: '30%' }, { label: '成長', value: '20%' }] },
+    cycle: { kind: 'cycle', items: [{ label: '探索' }, { label: '定義' }, { label: '開發' }],
+      hub: '持續迭代' },
+    steps: { kind: 'steps', items: [{ label: '訪談' }, { label: '設計' }, { label: '建置' }] },
+    venn: { kind: 'venn', items: [{ label: '技術' }, { label: '商業' }, { label: '使用者' }],
+      center: '值得做' },
+  };
+  for (const [name, args] of Object.entries(kinds)) {
+    slide = fakeSlide();
+    const r = await host.executeTool('ppt_add_infographic', args);
+    ok(`${name}：不給顏色也畫得出來`, r.ok !== false, String(r.content).slice(0, 120));
+    ok(`${name}：真的有東西上去`, alive().length > 0, `${alive().length} 個物件`);
+  }
+
+  // 模型實際會送的形狀：帶位置、帶我沒宣告的欄位。多的欄位忽略就好，不要整個失敗。
+  slide = fakeSlide();
+  const rich = await host.executeTool('ppt_add_infographic', {
+    kind: 'pyramid', left: 60, top: 140, width: 420, accent: '#1F5F4B',
+    items: [{ label: '基礎營運', value: '40%', amount: 'NT$2,000 萬', desc: '人事、場地' }],
+  });
+  ok('帶位置和額外欄位也不會失敗', rich.ok !== false, String(rich.content).slice(0, 120));
+}
+
 process.exit(fail ? 1 : 0);
