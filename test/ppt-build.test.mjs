@@ -175,7 +175,25 @@ const ok = (name, cond, detail) => {
   cond ? pass++ : fail++;
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  → ' + (detail || '')}`);
 };
-const build = (args) => host.executeTool('ppt_build_slide', args);
+/**
+ * 組一頁之前要先規劃——那是現在的流程，不是可選的。
+ *
+ * 增益集原本的毛病是「使用者說話 → 直接呼叫零件」，中間沒有設計這一步，所以不管
+ * 給什麼需求，做出來都是 KPI 卡加圖表。提示詞寫了三次「請先規劃」都沒用——那是規則，
+ * 而規則擋不住模型。改成一道門：沒規劃過的頁，ppt_build_slide 會被擋回去。
+ *
+ * 測試跟著走同一條路，不是繞過它——繞過去的話，這些斷言測的就是一個真實使用者走不到
+ * 的路徑。這一整天已經兩次因為「測試用了模型不會送的形狀」而漏掉 bug。
+ */
+const plan = (n = 1) => host.executeTool('ppt_plan_slide', {
+  slide: n,
+  headline: '測試用的主張',
+  blocks: [{ area: '上半', media: '圖表', why: '要比兩組數字' }],
+});
+const build = async (args) => {
+  await plan(Number(args && args.slide) || 1);
+  return host.executeTool('ppt_build_slide', args);
+};
 /** CHROME.contentTop in the host — where the body band starts. */
 const CHROME_CONTENT_TOP = 124;
 const alive = () => slide.shapes.items;
@@ -1445,6 +1463,75 @@ console.log(`\n${pass} passed, ${fail} failed`);
     && !got.cards[0].body.includes(B + 'n'), JSON.stringify(got.cards[0].body));
   ok('色碼不受影響', got.color === '#1F3864', String(got.color));
   ok('數字不受影響', got.count === 3, String(got.count));
+}
+
+/**
+ * 規劃是流程的一部分，不是提示詞裡的一句話。
+ *
+ * 「他沒辦法再有更多的創意，就是他沒有任何一個流程幫他規劃」——使用者講得很準。
+ * 原本的流程是「說話 → 直接呼叫零件」，中間沒有設計這一步，所以不管給什麼需求，
+ * 做出來都是 KPI 卡加圖表。
+ *
+ * 我在提示詞裡寫過三次「請先規劃」、搬過位置、修過矛盾，行為沒變。規則擋不住模型，
+ * 機制擋得住——所以規劃變成工具，建構工具會檢查它跑過沒有。
+ */
+{
+  slide = fakeSlide();
+  const blocked = await host.executeTool('ppt_build_slide', { slide: 9, title: '沒規劃就想做' });
+  ok('沒規劃過的頁會被擋下來', blocked.ok === false && /還沒有版面規劃/.test(String(blocked.error)),
+    JSON.stringify(blocked).slice(0, 120));
+
+  // 主標缺了也不擋，但會把「它該是一句主張不是題目」講出來——理由同上。
+  const bad = await host.executeTool('ppt_plan_slide', { slide: 9, blocks: [{ area: '上', media: '圖' }] });
+  ok('少了主標也不會失敗', bad.ok !== false, JSON.stringify(bad).slice(0, 100));
+  ok('但會說主標該是一句主張', /主張/.test(String(bad.content)),
+    String(bad.content).slice(0, 120));
+
+  const good = await host.executeTool('ppt_plan_slide', {
+    slide: 9,
+    headline: '採用衝很快，成效跟不上',
+    blocks: [
+      { area: '左上', media: '長條圖', why: '要比三組採用 vs 成效的落差' },
+      { area: '右上', media: '表格', why: '欄與欄的對應關係條列講不出來' },
+    ],
+  });
+  ok('規劃會把版面講出來給人看', /採用衝很快/.test(String(good.content))
+    && /長條圖/.test(String(good.content)), String(good.content).slice(0, 120));
+
+  const now = await host.executeTool('ppt_build_slide', { slide: 9, title: '規劃過了' });
+  ok('規劃過之後就放行', now.ok !== false, JSON.stringify(now).slice(0, 120));
+
+  // 條列佔太多塊，在動手之前講——那時候改最便宜。
+  const listy = await host.executeTool('ppt_plan_slide', {
+    slide: 10,
+    headline: '全部都用講的',
+    blocks: [{ area: '左', media: '條列' }, { area: '中', media: '條列' }, { area: '右', media: '文字' }],
+  });
+  ok('三塊以上是條列會被提醒', /其實是圖或表/.test(String(listy.content)),
+    String(listy.content).slice(-80));
+
+  /**
+   * 規劃不該比不規劃更容易失敗。
+   *
+   * 第一版在缺配色時擋下來，想逼模型做決定。結果是它連試兩次失敗、放棄規劃、退回原本的
+   * KPI 加兩張圖——**它永遠走最便宜的路**，而我把規劃那條路變貴了。
+   *
+   * 第一步擋下來不會換來更好的決定，只會換來不用這個工具。改成缺的部分補上、
+   * 補完說清楚補了什麼——它想改下一句就能改，而整份規劃已經成立了。
+   */
+  const noTone = await host.executeTool('ppt_plan_deck', {
+    slides: [{ purpose: '現況', form: '數字卡' }],
+  });
+  ok('沒給配色也不會失敗', noTone.ok !== false, JSON.stringify(noTone).slice(0, 100));
+  ok('但會講出來並問這份要給誰看', /給誰看|預設/.test(String(noTone.content)),
+    String(noTone.content).slice(-100));
+
+  const deck = await host.executeTool('ppt_plan_deck', {
+    look: 'corporate',
+    slides: [{ purpose: '現況', form: '數字卡 + 折線' }, { purpose: '問題', form: '左圖右表' }],
+  });
+  ok('整份規劃會列出每頁一行', /1 現況/.test(String(deck.content))
+    && /2 問題/.test(String(deck.content)), String(deck.content).slice(0, 120));
 }
 
 process.exit(fail ? 1 : 0);

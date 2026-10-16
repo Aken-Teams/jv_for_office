@@ -414,7 +414,7 @@ const LOOKS = {
 
 const DEFAULT_LOOK = 'business';
 
-const look = (name) => LOOKS[String(name || '').toLowerCase()] || LOOKS[DEFAULT_LOOK];
+const look = (name) => LOOKS[String(name || deckLook || '').toLowerCase()] || LOOKS[DEFAULT_LOOK];
 
 /**
  * The palette for a call, with the look's own choice as the default.
@@ -429,7 +429,23 @@ const look = (name) => LOOKS[String(name || '').toLowerCase()] || LOOKS[DEFAULT_
  * request and the two knobs are still independent — the look only supplies the
  * default nobody stated.
  */
-const paletteFor = (args, lk) => theme(args.theme || lk.theme);
+const paletteFor = (args, lk) => theme(args.theme || deckPalette || lk.theme);
+
+/**
+ * 整份簡報決定的配色，由 ppt_plan_deck 寫進來。
+ *
+ * ── 為什麼要讓它「黏住」 ──
+ * 配色參數（theme / look）一直都有，但它是**每次呼叫各自指定**的。模型不會每次都帶，
+ * 所以永遠落回同一個預設——使用者的感受是「不管下什麼需求，PPT 都是淡藍底加 KPI 卡」。
+ *
+ * 規劃階段決定一次，之後每一個工具自動跟著走。這跟 Word 那邊 accent 的做法一樣：
+ * **讓一個決定貫穿整份，而不是讓每一次呼叫各自決定。** 明確指定 theme 的那一次仍然
+ * 優先——「這一頁我要深色」是合理的要求，只是它不該是預設。
+ */
+let deckPalette = null;
+
+/** 同理：整份決定的版型風格。 */
+let deckLook = null;
 
 /**
  * The page ground a look asks for, resolved against the palette.
@@ -3346,6 +3362,114 @@ function cwEstimate(args, cards) {
   return (totalW - gutter * (cols - 1)) / cols;
 }
 
+/**
+ * 一張表格，用方塊拼出來的。
+ *
+ * ── 為什麼這個工具非有不可 ──
+ * 「他 PPT 100% 都長這樣，上面 KPI 下放 2 張圖，沒了」——查下去才發現原因不是它沒創意，
+ * 是**清單裡根本沒有表格**。使用者拿來參考的兩張好投影片都是表格撐起來的（落差分析表、
+ * 檢驗站對照表、時程表），而增益集做不出來，只好退回它有的東西：卡片和圖表。
+ *
+ * 這是能力缺口，不是提示詞能解決的。再怎麼叫它「多樣化設計」，它手上沒有那個零件。
+ *
+ * ── 為什麼用方塊拼而不用 PowerPoint 的表格物件 ──
+ * PowerPointApi 沒有建立表格的方法（只讀得到既有的）。方塊反而更可控：每一格的底色、
+ * 字色、對齊都能單獨設，做得出「落差為負數標紅字」「最後一列是平均、底色再深一階」
+ * 這種真正讓表格好讀的細節——那正是參考圖裡最講究的地方。
+ *
+ * 代價是使用者不能用 Word 那種表格工具改它，要直接點進某一格改字。回報訊息會講。
+ */
+async function addTable(args) {
+  if (!hasApi('1.4')) throw new Error('表格需要 PowerPointApi 1.4，這個 Office 版本太舊。');
+  const rows = Array.isArray(args.rows) ? args.rows.filter(Array.isArray) : [];
+  if (!rows.length) throw new Error('rows 是必要的，二維陣列。第一列通常是欄名。');
+  const cols = Math.max(...rows.map((r) => r.length));
+  if (cols > 8) throw new Error('一張表最多 8 欄——再多在投影片上每欄都窄到讀不了。');
+  if (rows.length > 12) throw new Error('一張表最多 12 列。超過的話那是文件不是投影片，'
+    + '挑重點或拆成兩頁。');
+
+  const lk = look(args.look);
+  const th = paletteFor(args, lk);
+  const face = lk.font || th.font;
+
+  const left = num(args.left, CHROME.contentLeft);
+  const top = num(args.top, CHROME.contentTop);
+  const width = num(args.width, CHROME.contentWidth);
+  const rowH = clamp(num(args.row_height, 26), 16, 60);
+  // 列與列之間留一點縫：格線用「看得見的底色邊界」做，比畫線乾淨，而且縫寬可控。
+  const gap = clamp(num(args.gap, 1), 0, 4);
+
+  /**
+   * 欄寬：第一欄是標籤，通常比較長；其餘平分。
+   *
+   * 給了 widths 就照給的（比例或點數都接受），因為有些表的第三欄才是重點。
+   */
+  const given = Array.isArray(args.widths) ? args.widths.map(Number).filter((n) => n > 0) : [];
+  let widths;
+  if (given.length === cols) {
+    const sum = given.reduce((a, b) => a + b, 0);
+    widths = given.map((w) => (w / sum) * width);
+  } else {
+    const firstW = Math.min(width * 0.34, Math.max(width / cols, 90));
+    const rest = (width - firstW) / Math.max(1, cols - 1);
+    widths = Array.from({ length: cols }, (_, c) => (c === 0 ? firstW : rest));
+  }
+  const xOf = (c) => left + widths.slice(0, c).reduce((a, b) => a + b, 0);
+
+  const hasHeader = args.header !== false;
+  // 最後一列是合計／平均的話再深一階——它是結論，不是又一筆資料。
+  const totalRow = args.total_row === true ? rows.length - 1 : -1;
+  /** 哪幾欄是數字：靠右對齊，而且用等寬數字才對得齊。 */
+  const numeric = new Set((Array.isArray(args.numeric_columns) ? args.numeric_columns : [])
+    .map((n) => Number(n) - 1).filter((n) => n >= 0));
+  /** 負數或帶 ▲▼ 的值要標色——那是表格裡唯一該有顏色的東西。 */
+  const warn = colour(args.warn_color, '#FF6B6B');
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    const made_ = [];
+    const add = (shape) => { made_.push(shape); return shape; };
+
+    rows.forEach((row, r) => {
+      const isHead = hasHeader && r === 0;
+      const isTotal = r === totalRow;
+      const y = top + (rowH + gap) * r;
+      for (let c = 0; c < cols; c += 1) {
+        const cell = add(slide.shapes.addGeometricShape('Rectangle',
+          { left: xOf(c), top: y, width: widths[c] - gap, height: rowH }));
+        cell.name = stamp('tcell');
+        const fill = isHead ? (args.header_fill || th.strong)
+          : isTotal ? (args.total_fill || th.tint)
+            // 斑馬紋：淡到幾乎看不見，它的工作是讓眼睛橫著走，不是分區。
+            : (r % 2 === 0 ? th.bg : (args.band_fill || th.tint));
+        cell.fill.setSolidColor(colour(fill));
+        try { cell.lineFormat.visible = false; } catch { /* 舊版沒有就算了 */ }
+
+        const text = String((row[c] ?? ''));
+        cell.textFrame.textRange.text = text;
+        const negative = /^[−-]|^\(.*\)$|▼/.test(text.trim());
+        styleText(cell, {
+          font: face,
+          size: num(args.size, isHead ? 11.5 : 11),
+          bold: isHead || isTotal || c === 0,
+          color: isHead ? (args.header_text || th.bg)
+            : negative ? warn
+              : (args.text_color || th.ink),
+          align: numeric.has(c) || (isHead && numeric.has(c)) ? 'right' : 'left',
+        });
+      }
+    });
+
+    await ctx.sync();
+    const h = (rowH + gap) * rows.length;
+    return `已在投影片 ${index} 放上 ${rows.length} 列 × ${cols} 欄的表格`
+      + `（${Math.round(left)},${Math.round(top)}，寬 ${Math.round(width)}、高 ${Math.round(h)}）。
+`
+      + '表格是用方塊拼成的，不是 PowerPoint 的表格物件——要改某一格就直接點進那一格改字，'
+      + '不能整列插入或刪除。要改結構的話跟我說，我重做一張。';
+  });
+}
+
 async function addCards(args) {
   if (!hasApi('1.4')) throw new Error('卡片需要 PowerPointApi 1.4，這個 Office 版本太舊。');
   const cards = Array.isArray(args.cards) ? args.cards.filter(Boolean) : [];
@@ -4527,17 +4651,172 @@ export async function inspectWrite(tool, args) {
  * 所以講稿目前只出現在對話裡，由使用者自己貼進備忘稿欄。要改成產品功能的話，正確
  * 的做法是把這個限制寫回 PRD 3.4（那節本來就有一段技術風險），而不是在這裡硬做。
  */
+/**
+ * 這份簡報規劃過了嗎，每一頁又規劃了什麼。
+ *
+ * ── 為什麼規劃要變成一個工具 ──
+ * 增益集原本的流程是「使用者說話 → 模型直接呼叫零件」，中間沒有任何一個階段叫設計。
+ * 所以不管給什麼需求，它都從手上的零件盒裡挑——KPI 卡、圖表、條列——因為沒有任何
+ * 一步**要求**它先決定這一頁長什麼樣。做出來的東西像「從固定套件裡挑幾個」，
+ * 不像有人規劃過。
+ *
+ * 我在提示詞裡寫過三次「請先規劃」，搬過位置、修過矛盾，行為沒變。那是**規則**，
+ * 而規則擋不住模型。這幾天反覆驗證的是：**機制擋得住**。
+ *
+ * 所以規劃變成一個工具，而且建構工具會檢查它跑過沒有——模型繞不過去，也不需要記得。
+ *
+ * ── 為什麼不是只記一個布林值 ──
+ * 規劃的內容要留著：後面的檢查要拿它對照（說好要放一張表，最後沒放，查得出來），
+ * 側邊欄也要顯示出來，讓使用者在它動手之前就看得到方向對不對。
+ */
+let deckPlan = null;
+const slidePlans = new Map();
+
+/** 需要先有版面規劃才能動手的工具——會真的在投影片上放東西的那些。 */
+const NEEDS_PLAN = new Set([
+  // 「組一頁」才需要規劃。改一行字、搬一個方塊是編輯，不是設計——
+  // 連那個都擋的話，使用者說「把標題改成 X」還要先規劃一次版面，那是找麻煩。
+  'ppt_build_slide',
+]);
+
+/**
+ * 整份簡報的走向：每頁一行，講這一頁要證明什麼、用什麼形式。
+ *
+ * 一頁的簡報也要跑——「一頁」正是最需要規劃的情況，因為所有東西要擠進同一張紙，
+ * 位置是先決的，不是做到哪算哪。
+ */
+async function planDeck(args) {
+  const slides = Array.isArray(args.slides) ? args.slides : [];
+  if (!slides.length) {
+    throw new Error('slides 是必要的：每頁一個物件，至少要有 { purpose, form }。'
+      + '例如 [{ purpose: "現況：市場規模與成長", form: "數字卡 + 折線圖" }]。');
+  }
+  /**
+   * 配色是規劃階段的決定，不是每一頁各自挑。
+   *
+   * 不給的話就擋下來——這跟 headline 一樣，是「做之前非決定不可」的那一類。一份給客戶
+   * 的提案、一份內部檢討、一份財報分析，該長的樣子完全不同；而預設值只有一種，
+   * 所以不逼它決定，結果就永遠是同一種。
+   */
+  /**
+   * 沒給配色不是錯誤——用預設，然後說出來。
+   *
+   * ── 第一版為什麼錯 ──
+   * 我原本在這裡擋下來，想逼模型做決定。結果是它連試兩次失敗、放棄規劃、退回原本的
+   * KPI 加兩張圖——**它永遠走最便宜的路**，而我把規劃那條路變貴了。
+   *
+   * 第一步擋下來不會換來更好的決定，只會換來不用這個工具。
+   */
+  const picked = !args.theme && !args.look;
+  deckPalette = args.theme ? String(args.theme) : null;
+  deckLook = args.look ? String(args.look) : null;
+  deckPlan = {
+    headline: String(args.headline || ''),
+    audience: String(args.audience || ''),
+    theme: deckPalette,
+    look: deckLook,
+    slides: slides.map((x, i) => ({
+      n: i + 1,
+      purpose: String((x && x.purpose) || ''),
+      form: String((x && x.form) || ''),
+    })),
+  };
+  slidePlans.clear();
+  const lines = deckPlan.slides.map((x) => `${x.n} ${x.purpose}（${x.form}）`);
+  const tone = [deckPalette && `配色 ${deckPalette}`, deckLook && `風格 ${deckLook}`]
+    .filter(Boolean).join('、') || '配色沿用預設';
+  return `整份規劃好了（${tone}），共 ${lines.length} 頁：\n${lines.join('\n')}\n\n`
+    + '接下來每做一頁之前，先用 ppt_plan_slide 規劃那一頁的版面。'
+    + (picked
+      ? '\n\n沒指定配色，所以用預設。這份要給誰看？對外提案、內部檢討、財報分析，'
+        + '該長的樣子完全不同——想換的話再跑一次這個工具並帶上 theme 或 look，'
+        + '整份都會跟著改，不用一頁一頁調。'
+      : '');
+}
+
+/**
+ * 單頁的版面：分幾塊、各佔哪裡、每塊什麼媒材。
+ *
+ * 要求講出**理由**不是為了好看——說不出「為什麼這塊用圖不用條列」，通常代表那塊
+ * 其實不需要存在，或者它該換一種形式。這一步把那個判斷逼到動手之前。
+ */
+async function planSlide(args) {
+  const n = Math.max(1, Number(args.slide) || 1);
+  const blocks = Array.isArray(args.blocks) ? args.blocks : [];
+  if (!blocks.length) {
+    throw new Error('blocks 是必要的：這一頁分成幾塊、各佔哪裡、每塊用什麼媒材。'
+      + '例如 [{ area: "左上", media: "長條圖", why: "要比三組採用 vs 成效的落差" }]。');
+  }
+  /**
+   * 主標缺了也不要擋——理由同 planDeck：規劃不該比不規劃更容易失敗。
+   *
+   * 留一個提示，然後讓這一頁的規劃成立。模型看得到，而且不會因為少一個欄位就整個
+   * 退回去用原本那套。
+   */
+  const headline = String(args.headline || '').trim();
+  const plan = {
+    headline,
+    blocks: blocks.map((b) => ({
+      area: String((b && b.area) || ''),
+      media: String((b && b.media) || ''),
+      why: String((b && b.why) || ''),
+      // 座標是選填的，但給了就等於這一頁有了設計稿——後面每個工具照著放，排不歪。
+      left: Number(b && b.left) || null,
+      top: Number(b && b.top) || null,
+      width: Number(b && b.width) || null,
+      height: Number(b && b.height) || null,
+    })),
+  };
+  slidePlans.set(n, plan);
+  const lines = plan.blocks.map((b) => {
+    const at = (b.left !== null && b.top !== null)
+      ? `（${b.left},${b.top}${b.width ? ` ${b.width}×${b.height || '?'}` : ''}）` : '';
+    return `· ${b.area}${at}：${b.media}${b.why ? ` — ${b.why}` : ''}`;
+  });
+  // 條列佔太多塊，通常代表有東西該畫成圖——在動手之前講，改起來最便宜。
+  const listy = plan.blocks.filter((b) => /條列|清單|文字|bullet/i.test(b.media)).length;
+  const warn = listy > 2
+    ? '\n\n提醒：這一頁有三塊以上是條列。回頭看看有沒有哪一塊其實是圖或表——通常有。'
+    : '';
+  const lead = headline
+    ? `主標「${headline}」`
+    : '主標還沒決定——那句話要寫成一句主張（「採用衝很快，成效跟不上」），'
+      + '不是題目名稱（「AI 趨勢分析」）。它決定這一頁其餘所有東西怎麼排，先想好再做。';
+  return `第 ${n} 頁的版面：\n${lead}\n${lines.join('\n')}${warn}`;
+}
+
+/**
+ * 還沒規劃就想動手的時候，把它擋回去。
+ *
+ * 回傳的是一段錯誤訊息，不是拋例外——模型看得到、照著做就過得了，而且這比在提示詞裡
+ * 寫一百次「記得先規劃」有效，因為它不是提醒，是一道門。
+ */
+function planGate(tool, args) {
+  if (!NEEDS_PLAN.has(tool)) return '';
+  const n = Math.max(1, Number(args && (args.slide ?? args.slide_index)) || 1);
+  if (slidePlans.has(n)) return '';
+  return `第 ${n} 頁還沒有版面規劃。先呼叫 ppt_plan_slide 決定這一頁：`
+    + '要讓人記得哪一句話（headline，寫成主張不是題目）、分成幾塊、各佔哪裡、'
+    + '每塊用什麼媒材以及為什麼。\n\n'
+    + '這一步不能跳過：先想內容再找地方放，做出來的頁面是把區塊依序堆下去的結果——'
+    + '每一塊都對，但整頁沒有人規劃過。'
+    + (deckPlan ? '' : '\n\n整份還沒規劃的話，也先跑一次 ppt_plan_deck。');
+}
+
 export function supportedTools() {
   const tools = [
     'ppt_get_overview',
     'ppt_read_slide',
     'ppt_get_selection',
+    'ppt_plan_deck',
+    'ppt_plan_slide',
     'ppt_add_slide',
     'ppt_delete_slide',
     'ppt_build_slide',
     'ppt_add_text',
     'ppt_add_shape',
     'ppt_add_line',
+    'ppt_add_table',
     'ppt_add_cards',
     'ppt_add_kpi',
     'ppt_add_callout',
@@ -4580,6 +4859,9 @@ export async function executeTool(tool, args, opts = {}) {
    * 才收斂，不要在這裡重走一遍。
    */
   args = cleanArgs(args);
+  // 還沒規劃就想動手的話，擋回去。見 planGate。
+  const gate = planGate(tool, args);
+  if (gate) return { ok: false, error: gate };
 
   const a = args || {};
   // One call, one undo entry. Cleared at the start rather than the end so a
@@ -4596,12 +4878,15 @@ export async function executeTool(tool, args, opts = {}) {
 
       default: {
         const run = {
+          ppt_plan_deck: planDeck,
+          ppt_plan_slide: planSlide,
           ppt_add_slide: addSlide,
           ppt_delete_slide: deleteSlide,
           ppt_build_slide: buildSlide,
           ppt_add_text: addText,
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
+          ppt_add_table: addTable,
           ppt_add_cards: addCards,
           ppt_add_kpi: addKpi,
           ppt_add_callout: addCallout,
@@ -4653,10 +4938,13 @@ export const meta = {
     ppt_get_selection: t('正在讀取選取範圍…'),
     ppt_add_slide: t('正在新增投影片…'),
     ppt_delete_slide: t('等待你確認刪除…'),
+    ppt_plan_deck: t('正在規劃整份的走向…'),
+    ppt_plan_slide: t('正在規劃這一頁的版面…'),
     ppt_build_slide: t('正在組一張投影片…'),
     ppt_add_text: t('正在加上文字…'),
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
+    ppt_add_table: t('正在排表格…'),
     ppt_add_cards: t('正在排卡片…'),
     ppt_add_kpi: t('正在排數據卡…'),
     ppt_add_callout: t('正在寫結論框…'),
