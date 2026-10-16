@@ -1681,10 +1681,27 @@ async function addInfographic(args) {
 
   if (kind === 'swot') {
     // 四個六角形聚成一簇，說明在兩側。實測過的座標。
+    /**
+     * 四個六角形之間要留縫。
+     *
+     * ── 原本為什麼會互相蓋住 ──
+     * 我把它們排在剛好相鄰的位置（水平差一個寬、垂直差 120 而高是 130）。六角形的
+     * 外框是矩形，但它的**斜邊在矩形內縮**——兩個外框剛好相鄰的時候，看起來是分開的；
+     * 可是垂直方向我少算了 10，於是下面那排直接壓在上面那排的斜邊上。
+     *
+     * 而且六角形相鄰不像方塊：方塊貼在一起是一道線，六角形貼在一起是一片交錯的斜角。
+     * 留縫才看得出來那是四個獨立的區塊。
+     */
     const hw = 150;
     const hh = 130;
+    const gapX = 14;
+    const gapY = 14;
     const cx = L + W / 2;
-    const spots = [[cx - hw, T + 60], [cx, T + 60], [cx - hw, T + 180], [cx, T + 180]];
+    const x0 = cx - hw - gapX / 2;
+    const x1 = cx + gapX / 2;
+    const y0 = T + 50;
+    const y1 = y0 + hh + gapY;
+    const spots = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]];
     items.slice(0, 4).forEach((it, i) => {
       push({ type: 'rect', shape: 'Hexagon', left: spots[i][0], top: spots[i][1],
         width: hw, height: hh, fill: tone(i, 4),
@@ -1728,10 +1745,20 @@ async function addInfographic(args) {
         text: String(it.label || ''), color: onBlock, size: 13, bold: true });
     });
     if (args.hub) {
+      /**
+       * 軸心的字要看得見。
+       *
+       * 底是白的，所以字色必須是深的——用 ink 而不是 onBlock（那是給色塊上的字用的，
+       * 通常是白色）。實測畫出來是一個空白圓，就是因為白底配到了白字。
+       *
+       * `||` 在這裡會吃掉空字串，所以用明確的判斷：使用者把字色設成 '' 的時候，
+       * 應該退回 ink，而不是變成 undefined 讓 styleText 去猜。
+       */
+      const hubText = args.hub_text || ink;
       push({ type: 'rect', shape: 'Ellipse', left: cx - 60, top: cy - 60,
         width: 120, height: 120, fill: args.hub_fill || '#FFFFFF',
         line_color: colour(args.accent, th.strong), line_width: 1.5,
-        text: String(args.hub), color: ink, size: 14, bold: true });
+        text: String(args.hub), color: hubText, size: 14, bold: true, valign: 'middle' });
     }
   } else if (kind === 'steps') {
     const n = Math.min(items.length, 6);
