@@ -1661,7 +1661,20 @@ async function addInfographic(args) {
    * 所以 cycle 收窄到 500：圓簇的中心落在 290 附近，右邊留得出清單的位置，
    * 而左邊也不會空一大塊。
    */
-  const W = num(args.width, kind === 'cycle' ? 500 : (kind === 'swot' ? 560 : 880));
+  /**
+   * 預設寬度是**這張圖自己**的寬度，不是整頁的寬度。
+   *
+   * ── 金字塔原本為什麼畫不出來 ──
+   * 預設給 880（幾乎整頁），於是梯形撐滿版面，而右邊的說明欄從 936 開始、畫到 1236——
+   * 整排掉在 960 的版面外。算一次就看得出來，但我當初是照「內容區寬度」設的，
+   * 沒想到這張圖的說明在**圖的右邊**，不在圖的下面。
+   *
+   * 會把說明放在右邊的（pyramid）要留出那塊空間；自成一塊的（steps）才用整頁寬。
+   */
+  const W = num(args.width, kind === 'cycle' ? 500
+    : kind === 'swot' ? 560
+      : kind === 'pyramid' ? 400
+        : kind === 'venn' ? 420 : 880);
 
   const plan = [];
   const push = (o) => plan.push(o);
@@ -1739,16 +1752,35 @@ async function addInfographic(args) {
     const cx = L + W / 2;
     const pos = [[cx - d * 0.38, T], [cx - d * 0.62 + d, T], [cx - d / 2, T + d * 0.55]];
     const cols = [tone(0, 3), tone(1, 3), tone(2, 3)];
+    /**
+     * 三個圓直接用半透明，交集自己就會疊出來。
+     *
+     * 0.72 是試出來的平衡：再實一點交集看不出來，再淡一點圓本身的顏色就站不住。
+     * 文字用深色而不是白色——半透明的底撐不起白字。
+     */
     pos.forEach((pt, i) => {
       push({ type: 'rect', shape: 'Ellipse', left: pt[0], top: pt[1], width: d, height: d,
-        fill: cols[i], text: String((items[i] && items[i].label) || ''),
-        color: onBlock, size: 14, bold: true, valign: i === 2 ? 'bottom' : 'top' });
+        fill: cols[i], opacity: num(args.opacity, 0.72),
+        text: String((items[i] && items[i].label) || ''),
+        color: args.block_text || ink, size: 14, bold: true,
+        valign: i === 2 ? 'bottom' : 'top' });
     });
-    // 三圓共同的中心，用三色的平均——那一塊是整張圖的重點。
-    const mid = mixHex(mixHex(cols[0], cols[1], 0.5), cols[2], 0.34);
-    push({ type: 'rect', shape: 'Ellipse', left: cx - 42, top: T + d * 0.42,
-      width: 84, height: 84, fill: mid,
-      text: String(args.center || ''), color: onBlock, size: 13, bold: true });
+    /**
+     * 中心只放一塊，而且只在有字的時候。
+     *
+     * ── 第一版多畫了什麼 ──
+     * 我原本在工具說明裡叫模型「交集要另外補混色塊」，結果它在每兩個圓的交會處都補了
+     * 一塊——三個暗色小圓浮在圖上，看起來像沒對齊的瑕疵，而不是交集。
+     *
+     * 兩兩交集本來就不需要標示：三個圓重疊的形狀**本身就說明了交集在哪裡**。真正要
+     * 指出來的只有正中央那一塊，因為那是整張圖的結論。沒有結論文字的話連它都不要畫。
+     */
+    if (args.center) {
+      const mid = mixHex(mixHex(cols[0], cols[1], 0.5), cols[2], 0.34);
+      push({ type: 'rect', shape: 'Ellipse', left: cx - 42, top: T + d * 0.42,
+        width: 84, height: 84, fill: mid,
+        text: String(args.center), color: onBlock, size: 13, bold: true });
+    }
   }
 
   return drawShapes({ ...args, shapes: plan, theme: args.theme, font: face });
@@ -1836,6 +1868,23 @@ async function drawShapes(args) {
       if (type === 'text' && it.fill === undefined) sh.fill.clear();
       else if (it.fill === null || it.fill === '') sh.fill.clear();
       else sh.fill.setSolidColor(colour(it.fill, th.tint));
+      /**
+       * 半透明。
+       *
+       * ── 我當初說做不到，那是沒查就下的結論 ──
+       * ShapeFill 有 transparency 這個屬性（0 是不透明、1 是全透明）。我沒試就在文氏圖
+       * 那邊叫模型「交集另外補混色塊」，結果它在每兩個圓的交會處補了一塊暗色小圓，
+       * 看起來像瑕疵——**為了繞過一個不存在的限制，產生了一個真的問題**。
+       *
+       * 這裡用 opacity（0~1，直覺是「不透明度」）而不是 transparency，因為設計的人
+       * 想的是「這塊要多實」，不是「要多空」。沒給就是完全不透明，行為不變。
+       *
+       * 包 try：舊版 Office 給不了就維持實心——那時候圖還是畫得出來，只是沒有疊色。
+       */
+      if (it.opacity !== undefined) {
+        const o = Math.max(0, Math.min(1, Number(it.opacity)));
+        try { sh.fill.transparency = 1 - o; } catch { /* 舊版沒有，維持實心 */ }
+      }
       try {
         if (it.line_color) {
           sh.lineFormat.color = colour(it.line_color);
