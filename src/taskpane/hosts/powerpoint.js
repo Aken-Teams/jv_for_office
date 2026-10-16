@@ -1417,6 +1417,125 @@ async function addShape(args) {
   });
 }
 
+/**
+ * 一次畫一整批物件。
+ *
+ * ── 為什麼非有不可 ──
+ * 現有的工具全部是**模組**：ppt_add_kpi 給我資料我排成數字卡、ppt_add_table 排成表、
+ * ppt_add_cards 排成卡片。每一個的格式都是固定的，所以模型能做的事只有「挑模組、填資料」。
+ * 使用者的形容很準：「我這頁要有哪些模組，有表格，就做表格，沒了」。
+ *
+ * 真正好的那些看板不是這樣做的。它們是**一塊一塊畫出來的**：表格是一格一格的矩形，
+ * 卡片是底板加色條加三層字，區塊之間還有箭頭和小結論。所以它們能做到四個區塊再各自
+ * 拆細——因為沒有任何模組在限制粒度。
+ *
+ * 這件事理論上用 ppt_add_shape 就做得到，但一次呼叫畫一個物件：一份看板六十幾個物件
+ * 就是六十次往返。模型退回模組不是不會畫，**是太貴**。
+ *
+ * 所以這個工具存在的意義只有一個：**讓模組變成捷徑，而不是天花板**。合適就用
+ * ppt_add_table，不合適就自己畫。
+ *
+ * ── 為什麼一次 sync ──
+ * 六十個物件分六十次往返要好幾分鐘，而且中間任何一次失敗就留下半張投影片。排進同一個
+ * 批次，一次 sync 送出去——這也是 ppt_add_cards 那些模組本來就在做的事，只是它們的
+ * 形狀是寫死的。
+ */
+async function drawShapes(args) {
+  if (!hasApi('1.4')) throw new Error('批次繪製需要 PowerPointApi 1.4，這個 Office 版本太舊。');
+  const items = Array.isArray(args.shapes) ? args.shapes.filter(Boolean) : [];
+  if (!items.length) {
+    throw new Error('shapes 是必要的：一個陣列，每個元素是一個物件。'
+      + '例如 [{ type:"rect", left:30, top:104, width:490, height:220, fill:"#233559" },'
+      + ' { type:"text", left:30, top:12, text:"標題", size:26, bold:true, color:"#FFFFFF" }]。');
+  }
+  if (items.length > 120) {
+    throw new Error(`一次最多 120 個物件，這次有 ${items.length} 個。`
+      + '再多的話一張投影片會慢到難以編輯——拆成兩次，或看看有沒有哪一塊其實該用'
+      + ' ppt_add_table、ppt_add_cards 這些現成的。');
+  }
+
+  const th = theme(args.theme);
+  const face = args.font || th.font;
+
+  return PowerPoint.run(async (ctx) => {
+    const { slide, index } = await targetSlide(ctx, args);
+    let made = 0;
+    const unknown = new Set();
+
+    for (const it of items) {
+      const type = String(it.type || 'rect').toLowerCase();
+      const geo = {
+        left: num(it.left, 0),
+        top: num(it.top, 0),
+        width: num(it.width, type === 'line' ? 120 : 160),
+        height: num(it.height, type === 'line' ? 0 : 40),
+      };
+
+      if (type === 'line') {
+        const ln = slide.shapes.addLine('StraightConnector1', geo);
+        ln.name = stamp('draw');
+        try {
+          ln.lineFormat.color = colour(it.color || it.fill, th.strong);
+          ln.lineFormat.weight = num(it.weight, 2);
+        } catch { /* 舊版給不了就用預設 */ }
+        made += 1;
+        continue;
+      }
+
+      /**
+       * text 也是一個矩形，只是沒有填色。
+       *
+       * 用 addTextBox 的話它的寬高行為跟矩形不一樣（會自動縮），同一份版面裡兩種
+       * 盒子模型混用，對齊就會差幾點——而看板最吃的就是對齊。
+       */
+      const asked = type === 'text' ? 'Rectangle' : (it.shape || type);
+      const kind = geoType(asked === 'rect' ? 'Rectangle' : asked);
+      if (it.shape && kind !== it.shape) unknown.add(String(it.shape));
+      const sh = slide.shapes.addGeometricShape(kind, geo);
+      sh.name = stamp('draw');
+
+      if (type === 'text' && it.fill === undefined) sh.fill.clear();
+      else if (it.fill === null || it.fill === '') sh.fill.clear();
+      else sh.fill.setSolidColor(colour(it.fill, th.tint));
+      try {
+        if (it.line_color) {
+          sh.lineFormat.color = colour(it.line_color);
+          sh.lineFormat.weight = num(it.line_width, 1);
+        } else {
+          sh.lineFormat.visible = false;
+        }
+      } catch { /* 舊版沒有框線控制 */ }
+
+      if (it.text !== undefined && it.text !== null && String(it.text) !== '') {
+        sh.textFrame.textRange.text = String(it.text);
+        styleText(sh, {
+          font: it.font || face,
+          size: num(it.size, 11),
+          bold: it.bold === true,
+          color: it.color || th.ink,
+          align: it.align || (type === 'text' ? 'left' : 'center'),
+          valign: it.valign || 'middle',
+        });
+        try {
+          // 盒子就是盒子——不要因為字多就自己長大，那會毀掉整份版面的對齊。
+          sh.textFrame.wordWrap = it.wrap !== false;
+          sh.textFrame.autoSizeSetting = 'AutoSizeNone';
+        } catch { /* 舊版沒有這些設定 */ }
+      }
+      made += 1;
+    }
+
+    await ctx.sync();
+    return `已在投影片 ${index} 畫上 ${made} 個物件。`
+      + (unknown.size
+        ? `\n（PowerPoint 沒有「${[...unknown].join('、')}」這些形狀，改用了矩形。`
+          + '圓形是 Ellipse，箭頭是 RightArrow、Chevron。）'
+        : '')
+      + '\n每一個都是獨立的物件，可以在 PowerPoint 裡直接點選拖動。'
+      + '要整塊重做的話跟我說，我重畫比一個一個搬快。';
+  });
+}
+
 async function addLine(args) {
   if (!hasApi('1.4')) throw new Error('新增線條需要 PowerPointApi 1.4。');
   const th = theme(args.theme);
@@ -4814,6 +4933,7 @@ export function supportedTools() {
     'ppt_delete_slide',
     'ppt_build_slide',
     'ppt_add_text',
+    'ppt_draw',
     'ppt_add_shape',
     'ppt_add_line',
     'ppt_add_table',
@@ -4884,6 +5004,7 @@ export async function executeTool(tool, args, opts = {}) {
           ppt_delete_slide: deleteSlide,
           ppt_build_slide: buildSlide,
           ppt_add_text: addText,
+          ppt_draw: drawShapes,
           ppt_add_shape: addShape,
           ppt_add_line: addLine,
           ppt_add_table: addTable,
@@ -4942,6 +5063,7 @@ export const meta = {
     ppt_plan_slide: t('正在規劃這一頁的版面…'),
     ppt_build_slide: t('正在組一張投影片…'),
     ppt_add_text: t('正在加上文字…'),
+    ppt_draw: t('正在畫版面…'),
     ppt_add_shape: t('正在加上圖形…'),
     ppt_add_line: t('正在畫線…'),
     ppt_add_table: t('正在排表格…'),
