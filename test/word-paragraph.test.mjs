@@ -115,26 +115,24 @@ console.log(`\n${pass} passed, ${fail} failed`);
  * 這種事規則擋不住，入口擋得住。
  */
 {
-  const u = cut('function joinUnderscores', 'function asParagraphs')
-    + '\nexport { normalizeTabs, unescapeBreaks, joinUnderscores };\n';
-  const f = new URL('./.text-normalize-under-test.mjs', import.meta.url);
-  fs.writeFileSync(f, u);
-  const { normalizeTabs, unescapeBreaks, joinUnderscores } = await import(f);
+  /**
+   * 三道正規化搬到 hosts/text.js 了——三個宿主共用，不再是 Word 專屬。
+   * 所以這裡直接 import，不用再從 word.js 切片。
+   */
+  const { cleanText } = await import('../src/taskpane/hosts/text.js');
 
   ok('開頭的 tab 被拿掉（縮排該交給 left_indent）',
-    normalizeTabs('\t匯款帳戶') === '匯款帳戶');
+    cleanText('\t匯款帳戶') === '匯款帳戶');
   ok('中間的 tab 換成看得見的間隔，不是會跑的定位點',
-    normalizeTabs('戶名\t恆遠資訊') === '戶名\u3000恆遠資訊');
-  ok('沒有 tab 的文字原樣不動', normalizeTabs('一、付款方式') === '一、付款方式');
+    cleanText('戶名\t恆遠資訊') === '戶名\u3000恆遠資訊');
+  ok('沒有 tab 的文字原樣不動', cleanText('一、付款方式') === '一、付款方式');
 
   ok('字面的反斜線 n 變成真的換行',
-    unescapeBreaks('A。\\n2. B。') === 'A。\n2. B。');
-  ok('真的換行不受影響', unescapeBreaks('A\nB') === 'A\nB');
+    cleanText('A。\\n2. B。') === 'A。\n2. B。');
+  ok('真的換行不受影響', cleanText('A\nB') === 'A\nB');
 
-  ok('分開的底線接成一條', /^簽章：_{6,}$/.test(joinUnderscores('簽章：_ _ _ _ _ _')));
-  ok('單獨的底線不動', joinUnderscores('A_ B_ 正常') === 'A_ B_ 正常');
-
-  fs.unlinkSync(f);
+  ok('分開的底線接成一條', /^簽章：_{6,}$/.test(cleanText('簽章：_ _ _ _ _ _')));
+  ok('單獨的底線不動', cleanText('A_ B_ 正常') === 'A_ B_ 正常');
 }
 
 process.exit(fail ? 1 : 0);

@@ -61,6 +61,7 @@
  */
 
 import { t } from '../i18n.js';
+import { cleanArgs } from './text.js';
 import { makeScriptGuard } from './guard.js';
 // Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the first
 // time somebody asks for a diagram.
@@ -4571,6 +4572,15 @@ const WRITES = new Set([
 ]);
 
 export async function executeTool(tool, args, opts = {}) {
+  /**
+   * 模型送來的字串先洗過——字面的換行、tab、被空格隔開的底線。
+   *
+   * 做在派送這一層而不是每個工具裡：文字不只從 args.text 進來，卡片是陣列、KPI 是
+   * 物件陣列、表格是二維陣列。一處一處補就是一處一處漏——這個問題在 Word 補了三次
+   * 才收斂，不要在這裡重走一遍。
+   */
+  args = cleanArgs(args);
+
   const a = args || {};
   // One call, one undo entry. Cleared at the start rather than the end so a
   // call that throws part-way leaves behind what it actually managed to do.

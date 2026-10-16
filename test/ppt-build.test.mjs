@@ -1422,4 +1422,29 @@ for (const cover of ['imageleft', 'imageright', 'imagetop']) {
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
+/**
+ * 模型送來的字串在派送這一層就洗過。
+ *
+ * 「製作 PPT 也有 \n 的問題」——投影片的卡片內文裡出現字面換行，而那不是任何一個
+ * 叫 text 的參數：卡片是陣列、KPI 是物件陣列、圖表的分類又是另一個形狀。一處一處補
+ * 就是一處一處漏，Word 那邊補了三次才收斂。
+ *
+ * 所以不挑欄位，整包 args 走一遍。這幾條釘的是「深層結構裡的字串也要洗到」。
+ */
+{
+  const { cleanArgs } = await import('../src/taskpane/hosts/text.js');
+  const B = String.fromCharCode(92);
+  const got = cleanArgs({
+    title: '三段式落地路徑',
+    cards: [{ title: '聚焦選題', body: '挑可量化成效的流程先做' + B + 'n先定成效指標' }],
+    color: '#1F3864',
+    count: 3,
+  });
+  ok('陣列裡物件的字串也洗得到',
+    got.cards[0].body.includes(String.fromCharCode(10))
+    && !got.cards[0].body.includes(B + 'n'), JSON.stringify(got.cards[0].body));
+  ok('色碼不受影響', got.color === '#1F3864', String(got.color));
+  ok('數字不受影響', got.count === 3, String(got.count));
+}
+
 process.exit(fail ? 1 : 0);

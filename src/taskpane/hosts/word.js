@@ -27,6 +27,7 @@
  * then the token budget, in that order.
  */
 import { t } from '../i18n.js';
+import { cleanText } from './text.js';
 import { makeScriptGuard } from './guard.js';
 import { equationOoxml, xmlImbalance } from './omml.js';
 // Lazily loaded inside: the 2.9 MB bundle it pulls in is only fetched the
@@ -606,79 +607,6 @@ export async function inspectWrite(_tool, args) {
  * 只處理 \n 和 \r\n。\t 不轉：它在文件裡本來就該是一個 tab。而使用者真的想寫出
  * 「\n」這兩個字的機率，遠低於模型多轉義一次的機率。
  */
-/**
- * 分開的底線要接成一條。
- *
- * ── 症狀 ──
- * 文件裡出現「簽章：＿ ＿ ＿ ＿ ＿」而不是「簽章：__________」。模型送來的是一串
- * 被空格隔開的底線——每一段都是獨立的小橫線，中間有縫。那在螢幕上看起來只是醜，
- * 印出來簽名的時候筆會卡在縫上，而且縫的位置還會隨字型變。
- *
- * 真正的 Word 文件是一條連續的底線。
- *
- * ── 為什麼在這裡修 ──
- * 跟字面 `
-` 同一類：模型不是不知道該怎麼寫，是它在組字串的時候用空格去「排版」。
- * 叫它別這樣是一條會被忘記的規則；這裡一行判斷就永遠不會發生。
- *
- * 三個以上才合併——「A_ B_」這種單獨的底線是別的意思，不要動它。
- * 合併後的長度取原本的底線總數，所以版面寬度不會因為這個修正而改變。
- */
-function joinUnderscores(text) {
-  return String(text).replace(/(?:[_＿][ 　]+){2,}[_＿]/g, (m) => {
-    const n = (m.match(/[_＿]/g) || []).length;
-    // 空格原本也佔寬度，補一些回去，不然整條線會比原本短一截。
-    return '_'.repeat(n + Math.round(n * 0.6));
-  });
-}
-
-/**
- * Tab 不要留在文字裡。
- *
- * ── 為什麼會跑版 ──
- * Word 的 tab 是「跳到下一個定位停駐點」，而停駐點的位置由段落樣式決定——模型看不到
- * 那些點在哪裡。所以它用 tab 排出來的縮排，在實際版面上會落在別的位置：有時候剛好，
- * 有時候整段推出去半個版心，而且同一段文字在不同樣式下落點還不一樣。
- *
- * ── 怎麼處理 ──
- * 開頭的 tab 是在做縮排——那件事該由 left_indent 做，所以拿掉。句子中間的 tab 是在
- * 做欄位對齊，但在一段連續的文字裡沒有欄可以對，換成一個全形空格就是它實際想要的
- * 效果，而且不會因為樣式變化而跑掉。
- *
- * 跟字面 `\n`、分開的底線同一類：模型不是不知道怎麼排，是它在組字串的時候用了
- * 「在純文字裡有效、在 Word 裡沒效」的手法。這種事規則擋不住，入口擋得住。
- */
-function normalizeTabs(text) {
-  return String(text)
-    // 多轉義一次的 \t，跟 \n 同樣的來源。
-    .replace(/\t/g, '\t')
-    // 開頭的縮排交給 left_indent，不要用 tab 做。
-    .replace(/^[\t]+/gm, '')
-    // 中間的 tab 換成全形空格——它想要的是一個看得見的間隔，不是一個會跑的定位點。
-    .replace(/\t+/g, '\u3000');
-}
-
-function unescapeBreaks(text) {
-  return String(text).replace(/\\r\\n|\\n/g, '\n');
-}
-
-/**
- * 模型給的任何一段文字，進文件之前都走這裡。
- *
- * ── 為什麼要有一個共用的入口 ──
- * 這三道正規化（字面換行、分開的底線、tab）原本只接在 asParagraphs 上，而那只服務
- * word_insert_text。表格的儲存格、表單的欄位、區塊的內容走的是別的路——於是文件裡
- * 還是會出現「填寫。
- 二、本表所蒐集之個人資料…」這種東西。
- *
- * 這是同一個教訓的第三次：**修在模型不會走的那條路上，等於沒修**。所以這次不是再補
- * 一處，是把三道收成一個函式，讓每一個文字入口都呼叫它——以後新增工具也只要記得這
- * 一個名字。
- */
-function cleanText(text) {
-  return joinUnderscores(normalizeTabs(unescapeBreaks(text)));
-}
-
 function asParagraphs(args) {
   if (Array.isArray(args.paragraphs)) return args.paragraphs.map((t) => cleanText(t));
   const text = args.text === undefined ? '' : cleanText(args.text);
