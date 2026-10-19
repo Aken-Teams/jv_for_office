@@ -816,6 +816,27 @@ const troubleDetail = (what, extra = '') =>
   [String(what || ''), extra, state.apiBase].filter(Boolean).join(' · ');
 
 /** Office.js quotes sheet names containing spaces: 'SP 分析報告'!A1:F36 → SP 分析報告!A1:F36 */
+/**
+ * 確認框上給人看的那一句。
+ *
+ * 伺服器通常會附一句說明（工具規格裡的 explain 欄位就是為此存在）。沒有的時候，
+ * 原本會直接把工具代號印出來——使用者看到的是「ppt_run_script」，那不是一句話，
+ * 是一個函式名稱。而這個框是他唯一的決策依據：看不懂就只能亂按。
+ *
+ * 退路是工具自己的中文標籤（toolLabels），再不行才講工具代號——而那時至少
+ * 外面還有一句「AI 想要修改這份簡報」撐著。
+ */
+function humanSummary(summary, tool) {
+  const s = String(summary || '').trim();
+  const short = shortToolName(tool);
+  // 伺服器沒給說明時會回工具代號本身，那跟沒給一樣。
+  if (s && s !== tool && s !== short) return s;
+  const labels = host.meta.toolLabels ? host.meta.toolLabels() : {};
+  const label = labels[short] || labels[tool];
+  // 標籤是進行式（「正在執行程式…」），而確認框問的是「要不要做」，所以去掉尾巴。
+  return label ? label.replace(/[….]+$/, '') : t('執行 {0}', short);
+}
+
 function prettyAddress(address) {
   return String(address).replace(/'/g, '');
 }
@@ -1093,7 +1114,7 @@ function askConfirm(summary, detail, meta, highRisk) {
         <svg class="ic ic-sm" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-warn"/></svg>
         <span class="confirm-title">${escapeHtml(highRisk ? t('這個動作沒辦法復原') : t(host.meta.words.confirmTitle))}</span>
       </div>
-      <div class="confirm-body">${escapeHtml(summary)}</div>
+      <div class="confirm-body">${escapeHtml(humanSummary(summary, tool))}</div>
       ${meta ? `<div class="confirm-meta">${escapeHtml(meta)}</div>` : ''}
       ${detail && detail.address ? `<div class="confirm-addr">${escapeHtml(prettyAddress(detail.address))}</div>` : ''}
       ${risk}
@@ -2284,8 +2305,8 @@ function renderQuotaAsk(pct, pending) {
                 placeholder="${escapeHtml(t('例如：這個月要整理三份年度報告，目前的額度不夠用完。'))}"
                 aria-label="${escapeHtml(t('申請理由'))}"></textarea>
       <div class="quota-ask-row">
-        <button type="button" id="quota-send" class="quota-send" disabled>${escapeHtml(t('送出申請'))}</button>
         <span id="quota-note" class="quota-note">${escapeHtml(t('請先寫一句理由。'))}</span>
+        <button type="button" id="quota-send" class="quota-send" disabled>${escapeHtml(t('送出申請'))}</button>
       </div>
     </div>`;
 }

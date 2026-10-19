@@ -5538,6 +5538,16 @@ export function supportedTools() {
     'ppt_read_attachment',
     'ppt_insert_attachment',
     'ppt_read_file',
+    /**
+     * 這一行漏掉的代價：伺服器會在每次對話開頭掛一條「增益集版本較舊，少了 1 個
+     * 功能（ppt_run_script）」，而使用者重開 Office 也不會好——因為程式碼是對的，
+     * 錯的是這份清單。
+     *
+     * 工具實作存在、派送接好了、WRITES 也列了，就只有這裡沒跟上。今天同樣形狀的
+     * 問題出現三次（guard 的呼叫方式、伺服器的工具規格、這份清單），全都是
+     * 「實作在這裡，但另一份平行清單不知道」。見底下的 no-missing-tools 測試。
+     */
+    'ppt_run_script',
     // Answered by the server, not here — but they still have to be advertised.
     'ppt_find_art',
     'ppt_generate_image',

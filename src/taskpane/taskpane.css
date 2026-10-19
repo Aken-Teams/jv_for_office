@@ -515,7 +515,7 @@ header .actions { display: flex; gap: 2px; flex: none; }
 
 /* Conversation history for this workbook. Sits under the header, full width. */
 .hist-panel {
-  position: absolute; top: 48px; left: 8px; right: 8px; z-index: 40;
+  position: absolute; top: 56px; left: 8px; right: 8px; z-index: 40;
   padding: 6px; border: 1px solid var(--line-strong); border-radius: 10px;
   background: var(--bg); box-shadow: var(--shadow);
   animation: rise 140ms ease-out;
@@ -527,12 +527,28 @@ header .actions { display: flex; gap: 2px; flex: none; }
 /* 跟歷史紀錄同一套定位：從標頭落下、對齊側邊欄而不是對齊按鈕。350px 寬的面板
    如果對齊一顆 30px 的鈕，數字會擠成兩行。 */
 .usage-panel {
-  position: absolute; top: 48px; left: 8px; right: 8px; z-index: 40;
+  position: absolute; top: 56px; left: 8px; right: 8px; z-index: 40;
   border: 1px solid var(--line-strong); border-radius: 10px;
   background: var(--bg); box-shadow: var(--shadow);
   animation: rise 140ms ease-out;
+  /* 面板的高度由內容決定，但視窗的高度不是我們能決定的。
+     1280×720 這類螢幕上 Office 視窗本來就矮，再加上額度快滿時會多出一整個申請
+     表單——面板就伸出畫面外，而**伸出去的那一段是送出鈕**，使用者看不到也按不到。
+     夾住高度，讓內容自己捲。 */
+  display: flex; flex-direction: column;
+  /* 上下都要留。原本 top:48 + (100vh-64) 會讓底部只剩 16px，而底部那排正是
+     「重新整理 / 登出」——在 720p 的 Office 視窗裡看起來像被切掉一半。
+     56 + 72 = 128，上下各留得出呼吸的空間。 */
+  max-height: calc(100vh - 128px);
 }
-.usage-body { padding: 14px 14px 4px; }
+/* 捲的是內容，不是整個面板：底部那排「重新整理 / 登出」要一直看得見，
+   它們是這個面板的出口。 */
+.usage-body { padding: 14px 14px 4px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.usage-body::-webkit-scrollbar { width: 10px; }
+.usage-body::-webkit-scrollbar-thumb {
+  background: var(--line-strong); border: 3px solid var(--bg); border-radius: 5px;
+}
+
 
 /* 身分區塊。底線把它跟數字分開——它們回答的是兩個問題，不該讀起來像同一段。 */
 .usage-who {
@@ -602,8 +618,10 @@ header .actions { display: flex; gap: 2px; flex: none; }
 .usage-val { flex: none; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 
 .usage-foot {
+  /* flex:none —— 面板夾了高度之後，捲的是上面的內容，這一排是出口，要一直在。 */
+  flex: none;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 9px 12px; border-top: 1px solid var(--line);
+  padding: 11px 12px; border-top: 1px solid var(--line);
   background: var(--bg-chrome); border-radius: 0 0 9px 9px;
 }
 .usage-link { font-size: 12px; color: var(--fg-muted); padding: 3px 6px; border-radius: var(--radius-sm); }
@@ -618,7 +636,8 @@ header .actions { display: flex; gap: 2px; flex: none; }
 /* 警示色，不是主色。這條橫幅講的是一個快要擋住你的限制，而主色在這個側邊欄裡
    代表「可以動手了」——兩件相反的事不該長一樣。 */
 .quota-bar {
-  margin: 0 12px 10px; padding: 10px 11px;
+  /* 上面那條是檔名列，兩條橫的東西貼在一起會讀成同一塊。 */
+  margin: 10px 12px; padding: 10px 11px;
   border: 1px solid var(--warn-line); border-left-width: 3px;
   border-radius: var(--radius); background: var(--warn-bg);
   animation: rise 180ms ease-out;
@@ -651,6 +670,9 @@ header .actions { display: flex; gap: 2px; flex: none; }
 }
 .quota-send:hover:not(:disabled) { background: var(--accent-hover); }
 .quota-send:disabled { opacity: .45; }
+/* 提示在左、送出在右。送出鈕是這一區的終點，而終點在右下角是表單的慣例——
+   使用者讀完理由欄往下走，最後停在那顆鈕上。
+   DOM 順序也跟著改（不是用 order 硬排），所以鍵盤的順序和看到的順序一致。 */
 .quota-note { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--fg-muted); }
 
 /* 已送出：靜態說明，沒有可按的東西。重複送出伺服器會回 409，與其讓人按了才知道，
