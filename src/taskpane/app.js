@@ -1090,7 +1090,17 @@ function autoApprovedCard(summary) {
  */
 let pendingConfirm = null;
 
-function askConfirm(summary, detail, meta, highRisk) {
+/**
+ * tool 一定要傳進來。
+ *
+ * 這個參數是後來補的——confirm-body 改用 humanSummary(summary, tool) 之後，`tool`
+ * 卻沒有加進簽章。JavaScript 不會在載入時抱怨，所以 node --check 是綠的、測試也是
+ * 綠的，而**每一次要確認的動作都在執行時丟 ReferenceError**：卡片建不出來，
+ * 使用者看到的是一個永遠不會結束的「等待你確認刪除…」。
+ *
+ * 三個宿主的確認關卡一起壞掉，而它正是這個增益集最不該壞的東西。
+ */
+function askConfirm(summary, detail, meta, highRisk, tool) {
   return new Promise((resolve) => {
     clearEmptyState();
     const card = document.createElement('div');
@@ -1615,7 +1625,7 @@ async function handleToolRequest(payload) {
       card = autoApprovedCard(summary);
       decided = 'auto';
     } else {
-      const decision = await askConfirm(summary, detail, meta, isIrreversible(payload));
+      const decision = await askConfirm(summary, detail, meta, isIrreversible(payload), tool);
       card = decision.card;
       userNote = decision.note || '';
       decided = decision.approved ? 'allowed' : 'rejected';
