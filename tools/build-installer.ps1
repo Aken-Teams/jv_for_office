@@ -106,6 +106,9 @@ using System.Reflection;
 [assembly: AssemblyDescription("安裝 JVision for Office 增益集（Excel / Word / PowerPoint）")]
 [assembly: AssemblyVersion("$version")]
 [assembly: AssemblyFileVersion("$version")]
+[assembly: AssemblyCopyright("Copyright (c) PANJIT")]
+// 著作權欄位在「內容 → 詳細資料」裡；資安人員檢查一個不明來源的 exe 時，
+// 看的就是這一頁。簽章解決「發行者」那一行，這裡解決其餘所有欄位。
 "@ | Set-Content -Path $asmInfo -Encoding UTF8
 
 # 安裝程式自己的標題也要標。改的是一份暫存副本，原始碼不動——不然切回正式區的
