@@ -133,11 +133,35 @@ const server = https.createServer(await devCerts.getHttpsServerOptions(), (req, 
     }
 
     log(`${stamp}  200  ${rel}  ${body.length}B  [${ua}]`);
+    /**
+     * 增益集的圖示**不能**送 no-store。
+     *
+     * ── 這一行害過什麼 ──
+     * 微軟的疑難排解文件寫得很明確：「Office Add-ins require the ability to cache
+     * image resources, and if the server hosting an image resource adds
+     * CACHE-CONTROL directives to the response header, Office automatically
+     * substitutes a generic or default image.」
+     *
+     * 也就是說，Office 會把圖抓下來（伺服器紀錄裡是乾淨的 200、位元組數也對），
+     * 發現自己不准快取，然後畫一顆通用的六邊形——沒有錯誤訊息，什麼都沒有。
+     *
+     * 這個症狀花了一整個下午、五個錯誤的推論才找到原因（先後怪過 sideload 機制、
+     * PNG 的 pHYs 區塊、網址快取鍵、manifest 版本號、圖示尺寸）。而標頭在第一次
+     * 比對的時候就印出來過，只是當時三個主機都一樣，看起來像是「正常」。
+     *
+     * ── 所以只有圖示例外 ──
+     * HTML/JS/CSS 還是要 no-store：窗格在開發時一直在改，WebView 快取得很兇，
+     * 沒有這個就會對著舊程式碼除錯。這正是當初加它的理由，那個理由依然成立。
+     *
+     * 圖示不一樣——它們幾乎不變，而且換了之後本來就要升 manifest 版本號才會生效。
+     *
+     * ⚠ 部署的靜態站台要做同一件事。線上那兩台現在也送 no-store，所以 jv 和測試區
+     *   的圖示壞在同一個原因上。
+     */
+    const isIcon = /\.(png|jpe?g|gif|svg|ico)$/i.test(file);
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      // The pane is edited constantly during development and Excel's WebView
-      // caches aggressively — without this you debug against stale code.
-      'Cache-Control': 'no-store',
+      'Cache-Control': isIcon ? 'public, max-age=3600' : 'no-store',
     });
     res.end(body);
   });
