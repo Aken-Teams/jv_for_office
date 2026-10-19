@@ -4879,10 +4879,35 @@ async function applyTheme(args) {
 
 // ── Script ───────────────────────────────────────────────────────────────────
 
-const scriptGuard = makeScriptGuard;
+/**
+ * 讓模型寫一段 Office.js 自己跑。
+ *
+ * ── 為什麼這個工具對 PowerPoint 特別重要 ──
+ * 不給這條路的話，模型要排一個六十個物件的版面，就只能把六十組座標、顏色、文字
+ * 逐個寫成 JSON——約三千個輸出 token。寫成一支迴圈是三十個。
+ *
+ * 實測過的差距：同樣做一份簡報，增益集的輸出是網頁版的 9.9 倍，而 Word（run_script
+ * 常用）只有 2.3 倍。成本幾乎全在輸出，所以這一個工具就是大部分的差距。
+ *
+ * ── 這段程式曾經完全不能跑 ──
+ * makeScriptGuard() 回傳的是**物件**（有 .wrap 和 .wrapNamespace），Word 和 Excel
+ * 都寫 guard.wrap(ctx)，只有這裡寫成 guard(ctx) —— 一呼叫就 TypeError。
+ *
+ * 沒有人發現，是因為伺服器的 pptToolSpec.ts 從來沒有宣告這個工具，模型不知道它
+ * 存在，也就一次都沒呼叫過。**一段從沒被執行過的程式碼，和一段壞掉的程式碼，從
+ * 外面看是同一件事。** 兩個缺陷剛好互相遮蔽。
+ *
+ * ── 為什麼參數是 mode 而不是 read_only ──
+ * guard 擋下寫入時，給模型的訊息是「請重新呼叫並帶上 mode="write"」。原本這裡收的
+ * 是 read_only，於是模型照著錯誤訊息改，改出來的參數這裡看不懂——它會一直重試，
+ * 一直失敗，而錯誤訊息每次都一樣。三個宿主統一用 mode。
+ */
+const SCRIPT_TIMEOUT_READ_MS = 40000;
+const SCRIPT_TIMEOUT_WRITE_MS = 100000;
 
 async function runScript(args, opts = {}) {
-  if (!opts.writeApproved && !args.read_only) {
+  const wantsWrite = String(args.mode || '') === 'write';
+  if (wantsWrite && !opts.writeApproved) {
     throw new Error('這段程式會修改簡報，需要先取得使用者同意。');
   }
   const code = String(args.code || '').trim();
@@ -4890,20 +4915,49 @@ async function runScript(args, opts = {}) {
 
   const logs = [];
   const store = {};
-  return PowerPoint.run(async (ctx) => {
-    const guard = scriptGuard(!args.read_only, 'ppt_run_script');
-    const guarded = guard(ctx);
+  const guard = makeScriptGuard(wantsWrite, 'ppt_run_script');
+
+  const run = PowerPoint.run(async (ctx) => {
+    const g = guard.wrap(ctx);
     // eslint-disable-next-line no-new-func
     const fn = new Function('context', 'presentation', 'PowerPoint', 'log', 'store',
       `"use strict"; return (async () => { ${code} })();`);
-    const out = await fn(guarded, guarded.presentation, PowerPoint,
-      (...a) => logs.push(a.map(String).join(' ')), store);
+    const out = await fn(
+      g, g.presentation,
+      // 命名空間也要包。PowerPoint.GeometricShapeType 這類是純資料，但同一個命名
+      // 空間底下也有會寫入的東西——放行整個命名空間等於在沙箱上開一道後門。
+      guard.wrapNamespace(PowerPoint),
+      (...a) => logs.push(a.map(String).join(' ')),
+      store,
+    );
     await ctx.sync();
-    return [
-      out === undefined ? '' : `回傳值：${JSON.stringify(out)}`,
-      logs.length ? `log：\n${logs.join('\n')}` : '',
-    ].filter(Boolean).join('\n') || '執行完成，沒有輸出。';
+    return out;
   });
+
+  /**
+   * 逾時要自己管。
+   *
+   * 模型寫出無窮迴圈不是假想——它看不到執行結果，只能照著自己的推論寫。沒有逾時
+   * 的話，整個側邊欄會卡住，而使用者唯一能做的是重開 Office。
+   *
+   * 寫入給比較長的時間：建六十個物件本來就比讀慢。
+   */
+  const limit = wantsWrite ? SCRIPT_TIMEOUT_WRITE_MS : SCRIPT_TIMEOUT_READ_MS;
+  let timer;
+  const out = await Promise.race([
+    run,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(
+        `程式執行超過 ${Math.round(limit / 1000)} 秒，已中止。`
+        + '請把工作拆小一點，或改用一次處理一批的工具。',
+      )), limit);
+    }),
+  ]).finally(() => clearTimeout(timer));
+
+  return [
+    out === undefined ? '' : `回傳值：${JSON.stringify(out)}`,
+    logs.length ? `log：\n${logs.join('\n')}` : '',
+  ].filter(Boolean).join('\n') || '執行完成，沒有輸出。';
 }
 
 // ── Undo ─────────────────────────────────────────────────────────────────────
