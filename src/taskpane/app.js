@@ -119,12 +119,34 @@ const LOCALES = [
   { id: 'en',    label: 'English' },
 ];
 
+/**
+ * 「屬於現在這個登入者」的欄位，集中在這裡宣告。
+ *
+ * ── 為什麼要集中 ──
+ * 登出時這些一定要清掉，否則下一個人登入會看到上一個人的資料。而逐一在 logout()
+ * 裡寫 state.me = null、state.quotaPending = false …… 的話，每新增一個快取就要
+ * 記得去補一行——**而那一行被忘記的時候沒有任何症狀**，直到有人換帳號登入才會
+ * 發現，然後看到的是別人的名字和別人的額度。
+ *
+ * 這個 bug 真的發生過：whoAmI() 加了 state.me 快取，註解還寫著「登出時 state 會
+ * 整個重置」——那是假設，不是事實。logout() 當時只清了 token 和 sessionId。
+ *
+ * 集中宣告之後，logout() 一行 Object.assign(state, PER_USER) 就全部歸零，
+ * 新增欄位時只要放進這個物件，就自動被清。
+ */
+const PER_USER = {
+  /** /api/auth/me 的回應：displayName、email、role。見 whoAmI()。 */
+  me: null,
+  /** 有沒有還在等審核的額度申請。見 quotaPending()。 */
+  quotaPending: false,
+};
+
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
   // 伺服器說了算；讀到之前當作對外版（顯示模型選單）。見 loadDeployMode()。
+  // 這個不屬於使用者——同一台機器連的是同一套部署，換人登入也一樣。
   deployMode: '',
-  // 登入者的資料，第一次打開個人區時取一次。見 whoAmI()。
-  me: null,
+  ...PER_USER,
   /**
    * 資料來源／模型清單是不是真的拿到了。
    *
@@ -1919,7 +1941,11 @@ function closeUsage() {
  *
  * -- 為什麼記在 state --
  * 名字在一次登入期間不會變，而這個面板會被反覆打開。每次都多打一個請求，換來的是
- * 同一個答案。登出時 state 會整個重置，所以不必自己清。
+ * 同一個答案。
+ *
+ * -- 快取一定要能被清掉 --
+ * 所以它宣告在 PER_USER 裡，logout() 會一併歸零。這不是小事：這個快取第一版沒被
+ * 清，於是不管換誰登入，個人區都顯示第一個登入過的那個帳號。
  *
  * -- 為什麼失敗回 null 而不是拋 --
  * 讀不到名字只是少一行字，額度照樣看得到。身分不是這個面板的必要條件。
@@ -2074,6 +2100,7 @@ async function loadUsage() {
     const data = await res.json();
     state.quotaPending = pending;
     box.innerHTML = renderUsage({ ...data, quotaPending: pending, me });
+
   } catch (e) {
     // 額度讀不到不影響提問，所以這裡只說明，不擋路。
     box.innerHTML = `<div class="usage-msg">${escapeHtml(t('讀不到額度：{0}', e.message))}</div>`;
@@ -2924,6 +2951,9 @@ async function loginWithGoogle() {
 function logout(reason) {
   state.token = '';
   state.sessionId = null;
+  // 上一個人的名字、信箱、額度申請狀態全部歸零。少了這一行，下一個登入的人會在
+  // 個人區看到別人的帳號——而且因為額度數字是現打的，只有名字是錯的，很難察覺。
+  Object.assign(state, PER_USER);
   localStorage.removeItem(LS_TOKEN);
   showLogin(reason);
 }

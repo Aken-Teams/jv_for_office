@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>JVision demo — 分鏡</title>
+
+<!--
+  JVision for Office 客戶 demo 的分鏡。
+
+  ── 這支檔案沒有自己的時鐘 ──
+  不用 requestAnimationFrame、不用 CSS animation、不用 transition。畫面完全由
+  window.SCENE.seek(t) 決定：給它第 t 秒，它就把 DOM 設成那一刻的樣子。
+
+  為什麼：錄螢幕錄到的是「這台機器當下跑得多順」——掉幀、字體沒載完、背景程式卡一下，
+  每次錄都不一樣。逐幀的話，同樣的輸入永遠得到同樣的影片，要把某一段放慢就改一個數字，
+  不必重演一次。
+
+  ── 配色與結構的來源 ──
+  側邊欄的顏色、字級、間距都照 src/taskpane/taskpane.css 來，三個應用程式的外框用
+  Microsoft 自己的品牌色。重建而不是直接引用那份 CSS，是因為它是為 350px 的窗格寫的，
+  而這裡要在 1920×1080 上放大呈現——共用同一份檔案會變成兩邊互相牽制。
+
+  直接用瀏覽器打開會自動播放，方便調分鏡；渲染時 tools/render-video.mjs 會接管。
+-->
+
+<style>
+  /* ── 產品配色（取自 taskpane.css） ─────────────────────────────────────── */
+  :root {
+    --bg: #ffffff;
+    --bg-chrome: #faf9f8;
+    --surface: #f3f2f1;
+    --surface-hover: #ebe9e7;
+    --fg: #1b1a19;
+    --fg-muted: #605e5c;
+    --fg-subtle: #8a8886;
+    --line: #e1dfdd;
+    --line-strong: #c8c6c4;
+    --accent: #107c41;
+    --accent-soft: #eff6f2;
+    --warn-bg: #fff8f0;
+    --warn-line: #e8a33d;
+    --warn-fg: #8a5300;
+
+    --word: #2b579a;
+    --excel: #217346;
+    --ppt: #c43e1c;
+
+    --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI",
+            "Microsoft JhengHei", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1920px; height: 1080px; overflow: hidden;
+    background: #0d1117; font-family: var(--sans);
+    /* 動畫由 seek() 驅動，任何過場都會讓逐幀截圖拍到中間狀態 */
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .stage { position: relative; width: 1920px; height: 1080px; }
+
+  /* 每一景獨立一層，用 opacity 疊化；display 不動，避免重排造成閃爍 */
+  .scene {
+    position: absolute; inset: 0; opacity: 0;
+    display: grid; place-items: center;
+  }
+
+  /* ── 標題卡 ───────────────────────────────────────────────────────────── */
+  #title { background: linear-gradient(160deg, #0f1c17 0%, #0d1117 60%); }
+  .t-wrap { text-align: center; }
+  .t-mark {
+    width: 132px; height: 132px; margin: 0 auto 38px;
+    border-radius: 30px; background: #fff;
+    display: grid; place-items: center;
+    box-shadow: 0 24px 70px rgba(16,124,65,.28);
+  }
+  .t-mark svg { width: 84px; height: 84px; }
+  .t-name {
+    font-size: 86px; font-weight: 700; color: #fff; letter-spacing: -.02em;
+  }
+  .t-sub {
+    margin-top: 20px; font-size: 30px; color: #9fb3ab; font-weight: 400;
+  }
+  .t-apps {
+    margin-top: 52px; display: flex; gap: 46px; justify-content: center;
+  }
+  .t-app {
+    display: flex; align-items: center; gap: 13px;
+    font-size: 25px; font-weight: 600; color: #d6e2dd;
+  }
+  .t-app i {
+    width: 15px; height: 15px; border-radius: 4px; display: block;
+  }
+
+  /* ── Office 視窗 ──────────────────────────────────────────────────────── */
+  #app { background: #1d2b26; }
+  .win {
+    width: 1664px; height: 936px;
+    background: var(--bg); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 40px 110px rgba(0,0,0,.5);
+    display: flex; flex-direction: column;
+  }
+  .titlebar {
+    height: 46px; flex: none; display: flex; align-items: center;
+    padding: 0 18px; gap: 12px;
+    background: var(--host, var(--word)); color: #fff;
+  }
+  .dots { display: flex; gap: 8px; }
+  .dots i { width: 12px; height: 12px; border-radius: 50%; background: rgba(255,255,255,.4); display: block; }
+  .doc-title { font-size: 16px; font-weight: 600; opacity: .95; }
+
+  .ribbon {
+    height: 92px; flex: none; display: flex; align-items: center;
+    gap: 34px; padding: 0 24px;
+    background: var(--bg-chrome); border-bottom: 1px solid var(--line);
+  }
+  .rb {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    font-size: 13px; color: var(--fg-muted); min-width: 62px;
+  }
+  .rb .glyph {
+    width: 30px; height: 30px; border-radius: 6px; background: var(--line-strong);
+  }
+  .rb.jv { color: var(--fg); font-weight: 600; }
+  .rb.jv .glyph {
+    background: #fff; border: 2px solid var(--host, var(--word));
+    display: grid; place-items: center;
+  }
+  .rb.jv .glyph svg { width: 20px; height: 20px; }
+  /* 被點到的那一刻 */
+  .rb.jv.hot .glyph { box-shadow: 0 0 0 6px rgba(43,87,154,.22); }
+
+  .body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+  /* 文件區 */
+  .doc {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    background: var(--surface); padding: 34px 0 0;
+    display: flex; justify-content: center;
+  }
+  .page {
+    width: 720px; background: #fff; padding: 54px 62px;
+    box-shadow: 0 2px 14px rgba(0,0,0,.09);
+  }
+  .page h1 { font-size: 27px; font-weight: 700; margin-bottom: 8px; color: #16213d; }
+  .page .sub { font-size: 14px; color: var(--fg-subtle); margin-bottom: 26px; }
+  .page h2 {
+    font-size: 17px; font-weight: 700; margin: 22px 0 9px; color: #16213d;
+    padding-bottom: 5px; border-bottom: 2px solid #dfe4ee;
+  }
+  .page p { font-size: 14px; line-height: 2; color: #2c3340; margin-bottom: 10px; }
+  .page .mark { background: #fff6d8; }
+  /* 被改寫的那一段，先淡出舊的再長出新的 */
+  .swap-out, .swap-in { display: block; }
+
+  /* ── 側邊欄（1:1 重建，再整體放大） ──────────────────────────────────── */
+  .pane-slot {
+    flex: none; width: 0; overflow: hidden;
+    border-left: 1px solid var(--line); background: var(--bg);
+  }
+  .pane {
+    width: 438px; height: 100%; display: flex; flex-direction: column;
+    background: var(--bg);
+  }
+  .p-head {
+    height: 54px; flex: none; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 15px;
+    background: var(--bg-chrome); border-bottom: 1px solid var(--line);
+  }
+  .p-brand { display: flex; align-items: center; gap: 9px; }
+  .p-brand svg { width: 26px; height: 26px; }
+  .p-brand span { font-size: 17px; font-weight: 600; color: var(--fg); }
+  .p-acts { display: flex; gap: 3px; }
+  .p-acts i {
+    width: 32px; height: 32px; border-radius: 6px; display: block;
+    background: var(--surface);
+  }
+  .p-acts i.on { background: var(--warn-bg); box-shadow: inset 0 0 0 1px var(--warn-line); }
+
+  .p-bar {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 9px 15px; font-size: 13px; color: var(--fg-muted);
+    border-bottom: 1px solid var(--line);
+  }
+  .p-bar b { width: 16px; height: 16px; border-radius: 3px; background: var(--line-strong); display: block; }
+
+  .p-log {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    padding: 16px 15px; display: flex; flex-direction: column; gap: 11px;
+  }
+
+  .msg-me {
+    align-self: flex-end; max-width: 86%;
+    background: var(--accent); color: #fff;
+    padding: 10px 14px; border-radius: 13px 13px 3px 13px;
+    font-size: 14.5px; line-height: 1.6;
+  }
+  .msg-ai { font-size: 14.5px; line-height: 1.75; color: var(--fg); }
+
+  .tool {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 11px; border-radius: 8px;
+    background: var(--surface); font-size: 13px; color: var(--fg-muted);
+  }
+  .tool .tick {
+    width: 16px; height: 16px; border-radius: 50%; flex: none;
+    background: var(--accent); position: relative;
+  }
+  .tool .tick::after {
+    content: ""; position: absolute; left: 5px; top: 3px;
+    width: 4px; height: 8px; border: 2px solid #fff;
+    border-top: 0; border-left: 0; transform: rotate(42deg);
+  }
+  .tool.run .tick { background: var(--line-strong); }
+  .tool.run .tick::after { display: none; }
+
+  .confirm {
+    border: 1px solid var(--warn-line); background: var(--warn-bg);
+    border-radius: 10px; padding: 12px 13px;
+  }
+  .confirm .c-t { font-size: 13.5px; font-weight: 700; color: var(--warn-fg); margin-bottom: 4px; }
+  .confirm .c-d { font-size: 13px; color: var(--fg-muted); line-height: 1.6; }
+  .confirm .c-b { display: flex; gap: 7px; margin-top: 10px; }
+  .confirm .c-b span {
+    font-size: 13px; padding: 5px 13px; border-radius: 6px;
+    border: 1px solid var(--line-strong); color: var(--fg-muted);
+  }
+  .confirm .c-b span.yes {
+    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  .confirm.hot .c-b span.yes { box-shadow: 0 0 0 5px rgba(16,124,65,.2); }
+
+  .p-foot { flex: none; padding: 12px 15px 15px; border-top: 1px solid var(--line); }
+  .composer {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--line-strong); border-radius: 11px;
+    padding: 11px 13px; background: var(--bg);
+  }
+  .composer .plus { font-size: 19px; color: var(--fg-subtle); }
+  .composer .txt {
+    flex: 1 1 auto; font-size: 14.5px; color: var(--fg); min-height: 21px;
+  }
+  .composer .txt.ph { color: var(--fg-subtle); }
+  .caret {
+    display: inline-block; width: 2px; height: 17px; vertical-align: -3px;
+    background: var(--fg); margin-left: 1px;
+  }
+  .composer .send {
+    width: 30px; height: 30px; border-radius: 50%; flex: none;
+    background: var(--surface);
+  }
+  .composer .send.on { background: var(--accent); }
+
+  /* ── 字卡 ─────────────────────────────────────────────────────────────────
+     膠囊而不是底部字幕條。字幕條的語彙是「有人在講話」，而這支片沒有旁白——
+     字卡要像便利貼一樣貼在當下發生的事旁邊，而不是躺在畫面下緣等人讀。 */
+  .cap {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 15px;
+    padding: 17px 34px 17px 26px; border-radius: 999px;
+    background: #fff; color: #16201d;
+    font-size: 28px; font-weight: 700; letter-spacing: .005em;
+    white-space: nowrap; opacity: 0;
+    box-shadow: 0 10px 34px rgba(0,0,0,.26), 0 2px 6px rgba(0,0,0,.12);
+  }
+  .cap .ic {
+    width: 40px; height: 40px; border-radius: 50%; flex: none;
+    display: grid; place-items: center; font-size: 22px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  /* 上方：講概念、講「它看得到什麼」。下方：講剛剛做了什麼。 */
+  .cap.top { top: 118px; }
+  .cap.bottom { bottom: 64px; }
+
+  /* ── 章節列 ───────────────────────────────────────────────────────────────
+     沒有旁白的片子最容易讓人迷路：看到一半不知道還有多久、不知道現在這段在講什麼。
+     一行標題加幾顆進度點就解決了，而且成本極低。 */
+  .chapter {
+    position: absolute; left: 50%; top: 44px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 20px;
+    padding: 11px 24px; border-radius: 999px;
+    background: rgba(255,255,255,.95); opacity: 0;
+    box-shadow: 0 6px 22px rgba(0,0,0,.2);
+  }
+  .chapter .no {
+    font-size: 17px; font-weight: 700; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .chapter .nm { font-size: 19px; font-weight: 600; color: #16201d; }
+  .chapter .dots { display: flex; gap: 7px; }
+  .chapter .dots i {
+    width: 26px; height: 6px; border-radius: 3px; display: block;
+    background: #d6ded9;
+  }
+  .chapter .dots i.on { background: var(--accent); }
+
+  /* ── 游標 ─────────────────────────────────────────────────────────────────
+     沒有旁白時，游標就是主詞——它在哪，觀眾的注意力就在哪。 */
+  .cursor {
+    position: absolute; left: 0; top: 0; width: 30px; height: 30px;
+    opacity: 0; pointer-events: none; z-index: 50;
+  }
+  .cursor svg { width: 100%; height: 100%; filter: drop-shadow(0 2px 4px rgba(0,0,0,.4)); }
+  /* 點擊的漣漪：單獨一層，才能在游標不動的時候自己擴散 */
+  .ripple {
+    position: absolute; left: 0; top: 0; z-index: 49;
+    width: 18px; height: 18px; margin: -9px 0 0 -9px;
+    border-radius: 50%; border: 3px solid var(--accent);
+    opacity: 0; pointer-events: none;
+  }
+
+  /* ── 快轉徽章 ─────────────────────────────────────────────────────────────
+     等待很無聊，但假裝沒有等待是騙人的。標出來快轉，兩邊都照顧到。 */
+  .ff {
+    position: absolute; right: 64px; top: 44px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 10px 20px; border-radius: 999px;
+    background: #ffd84d; color: #5a4300;
+    font-size: 19px; font-weight: 800; opacity: 0;
+    box-shadow: 0 6px 20px rgba(0,0,0,.22);
+  }
+
+  /* ── 收尾 ─────────────────────────────────────────────────────────────── */
+  #end { background: linear-gradient(160deg, #0f1c17 0%, #0d1117 60%); }
+  .e-line { font-size: 52px; font-weight: 700; color: #fff; text-align: center; }
+  .e-sub { margin-top: 22px; font-size: 27px; color: #9fb3ab; text-align: center; }
+</style>
+</head>
+<body>
+
+<svg style="display:none" aria-hidden="true">
+  <defs>
+    <!-- 品牌標記：兩個環，取自 assets/logo.png 的形狀 -->
+    <g id="mark">
+      <circle cx="13" cy="16" r="9.5" fill="none" stroke="#0a7fc1" stroke-width="3.4"/>
+      <circle cx="25" cy="16" r="9.5" fill="none" stroke="#19b3e6" stroke-width="3.4"/>
+    </g>
+  </defs>
+</svg>
+
+<div class="stage">
+
+  <!-- 00 標題卡 -->
+  <div class="scene" id="title">
+    <div class="t-wrap">
+      <div class="t-mark"><svg viewBox="0 0 38 32"><use href="#mark"/></svg></div>
+      <div class="t-name">JVision for Office</div>
+      <div class="t-sub">在 Word、Excel、PowerPoint 裡，直接問你正開著的那份檔案</div>
+      <div class="t-apps">
+        <span class="t-app"><i style="background:var(--word)"></i>Word</span>
+        <span class="t-app"><i style="background:var(--excel)"></i>Excel</span>
+        <span class="t-app"><i style="background:var(--ppt)"></i>PowerPoint</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 01 Word 情境 -->
+  <div class="scene" id="app">
+    <div class="win" id="win">
+      <div class="titlebar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <div class="doc-title" id="winTitle">供應商資安評鑑報告.docx — Word</div>
+      </div>
+      <div class="ribbon">
+        <div class="rb"><span class="glyph"></span>貼上</div>
+        <div class="rb"><span class="glyph"></span>字型</div>
+        <div class="rb"><span class="glyph"></span>段落</div>
+        <div class="rb"><span class="glyph"></span>樣式</div>
+        <div class="rb jv" id="rbJv">
+          <span class="glyph"><svg viewBox="0 0 38 32"><use href="#mark"/></svg></span>JVision
+        </div>
+      </div>
+      <div class="body">
+        <div class="doc">
+          <div class="page" id="page">
+            <h1>供應商資安評鑑報告</h1>
+            <div class="sub">資訊處 · 2026 年度</div>
+
+            <h2>一、評鑑範圍</h2>
+            <p>本次評鑑涵蓋十二家主要供應商，評鑑期間為 2026 年 1 月至 9 月。</p>
+
+            <h2>二、發現摘要</h2>
+            <p id="para">這邊我們發現有幾家廠商的存取控管做得不太好，密碼政策也有點鬆，建議要請他們改一下，不然之後可能會出問題。</p>
+
+            <h2>三、改善建議</h2>
+            <p>依風險等級分三階段執行，第一階段處理高風險項目。</p>
+          </div>
+        </div>
+        <div class="pane-slot" id="slot">
+          <div class="pane">
+            <div class="p-head">
+              <div class="p-brand">
+                <svg viewBox="0 0 38 32"><use href="#mark"/></svg><span>JVision</span>
+              </div>
+              <div class="p-acts"><i class="on"></i><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+            <div class="p-bar"><b></b>供應商資安評鑑報告.docx</div>
+            <div class="p-log" id="log"></div>
+            <div class="p-foot">
+              <div class="composer">
+                <span class="plus">＋</span>
+                <span class="txt ph" id="input">對這份文件提問…</span>
+                <span class="send" id="send"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 02 收尾 -->
+  <div class="scene" id="end">
+    <div>
+      <div class="t-mark" style="margin-bottom:34px"><svg viewBox="0 0 38 32"><use href="#mark"/></svg></div>
+      <div class="e-line">不用學新工具，就在你每天用的 Office 裡</div>
+      <div class="e-sub">安裝只要一分鐘 · 檔案不離開你的電腦</div>
+    </div>
+  </div>
+
+  <div class="chapter" id="chapter">
+    <span class="no" id="chNo">01</span>
+    <span class="nm" id="chName"></span>
+    <span class="dots" id="chDots"><i></i><i></i><i></i></span>
+  </div>
+
+  <div class="ff" id="ff">▶▶ ×4 快轉</div>
+
+  <div class="ripple" id="ripple"></div>
+  <div class="cursor" id="cursor">
+    <svg viewBox="0 0 24 24"><path d="M5 2l14 8.5-6.2 1.4L9.8 19 5 2z" fill="#fff" stroke="#111" stroke-width="1.3" stroke-linejoin="round"/></svg>
+  </div>
+
+  <div class="cap" id="cap"><span class="ic" id="capIc"></span><span id="capTx"></span></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  // ── 補間 ──────────────────────────────────────────────────────────────────
+  const clamp01 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+  /** 區間內的進度，0→1。 */
+  const at = (t, from, to) => clamp01((t - from) / (to - from));
+  /** 進出都緩，給位移和縮放用——線性的移動在影片裡看起來像機器在動。 */
+  const ease = (p) => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+  /** 只緩出，給淡入用：淡入要立刻有反應，收尾才慢。 */
+  const out = (p) => 1 - Math.pow(1 - p, 3);
+  const lerp = (a, b, p) => a + (b - a) * p;
+
+  /** 在 [from,to] 淡入、[to2,end] 淡出之間維持 1。 */
+  function band(t, inA, inB, outA, outB) {
+    if (t < inA) return 0;
+    if (t < inB) return out(at(t, inA, inB));
+    if (t < outA) return 1;
+    if (t < outB) return 1 - out(at(t, outA, outB));
+    return 0;
+  }
+
+  // ── 分鏡 ──────────────────────────────────────────────────────────────────
+  //
+  // 每一景的起訖寫在同一個地方，調整節奏時只動這裡。
+  const T = {
+    titleIn: 0.3, titleHold: 4.6, titleOut: 5.4,
+    appIn: 5.0,
+    click: 6.2,          // 點功能區的 JVision
+    slideIn: 6.6,        // 側邊欄滑入
+    typeFrom: 8.2, typeTo: 11.4,
+    sendAt: 11.8,
+    tool1: 12.4, tool2: 13.6, tool3: 14.8,
+    confirmAt: 16.0, confirmHit: 18.2,
+    rewrite: 18.6,
+    answerAt: 20.2,
+    appOut: 23.4,
+    endIn: 23.0, endHold: 27.4,
+  };
+  const DURATION = 28;
+
+  const QUESTION = '把第二節改寫成正式公文語氣';
+  const REWRITTEN = '經查，部分供應商之存取控管機制未臻完善，密碼政策亦有待強化，建請限期提出改善計畫，以降低資安風險。';
+  const ORIGINAL = $('para').textContent;
+
+  // [起, 迄, 文字, 圖示, 位置]
+  const CAPS = [
+    [6.8, 11.6, '它看得到你正開著的這份文件', '👁', 'top'],
+    [12.4, 15.8, '自己讀文件、找段落，不用你貼內容', '🔍', 'bottom'],
+    [16.2, 18.6, '要動你的檔案之前，一定先問過你', '🛡', 'top'],
+    [19.0, 22.8, '直接寫回文件，格式和編號都還在', '✍', 'bottom'],
+  ];
+
+  /** 游標的停留點。時間到就移過去，中間用緩動補間。 */
+  const CURSOR = [
+    [T.slideIn - 0.9, 1198, 262],   // 功能區的 JVision 按鈕
+    [T.click + 0.5, 1198, 262],
+    [T.typeFrom - 0.4, 1480, 866],  // 輸入框
+    [T.sendAt + 0.3, 1480, 866],
+    [T.confirmHit - 0.7, 1392, 560],// 確認框的「允許」
+    [T.confirmHit + 0.6, 1392, 560],
+  ];
+  /** 點擊的時刻。 */
+  const CLICKS = [T.click, T.confirmHit];
+  /** 快轉的區間——工具一個個跑的那段其實很無聊。 */
+  const FF = [[T.tool1 + 0.8, T.tool3]];
+
+  // ── 元素 ──────────────────────────────────────────────────────────────────
+  const scTitle = $('title'), scApp = $('app'), scEnd = $('end');
+  const slot = $('slot'), rbJv = $('rbJv'), input = $('input'), send = $('send');
+  const log = $('log'), cap = $('cap'), para = $('para'), win = $('win');
+  const capIc = $('capIc'), capTx = $('capTx');
+  const chapter = $('chapter'), chNo = $('chNo'), chName = $('chName'), chDots = $('chDots');
+  const cursor = $('cursor'), ripple = $('ripple'), ff = $('ff');
+
+  /**
+   * 對話區是重畫的，不是累加的。
+   *
+   * seek() 可能往回跳（調分鏡時很常見），累加的話倒退就會留下多餘的訊息。
+   * 每一幀依時間重算一次內容，往哪個方向跳都正確。
+   */
+  function buildLog(t) {
+    const items = [];
+    if (t >= T.sendAt) {
+      items.push(`<div class="msg-me">${QUESTION}</div>`);
+    }
+    const tools = [
+      [T.tool1, '讀取文件結構', '找到 3 個章節'],
+      [T.tool2, '讀取第二節內容', '58 個字'],
+      [T.tool3, '改寫為公文語氣', '完成'],
+    ];
+    for (const [when, name, result] of tools) {
+      if (t < when) continue;
+      // 工具跑起來到完成之間有 0.5 秒是「執行中」，不然看起來像瞬間完成，不真實
+      const done = t >= when + 0.5;
+      items.push(
+        `<div class="tool${done ? '' : ' run'}">`
+        + `<span class="tick"></span>${name}${done ? `　<span style="color:var(--fg-subtle)">${result}</span>` : '…'}`
+        + `</div>`);
+    }
+    if (t >= T.confirmAt) {
+      const hot = t >= T.confirmHit - 0.35 && t < T.confirmHit + 0.25;
+      items.push(
+        `<div class="confirm${hot ? ' hot' : ''}">`
+        + `<div class="c-t">AI 想要修改這份文件</div>`
+        + `<div class="c-d">取代第二節的內文（1 段）</div>`
+        + `<div class="c-b"><span class="yes">允許</span><span>不要</span></div>`
+        + `</div>`);
+    }
+    if (t >= T.answerAt) {
+      items.push('<div class="msg-ai">已改寫第二節。原本的口語說法換成公文語氣，長度從 58 字縮到 52 字，章節編號和樣式都沒有動。</div>');
+    }
+    log.innerHTML = items.join('');
+  }
+
+  function seek(t) {
+    // ── 景別切換 ──
+    scTitle.style.opacity = band(t, T.titleIn, T.titleIn + 0.9, T.titleHold, T.titleOut);
+    scApp.style.opacity = band(t, T.appIn, T.appIn + 0.8, T.appOut, T.appOut + 0.8);
+    scEnd.style.opacity = band(t, T.endIn, T.endIn + 0.9, T.endHold, DURATION);
+
+    // 標題卡的標記輕輕推近，讓靜止畫面有呼吸
+    const tp = at(t, T.titleIn, T.titleOut);
+    scTitle.firstElementChild.style.transform = `scale(${lerp(0.965, 1.0, out(tp))})`;
+
+    // 視窗整體：開場時略小略下，站定之後不動
+    const wp = ease(at(t, T.appIn, T.appIn + 1.1));
+    win.style.transform = `scale(${lerp(0.955, 1, wp)}) translateY(${lerp(26, 0, wp)}px)`;
+
+    // ── 點功能區按鈕 ──
+    rbJv.classList.toggle('hot', t >= T.click && t < T.click + 0.4);
+
+    // ── 側邊欄滑入 ──
+    const sp = ease(at(t, T.slideIn, T.slideIn + 0.75));
+    slot.style.width = `${Math.round(lerp(0, 438, sp))}px`;
+
+    // ── 打字 ──
+    if (t < T.typeFrom) {
+      input.className = 'txt ph';
+      input.textContent = '對這份文件提問…';
+    } else if (t < T.sendAt) {
+      const n = Math.round(lerp(0, QUESTION.length, at(t, T.typeFrom, T.typeTo)));
+      input.className = 'txt';
+      // 游標只在還在打字時閃；用 t 的整數部分決定，才不會依賴真實時鐘
+      const blink = n >= QUESTION.length && Math.floor(t * 2) % 2 === 0;
+      input.innerHTML = QUESTION.slice(0, n) + (blink ? '<span class="caret"></span>' : '');
+    } else {
+      input.className = 'txt ph';
+      input.textContent = '對這份文件提問…';
+    }
+    send.classList.toggle('on', t >= T.typeFrom + 0.4 && t < T.sendAt);
+
+    // ── 對話區 ──
+    buildLog(t);
+
+    // ── 文件內容被改寫 ──
+    if (t < T.rewrite) {
+      para.textContent = ORIGINAL;
+      para.style.background = '';
+    } else {
+      const rp = at(t, T.rewrite, T.rewrite + 1.0);
+      const n = Math.round(lerp(0, REWRITTEN.length, rp));
+      para.textContent = REWRITTEN.slice(0, n) || '';
+      // 剛寫完的那一段短暫highlight，讓觀眾知道改了哪裡
+      const glow = 1 - clamp01((t - (T.rewrite + 1.0)) / 1.6);
+      para.style.background = glow > 0 ? `rgba(255,214,102,${0.42 * glow})` : '';
+    }
+
+    // ── 字卡 ──
+    let alpha = 0;
+    for (const [a, b, text, icon, pos] of CAPS) {
+      const v = band(t, a, a + 0.3, b - 0.3, b);
+      if (v > 0.01) {
+        capTx.textContent = text;
+        capIc.textContent = icon;
+        cap.className = `cap ${pos}`;
+        // 浮起來一點點再站定：靜止的字卡會像貼紙，動一下才像被放上去的
+        const rise = lerp(14, 0, out(at(t, a, a + 0.3)));
+        cap.style.transform = `translateX(-50%) translateY(${rise}px)`;
+        alpha = v;
+        break;
+      }
+    }
+    cap.style.opacity = alpha;
+
+    // ── 章節列 ──
+    // 只在實際操作的段落出現；標題卡和收尾不需要，那兩段本身就是定位。
+    const chOn = band(t, T.slideIn - 0.3, T.slideIn + 0.5, T.appOut - 0.5, T.appOut);
+    chapter.style.opacity = chOn;
+    chNo.textContent = '01';
+    chName.textContent = '在 Word 裡改寫一段文字';
+    [...chDots.children].forEach((d, i) => d.classList.toggle('on', i === 0));
+
+    // ── 游標 ──
+    // 兩個停留點之間補間；最後一個之後就固定在那裡。
+    let cx = CURSOR[0][1], cy = CURSOR[0][2];
+    for (let i = 0; i < CURSOR.length - 1; i++) {
+      const [ta, xa, ya] = CURSOR[i], [tb, xb, yb] = CURSOR[i + 1];
+      if (t >= tb) { cx = xb; cy = yb; continue; }
+      if (t >= ta) { const q = ease(at(t, ta, tb)); cx = lerp(xa, xb, q); cy = lerp(ya, yb, q); break; }
+    }
+    cursor.style.transform = `translate(${cx}px, ${cy}px)`;
+    cursor.style.opacity = band(t, T.slideIn - 1.2, T.slideIn - 0.7, T.answerAt, T.answerAt + 0.5);
+
+    // ── 點擊漣漪 ──
+    let rOp = 0, rScale = 1;
+    for (const ct of CLICKS) {
+      const q = at(t, ct, ct + 0.55);
+      if (q > 0 && q < 1) { rOp = 1 - q; rScale = lerp(1, 3.6, out(q)); break; }
+    }
+    ripple.style.opacity = rOp;
+    ripple.style.transform = `translate(${cx + 6}px, ${cy + 6}px) scale(${rScale})`;
+
+    // ── 快轉徽章 ──
+    let ffOn = 0;
+    for (const [a, b] of FF) ffOn = Math.max(ffOn, band(t, a, a + 0.25, b - 0.25, b));
+    ff.style.opacity = ffOn;
+  }
+
+  window.SCENE = { duration: DURATION, seek };
+
+  // 直接用瀏覽器打開時自動播放，方便調分鏡。
+  // 渲染時 render-video.mjs 自己呼叫 seek()，不會走到這裡。
+  if (!navigator.webdriver) {
+    const t0 = performance.now();
+    const loop = () => {
+      seek(((performance.now() - t0) / 1000) % DURATION);
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } else {
+    seek(0);
+  }
+})();
+</script>
+</body>
+</html>

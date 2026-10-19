@@ -16,3 +16,5 @@ manifests/test/
 manifests/staging/
 manifests/dev/
 manifests/uat/
+video/.frames/
+video/*.mp4

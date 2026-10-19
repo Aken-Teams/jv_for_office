@@ -223,5 +223,34 @@ const noNaN = (h) => !/NaN|Infinity|undefined|\[object/.test(h);
   check('money：給字串也算得出來', money('3.5') === '$3.50');
 }
 
+// 14. 登出要清掉「上一個人」的資料
+//
+// 這一題是真的發生過的 bug：whoAmI() 把 /api/auth/me 的結果快取在 state.me，
+// 但 logout() 只清了 token 和 sessionId。於是換帳號登入之後，個人區顯示的還是
+// 前一個人的名字和信箱——而額度數字是現打的，只有身分是錯的，非常難察覺。
+{
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length));
+
+  check('有 PER_USER 集中宣告', /const PER_USER\s*=\s*\{/.test(code),
+    '逐一在 logout 裡清欄位的話，每加一個快取就要記得補一行——而忘記時沒有任何症狀。');
+
+  const per = code.slice(code.indexOf('const PER_USER'), code.indexOf('const state'));
+  check('PER_USER 含 me（登入者的名字信箱）', /\bme\s*:/.test(per), per.trim().slice(0, 200));
+  check('PER_USER 含 quotaPending', /quotaPending\s*:/.test(per), per.trim().slice(0, 200));
+
+  check('state 展開 PER_USER', /\.\.\.PER_USER/.test(code),
+    '不展開的話預設值和清除用的不是同一份，遲早會對不起來。');
+
+  const lo = code.slice(code.indexOf('function logout'));
+  const loBody = lo.slice(0, lo.indexOf('\n}'));
+  check('logout() 把 PER_USER 全部歸零',
+    /Object\.assign\(\s*state\s*,\s*PER_USER\s*\)/.test(loBody), loBody.trim());
+  check('歸零發生在導向登入畫面之前',
+    loBody.indexOf('PER_USER') < loBody.indexOf('showLogin'),
+    'showLogin 之後才清的話，登入畫面那一瞬間讀到的還是舊資料。');
+}
+
 console.log(failed ? `\n${failed} failed` : '\n全部通過');
 process.exit(failed ? 1 : 0);
