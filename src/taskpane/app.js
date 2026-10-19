@@ -2269,6 +2269,16 @@ function setLoginMode(mode) {
   for (const tab of document.querySelectorAll('#login-tabs .tab')) {
     tab.setAttribute('aria-selected', String(tab.dataset.mode === mode));
   }
+  /**
+   * Google 按鈕跟著「電子信箱」分頁走。
+   *
+   * 它是電子信箱的替代方案——同一件事（用個人身分登入）的兩種做法，所以該跟那個
+   * 分頁一起出現、一起消失。掛在 AD 分頁底下的話，使用者會以為那是另一種公司登入。
+   *
+   * 伺服器說沒有的時候（沒設定 GOOGLE_CLIENT_ID）永遠不顯示——那個判斷優先。
+   */
+  const gblock = $('google-block');
+  if (gblock) gblock.hidden = !(state.googleClientId && mode === 'email');
 }
 
 /**
@@ -2385,7 +2395,7 @@ async function loadAuthMode() {
     revealServerField(`連不上伺服器 ${state.apiBase}，請確認位址或聯繫管理者。`);
   }
   $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
-  setLoginMode(mode.adLogin ? 'ad' : 'email');
+  state.loginMode = mode.adLogin ? 'ad' : 'email';
 
   /**
    * Google 登入由伺服器決定顯不顯示。
@@ -2396,9 +2406,9 @@ async function loadAuthMode() {
    *
    * 一顆按下去必定失敗的按鈕比沒有按鈕糟：使用者會以為是自己的帳號有問題。
    */
-  state.googleClientId = String(mode.googleClientId || '');
-  const block = $('google-block');
-  if (block) block.hidden = !(mode.googleLogin && state.googleClientId);
+  state.googleClientId = mode.googleLogin ? String(mode.googleClientId || '') : '';
+  // 顯示與否交給 setLoginMode——它知道現在是哪個分頁，而這裡不知道。
+  setLoginMode(state.loginMode || (mode.adLogin ? 'ad' : 'email'));
 }
 
 /**

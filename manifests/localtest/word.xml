@@ -39,9 +39,16 @@
   <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/icon-64.png" />
   <SupportUrl DefaultValue="https://localhost:3443/" />
 
-  <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。 -->
+  <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。
+
+       accounts.google.com 是給 Google 登入用的：那條流程會開一個 Office 對話框，
+       而對話框導到這裡沒有列出的網域時，Office 會直接拒絕開啟——而且不會說為什麼，
+       只會回一個通用的錯誤碼。漏了這一行的症狀是「按了 Google 登入沒反應」。
+
+       只是允許導覽，不等於信任：回傳的 id_token 仍然由伺服器驗簽章和 audience。 -->
   <AppDomains>
     <AppDomain>https://localhost:3443</AppDomain>
+    <AppDomain>https://accounts.google.com</AppDomain>
   </AppDomains>
 
   <Hosts>
