@@ -1306,9 +1306,25 @@ async function addFile(file) {
     if (!ok) throw new Error('伺服器沒有回傳結果');
     entry.serverId = ok.id;
     entry.status = 'ready';
-    // 「已擋下」 rather than a silent success: the person should know the scanner
-    // fired on their file before they wonder why the answer ignored it.
-    entry.note = ok.blocked ? t('內容被安全掃描擋下') : t('已讀取 {0} 字', ok.chars);
+    /**
+     * 「已擋下」而不是默默成功：掃描器攔了他的檔案，他應該在納悶「為什麼回答沒用到
+     * 這個檔」之前就知道。
+     *
+     * ── 為什麼 0 要特別處理 ──
+     * 「已讀取 0 字」同時宣稱兩件相反的事：讀到了，而且什麼都沒有。使用者看到的
+     * 結論是「壞了」，然後重傳一次、再看到同一句話。
+     *
+     * 0 的成因通常有三種，而它們的處置完全不同：掃描版 PDF（要先 OCR）、
+     * 受保護的檔案（要先解鎖）、真的是空檔。窗格分不出是哪一種——伺服器才知道——
+     * 所以這裡只說實話：文字沒讀到，檔案還在。至少他知道下一步要換檔案，
+     * 而不是重傳同一個。
+     */
+    const chars = Number(ok.chars) || 0;
+    entry.note = ok.blocked
+      ? t('內容被安全掃描擋下')
+      : chars > 0
+        ? t('已讀取 {0} 字', chars.toLocaleString())
+        : t('讀不到文字內容（可能是掃描檔或受保護的檔案）');
   } catch (e) {
     entry.status = 'failed';
     entry.note = e.message;
