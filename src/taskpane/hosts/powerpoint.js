@@ -1745,23 +1745,38 @@ async function addInfographic(args) {
     const rowH = hFull / n;
     const halfW = W * 0.42;
     const cx = L + W / 2;
+    /**
+     * 第一項在**最底層**，也就是最寬的那一層。
+     *
+     * ── 為什麼會畫反 ──
+     * 工具說明寫「由下而上給，最底層放第一個」，但程式碼把 items[0] 放在最上面——
+     * 文件和實作講的是相反的事。模型照文件送「基礎營運 40%」當第一項，結果 40% 跑到
+     * 最窄的頂端，它得自己清掉十二個物件重畫一次。
+     *
+     * 選擇讓程式碼配合文件，不是反過來：講一件事的時候，「基礎」本來就先出口——
+     * 先講地基再講屋頂是自然的順序，而金字塔的地基在下面。
+     */
     items.slice(0, n).forEach((it, i) => {
-      const w = halfW * (0.3 + (0.7 * (i + 1)) / n) * 2;
-      push({ type: 'rect', shape: 'Trapezoid', left: cx - w / 2, top: T + rowH * i,
-        width: w, height: rowH - 4, fill: tone(n - 1 - i, n),
+      const row = n - 1 - i;          // 第一項畫在最後一列（最下面）
+      const w = halfW * (0.3 + (0.7 * (n - i)) / n) * 2;
+      const y = T + rowH * row;
+      push({ type: 'rect', shape: 'Trapezoid', left: cx - w / 2, top: y,
+        width: w, height: rowH - 4, fill: tone(i, n),
         text: String(it.value || ''), color: onBlock, size: 20, bold: true });
       // 引線接到右邊的說明，顏色跟著那一層走。
-      push({ type: 'rect', left: cx + w / 2 + 8, top: T + rowH * i + rowH / 2 - 1,
-        width: Math.max(12, L + W - (cx + w / 2) - 20), height: 1, fill: tone(n - 1 - i, n) });
-      push({ type: 'text', left: L + W + 16, top: T + rowH * i + 2,
-        width: 300, height: rowH - 8, text: String(it.label || ''),
+      push({ type: 'rect', left: cx + w / 2 + 8, top: y + rowH / 2 - 1,
+        width: Math.max(12, L + W - (cx + w / 2) - 20), height: 1, fill: tone(i, n) });
+      // 說明欄加寬到 420：原本 300 的話右邊會空掉一大塊，而那塊沒有別的東西要放。
+      push({ type: 'text', left: L + W + 16, top: y + 2,
+        width: 420, height: rowH - 8, text: String(it.label || ''),
         color: ink, size: 14, bold: true, align: 'left' });
     });
   } else if (kind === 'cycle') {
     const n = Math.min(Math.max(items.length, 3), 7);
     const d = num(args.node, 110);
     const cx = L + W / 2;
-    const cy = T + 190;
+    // 往上 20：圓簇的視覺重心比外框更低（下面兩個節點佔的空間大），照外框置中會偏下。
+    const cy = T + 170;
     const r = num(args.radius, 150);
     /**
      * 先畫軌道，再畫節點——順序就是疊的順序。
@@ -1816,7 +1831,9 @@ ${String(it.label || '')}`;
      */
     const d = num(args.node, 220);
     const cx = L + W / 2;
-    const pos = [[cx - d * 0.38, T], [cx - d * 0.62 + d, T], [cx - d / 2, T + d * 0.55]];
+    // 往下 18：上面兩個圓的標籤在圓內上緣，貼著標題區會顯得擠。
+    const vt = T + 18;
+    const pos = [[cx - d * 0.38, vt], [cx - d * 0.62 + d, vt], [cx - d / 2, vt + d * 0.55]];
     const cols = [tone(0, 3), tone(1, 3), tone(2, 3)];
     /**
      * 三個圓直接用半透明，交集自己就會疊出來。
@@ -1843,7 +1860,7 @@ ${String(it.label || '')}`;
      */
     if (args.center) {
       const mid = mixHex(mixHex(cols[0], cols[1], 0.5), cols[2], 0.34);
-      push({ type: 'rect', shape: 'Ellipse', left: cx - 42, top: T + d * 0.42,
+      push({ type: 'rect', shape: 'Ellipse', left: cx - 42, top: vt + d * 0.42,
         width: 84, height: 84, fill: mid,
         text: String(args.center), color: onBlock, size: 13, bold: true });
     }
