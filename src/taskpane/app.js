@@ -134,6 +134,8 @@ const state = {
   sourcesLoaded: false,
   /** config.json 說的位址，跟使用者覆寫的分開存——判斷覆寫過期了沒有要靠它。 */
   deployedApiBase: '',
+  /** Google 用戶端 ID，伺服器給的。空的就代表這個部署沒有 Google 登入。 */
+  googleClientId: '',
   /** 帳號設定的語言（伺服器給的），只拿來顯示「跟隨帳號設定」實際是哪一個。 */
   accountLocale: '',
   /** 目前用的是使用者手動填的位址，不是部署設定的。 */
@@ -2384,6 +2386,103 @@ async function loadAuthMode() {
   }
   $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
   setLoginMode(mode.adLogin ? 'ad' : 'email');
+
+  /**
+   * Google 登入由伺服器決定顯不顯示。
+   *
+   * 兩個條件都要成立：這個部署是對外版，而且真的設定了 GOOGLE_CLIENT_ID。
+   * 判斷寫在伺服器（見 /api/auth/mode），因為窗格不知道自己連的是哪一套部署——
+   * 同一份程式碼裝在強茂和對外是一模一樣的。
+   *
+   * 一顆按下去必定失敗的按鈕比沒有按鈕糟：使用者會以為是自己的帳號有問題。
+   */
+  state.googleClientId = String(mode.googleClientId || '');
+  const block = $('google-block');
+  if (block) block.hidden = !(mode.googleLogin && state.googleClientId);
+}
+
+/**
+ * 用 Google 登入。
+ *
+ * ── 為什麼要開對話框 ──
+ * 工作窗格是受限的 iframe：Google 的登入頁不允許被內嵌，彈窗也開不起來。
+ * displayDialogAsync 開的是一個真正的瀏覽器視窗，而那個視窗的網址必須跟增益集
+ * 同網域——所以中間要有 auth-google.html 這一頁替我們去跟 Google 往返。
+ *
+ * ── nonce 在這裡產生 ──
+ * 它要綁在「這一次點擊」上。對話頁拿它去要 token、回來再比對一次，確保收到的
+ * token 是回應我們這次請求的，不是別人塞進來的。
+ */
+async function loginWithGoogle() {
+  const btn = $('google-btn');
+  const err = $('login-error');
+  if (!state.googleClientId) {
+    err.textContent = t('這個環境沒有設定 Google 登入。');
+    return;
+  }
+  if (!Office.context || !Office.context.ui || !Office.context.ui.displayDialogAsync) {
+    err.textContent = t('這個 Office 版本不支援對話框登入，請改用電子信箱登入。');
+    return;
+  }
+
+  const nonce = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).replace(/-/g, '');
+  const url = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}auth-google.html`
+    + `?c=${encodeURIComponent(state.googleClientId)}&n=${encodeURIComponent(nonce)}`;
+
+  err.textContent = '';
+  btn.disabled = true;
+  let dialog = null;
+  const done = () => {
+    btn.disabled = false;
+    try { if (dialog) dialog.close(); } catch { /* 已經關了 */ }
+    dialog = null;
+  };
+
+  Office.context.ui.displayDialogAsync(url, { height: 62, width: 34, promptBeforeOpen: false }, (open) => {
+    if (open.status !== Office.AsyncResultStatus.Succeeded) {
+      btn.disabled = false;
+      err.textContent = t('開不了登入視窗：{0}', (open.error && open.error.message) || '');
+      return;
+    }
+    dialog = open.value;
+
+    dialog.addEventHandler(Office.EventType.DialogMessageReceived, async (arg) => {
+      let payload = {};
+      try { payload = JSON.parse(arg.message || '{}'); } catch { payload = {}; }
+      done();
+      if (!payload.ok || !payload.credential) {
+        err.textContent = payload.error || t('Google 登入沒有完成。');
+        return;
+      }
+      try {
+        const res = await fetch(`${state.apiBase}/api/auth/google`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: payload.credential }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || !body.token) {
+          err.textContent = body.error || t('Google 登入失敗（HTTP {0}）。', res.status);
+          return;
+        }
+        state.token = body.token;
+        localStorage.setItem(LS_TOKEN, body.token);
+        showChat();
+      } catch {
+        err.textContent = networkTrouble();
+      }
+    });
+
+    /**
+     * 使用者直接把對話框叉掉也要收尾。
+     *
+     * 不處理的話按鈕會一直是停用狀態，而畫面上沒有任何東西說明為什麼——那是最難
+     * 回報的一種壞法：「我按了，然後它就不能按了」。
+     */
+    dialog.addEventHandler(Office.EventType.DialogEventReceived, () => {
+      done();
+    });
+  });
 }
 
 function logout(reason) {
@@ -4443,6 +4542,11 @@ ${typed}` : `/${tpl.name}`) : '';
       ? t(host.meta.words.localeChanged, l.label)
       : t('之後的回覆會跟著你帳號的語言設定。'), 'note');
   });
+
+  // Google 登入。按鈕只有對外版會顯示（見 loadAuthMode），但事件一律掛上——
+  // 掛一個不會被按到的事件沒有代價，而漏掛會變成「按了沒反應」。
+  const gbtn = $('google-btn');
+  if (gbtn) gbtn.addEventListener('click', () => { void loginWithGoogle(); });
 
   $('model-btn').addEventListener('click', () => { toggleSourceMenu(false); toggleModelMenu(); });
 

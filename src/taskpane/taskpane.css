@@ -1427,3 +1427,26 @@ a.cite:hover { background: var(--accent-soft); border-color: var(--accent); }
   text-align: center;
   box-shadow: 0 1px 0 rgba(0, 0, 0, .12);
 }
+
+/* ── Google 登入 ──────────────────────────────────────────────────────────── */
+/*
+ * 只有對外版會看到（見 taskpane.html 的說明）。樣式刻意不搶戲：主要登入方式仍然是
+ * 上面那個表單，Google 是給沒有公司帳號的人用的第二條路——所以它是白底描邊，
+ * 不是第二顆綠色按鈕。兩顆同樣份量的按鈕會讓人不知道該按哪一個。
+ */
+.or-line {
+  display: flex; align-items: center; gap: 10px;
+  margin: 18px 0 14px; color: var(--fg-subtle); font-size: 12px;
+}
+.or-line::before, .or-line::after {
+  content: ''; flex: 1; height: 1px; background: var(--line);
+}
+.btn-google {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--fg); font-size: 13.5px; font-weight: 500;
+  transition: background var(--speed), border-color var(--speed);
+}
+.btn-google:hover { background: var(--surface-hover); }
+.btn-google:disabled { opacity: .55; }
+.btn-google .g-mark { width: 17px; height: 17px; flex: none; }

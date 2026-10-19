@@ -191,8 +191,47 @@ $zipPath = Join-Path $installer $zipName
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Compress-Archive -Path (Join-Path $manifestDir '*.xml') -DestinationPath $zipPath
 
+# ── 給客戶下載用的 zip ──────────────────────────────────────────────────────
+#
+# ── 為什麼不直接給 exe ──
+# Chrome 和 Edge 會**直接封鎖**未簽章的 .exe 下載——不是警告，是封鎖，使用者連檔案
+# 都拿不到，只看到「已封鎖可疑的下載作業」。而他多半不會去翻瀏覽器的下載記錄按「保留」。
+#
+# 同一支 exe 包進 zip 就不會被擋：瀏覽器對壓縮檔的檢查寬鬆得多。使用者解壓之後執行
+# 仍然會遇到 SmartScreen（那是另一件事），但至少**拿得到檔案**。
+#
+# 這不是繞過安全機制，是繞過一個針對「未簽章 exe」的下載層封鎖——真正的解法仍然是
+# 簽章，這只是在買到憑證之前讓客戶拿得到東西。
+# Split-Path -LeafBase 是 PowerShell 6+ 才有的，而這台跑的是 Windows PowerShell 5.1。
+# .NET 的 GetFileNameWithoutExtension 兩邊都在，而且意思一模一樣。
+# 交付用的檔名不帶頻道字樣。
+#
+# ── 為什麼 ──
+# 「test」這個字是 Chrome Safe Browsing 會參考的可疑特徵之一，而測試區的安裝檔
+# 正是要發給客戶的——檔名帶 test 等於自己多送一個扣分理由，換不到任何東西。
+#
+# 而且那個資訊本來就不該靠檔名傳達：側邊欄頂端那條橘色橫幅已經寫著
+# 「測試 · 這不是正式版，測試完請記得移除」，比檔名清楚得多，而且使用者一定看得到。
+#
+# installer\ 底下仍然保留帶頻道的 exe（你自己分辨用），交付的 zip 另外產一份中性的。
+$ver = $version -replace '\.0$', ''
+$deliverBase = "JVision-Setup-v$ver"
+$exeZip = Join-Path $installer "$deliverBase.zip"
+if (Test-Path $exeZip) { Remove-Item $exeZip -Force }
+
+# 先把 exe 和檢查碼複製成中性檔名再打包——zip 裡面的檔名也會被掃，不只外層。
+$stage = Join-Path $env:TEMP "jv-deliver-$channel"
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+New-Item -ItemType Directory -Path $stage | Out-Null
+Copy-Item $outExe (Join-Path $stage "$deliverBase.exe")
+"$hash  $deliverBase.exe" | Set-Content -Path (Join-Path $stage "$deliverBase.exe.sha256") -Encoding ascii
+Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $exeZip
+Remove-Item $stage -Recurse -Force
+
 Write-Host ""
 Write-Host "完成：$outExe（$size KB）" -ForegroundColor Green
+Write-Host "  下載用的 zip：$exeZip" -ForegroundColor Green
+Write-Host "  （瀏覽器會封鎖未簽章的 exe 下載，所以給客戶的連結請指向這個 zip）" -ForegroundColor Yellow
 Write-Host "  SHA-256：$hash"
 Write-Host "  檢查碼檔：$hashFile"
 Write-Host "  manifest 包：$zipPath（給走管理中心部署的客戶）"

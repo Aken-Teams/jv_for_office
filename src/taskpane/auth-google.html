@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>以 Google 登入 JVision</title>
+
+<!--
+  Office 對話框裡的 Google 登入。
+
+  ── 為什麼需要這一頁 ──
+  工作窗格是一個受限的 iframe：Google 的登入頁不允許被 iframe 內嵌，彈窗也開不起來。
+  Office 給的解法是 displayDialogAsync —— 開一個真正的瀏覽器視窗，而那個視窗的網址
+  必須跟增益集同網域。所以這一頁住在我們自己的主機上，由它去跟 Google 往返。
+
+  ── 為什麼不用 Google 的 JS SDK ──
+  gsi/client 要從 accounts.google.com 載入腳本，而那會跟這一頁的 CSP 打架；而且它的
+  FedCM 流程在 Office 的 WebView2 裡行為不穩。改成直接導向 OAuth 端點、從網址的
+  fragment 取回 id_token——沒有外部腳本，流程完全看得見，壞掉的時候查得出來。
+
+  ── 為什麼 clientId 和 nonce 走 sessionStorage ──
+  Google 比對 redirect_uri 是**完整字串比對**，帶著 query 參數就對不上已授權清單。
+  所以參數先存進 sessionStorage（同網域、同分頁，導向後還在），導回來再讀。
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none';
+               script-src 'self' 'unsafe-inline' https://appsforoffice.microsoft.com;
+               style-src 'unsafe-inline';
+               connect-src 'none';
+               form-action https://accounts.google.com;
+               base-uri 'none'" />
+
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft JhengHei UI", system-ui, sans-serif;
+    background: #FFFFFF; color: #1F2A24;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14181B; color: #E4EBE7; }
+    .sub { color: #94A8A0 !important; }
+    .err { background: #2A1A1A !important; }
+  }
+  .box { text-align: center; padding: 24px; max-width: 320px; }
+  .sub { font-size: 13px; color: #6E7D76; line-height: 1.6; margin: 10px 0 0; }
+  .err {
+    display: none; margin-top: 14px; padding: 12px 14px; border-radius: 6px;
+    background: #FDECEC; font-size: 12.5px; line-height: 1.6; text-align: left;
+    word-break: break-all;
+  }
+  .spin {
+    width: 26px; height: 26px; margin: 0 auto; border-radius: 50%;
+    border: 2.5px solid rgba(127, 127, 127, .25); border-top-color: #1F5F4B;
+    animation: t 1s linear infinite;
+  }
+  @keyframes t { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="spin" id="spin"></div>
+    <p class="sub" id="msg">正在前往 Google 登入…</p>
+    <div class="err" id="err"></div>
+  </div>
+
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script>
+(function () {
+  var KEY = 'jv_google_oauth';
+  var AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
+
+  function show(text) {
+    document.getElementById('spin').style.display = 'none';
+    document.getElementById('msg').textContent = '登入沒有完成。';
+    var box = document.getElementById('err');
+    box.style.display = 'block';
+    box.textContent = text;
+  }
+
+  /**
+   * 把結果交回側邊欄。
+   *
+   * 成功和失敗都走這條：對話框關掉之後，側邊欄是唯一還看得到使用者的地方，
+   * 所以錯誤也要送回去，而不是留在這個即將消失的視窗裡。
+   */
+  function reply(payload) {
+    try {
+      Office.context.ui.messageParent(JSON.stringify(payload));
+    } catch (e) {
+      // messageParent 失敗的話對話框會自己停在這裡，至少讓畫面說得出原因。
+      show('無法把結果傳回側邊欄：' + ((e && e.message) || e));
+    }
+  }
+
+  function begin() {
+    var q = new URLSearchParams(location.search);
+    var clientId = q.get('c') || '';
+    var nonce = q.get('n') || '';
+
+    // 導回來的時候，id_token 在 fragment 裡（fragment 不會送到伺服器，這是這個流程
+    // 唯一安全的回傳位置）。
+    if (location.hash && location.hash.length > 1) {
+      var h = new URLSearchParams(location.hash.slice(1));
+      var token = h.get('id_token');
+      var err = h.get('error');
+      var saved = {};
+      try { saved = JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) { saved = {}; }
+      try { sessionStorage.removeItem(KEY); } catch (e) { /* 無所謂 */ }
+
+      if (err) { reply({ ok: false, error: 'Google 回報：' + err }); return; }
+      if (!token) { reply({ ok: false, error: 'Google 沒有回傳 id_token。' }); return; }
+      /**
+       * nonce 要自己比對一次。
+       *
+       * 伺服器會驗簽章和 audience，但 nonce 是防「別人把一個合法的 token 塞進我們這條
+       * 流程」用的——那個檢查只有發起請求的這一端做得了，因為只有我們知道自己送出的
+       * 是哪一個隨機值。
+       */
+      var inToken = '';
+      try {
+        var body = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        inToken = (JSON.parse(atob(body)) || {}).nonce || '';
+      } catch (e) { inToken = ''; }
+      if (saved.nonce && inToken && saved.nonce !== inToken) {
+        reply({ ok: false, error: '登入驗證碼不符，請重新登入一次。' });
+        return;
+      }
+      reply({ ok: true, credential: token });
+      return;
+    }
+
+    if (!clientId) { show('缺少 Google 用戶端 ID。這是設定問題，請告訴 IT。'); return; }
+
+    try { sessionStorage.setItem(KEY, JSON.stringify({ nonce: nonce })); } catch (e) { /* 無所謂 */ }
+
+    // redirect_uri 必須跟 Google Cloud Console 裡登記的**完全一樣**，所以要去掉
+    // query 和 fragment——這也是上面那些參數得走 sessionStorage 的原因。
+    var back = location.origin + location.pathname;
+    var url = AUTH
+      + '?client_id=' + encodeURIComponent(clientId)
+      + '&redirect_uri=' + encodeURIComponent(back)
+      + '&response_type=id_token'
+      + '&scope=' + encodeURIComponent('openid email profile')
+      + '&nonce=' + encodeURIComponent(nonce)
+      // select_account：不要默默用上次那個帳號登入。這個對話框常常是公用電腦開的，
+      // 而「它自己登進別人的帳號」是最難解釋的那種 bug。
+      + '&prompt=select_account';
+    location.replace(url);
+  }
+
+  // Office.js 準備好之前不能呼叫 messageParent；導向那一段其實不用等，但統一在這裡
+  // 開始，流程比較好讀。
+  if (typeof Office !== 'undefined' && Office.onReady) {
+    Office.onReady(begin);
+  } else {
+    show('載入 Office 程式庫失敗，請確認這台電腦連得到 appsforoffice.microsoft.com。');
+  }
+})();
+</script>
+</body>
+</html>
