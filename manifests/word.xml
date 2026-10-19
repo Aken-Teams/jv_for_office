@@ -30,7 +30,7 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>c8f5a3b2-7d1e-4a69-9b34-2e5c6d0f8a71</Id>
-  <Version>1.0.50.0</Version>
+  <Version>1.0.52.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="JVision for Word" />

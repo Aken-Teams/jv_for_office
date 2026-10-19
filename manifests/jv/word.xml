@@ -30,13 +30,13 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>562e6777-24a9-4618-8afb-7fb11b62dc60</Id>
-  <Version>1.0.50.0</Version>
+  <Version>1.0.52.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="【JV】JVision for Word" />
   <Description DefaultValue="【JV版本，請勿用於正式文件】在 Word 側邊欄直接問 AI：摘要、改寫、套樣式、比對條款。改動以追蹤修訂寫入。" />
-  <IconUrl DefaultValue="https://jvision.theaken.com/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://jvision.theaken.com/assets/icon-64.png" />
+  <IconUrl DefaultValue="https://jvision.theaken.com/assets/jv/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://jvision.theaken.com/assets/jv/icon-64.png" />
   <SupportUrl DefaultValue="https://jvision.theaken.com/" />
 
   <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。
@@ -115,9 +115,9 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://jvision.theaken.com/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://jvision.theaken.com/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://jvision.theaken.com/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://jvision.theaken.com/assets/jv/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://jvision.theaken.com/assets/jv/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://jvision.theaken.com/assets/jv/icon-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Taskpane.Url" DefaultValue="https://jvision.theaken.com/src/taskpane/taskpane.html" />

@@ -121,6 +121,8 @@ const LOCALES = [
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
+  // 伺服器說了算；讀到之前當作對外版（顯示模型選單）。見 loadDeployMode()。
+  deployMode: '',
   /**
    * 資料來源／模型清單是不是真的拿到了。
    *
@@ -1884,14 +1886,144 @@ function closeUsage() {
   $('account').setAttribute('aria-expanded', 'false');
 }
 
+/** 這個帳號有沒有還在等審核的申請。讀不到就當作沒有——猜錯的代價只是多給一個入口。 */
+async function quotaPending() {
+  try {
+    const res = await fetch(`${state.apiBase}/api/quota-request`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) return false;
+    return !!(await res.json()).hasPending;
+  } catch { return false; }
+}
+
+async function submitQuotaRequest() {
+  const box = $('quota-reason');
+  const btn = $('quota-send');
+  const note = $('quota-note');
+  const reason = (box && box.value || '').trim();
+  if (!reason || !btn || btn.disabled) return;
+
+  btn.disabled = true;
+  note.textContent = t('送出中…');
+  try {
+    const res = await fetch(`${state.apiBase}/api/quota-request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.token}` },
+      body: JSON.stringify({ reason }),
+    });
+    if (res.ok) {
+      state.quotaPending = true;
+      muteQuotaToday();            // 已經申請了就不必再被提醒
+      $('quota-bar').hidden = true;
+      await loadUsage();           // 重畫成「已送出」那個狀態
+      return;
+    }
+    // 409 是「你已經有一筆在等了」——那不是錯誤，是答案。
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      state.quotaPending = true;
+      await loadUsage();
+      return;
+    }
+    note.textContent = t('送不出去：{0}', body.error || httpTrouble(res.status));
+    btn.disabled = false;
+  } catch (e) {
+    note.textContent = t('送不出去：{0}', (e && e.message) || e);
+    btn.disabled = false;
+  }
+}
+
+// ── 快滿了的提醒 ─────────────────────────────────────────────────────────────
+
+/**
+ * 靜音鍵要綁使用者。
+ *
+ * 同一台電腦可能換人登入，而「今天不要再提醒」是前一個人的決定。從 token 裡取
+ * userId——JWT 的 payload 是 base64，解得開；解不開就退回一個共用鍵，頂多是
+ * 換人之後少提醒一次，不會變成錯的提醒。
+ */
+function quotaMuteKey() {
+  let who = 'anon';
+  try {
+    const part = String(state.token || '').split('.')[1];
+    if (part) {
+      const json = atob(part.replace(/-/g, '+').replace(/_/g, '/'));
+      who = JSON.parse(json).userId || JSON.parse(json).sub || 'anon';
+    }
+  } catch { /* 解不開就用 anon */ }
+  return `jv_quota_muted_${who}`;
+}
+
+function quotaMutedToday() {
+  try {
+    return localStorage.getItem(quotaMuteKey()) === new Date().toISOString().slice(0, 10);
+  } catch { return false; }
+}
+
+function muteQuotaToday() {
+  try { localStorage.setItem(quotaMuteKey(), new Date().toISOString().slice(0, 10)); }
+  catch { /* 無痕模式之類的，最多就是今天還會再提醒一次 */ }
+}
+
+/**
+ * 開機時看一眼額度，快滿了就掛一條橫幅。
+ *
+ * -- 為什麼不等使用者自己點開個人區 --
+ * 額度用完的時候提問會直接失敗，而那個失敗長得像網路問題。在它發生之前先說一聲，
+ * 是這整個功能唯一的意義；要等人主動去查的話，就太晚了。
+ *
+ * -- 為什麼整段用 try 包住 --
+ * 這是一個提醒，不是功能。它壞掉不該影響任何人提問——所以連錯誤訊息都不顯示。
+ */
+async function checkQuota() {
+  try {
+    if (!state.token || quotaMutedToday()) return;
+    const [res, pending] = await Promise.all([
+      fetch(`${state.apiBase}/api/usage`,
+        { headers: { Authorization: `Bearer ${state.token}` } }),
+      quotaPending(),
+    ]);
+    if (!res.ok) return;
+    const d = await res.json();
+    state.quotaPending = pending;
+    if (pending) return;                       // 已經在等審核了，提醒沒有用
+
+    const limit = (d.limit === null || d.limit === undefined) ? null : Number(d.limit);
+    if (limit === null || !Number.isFinite(limit) || limit <= 0) return;   // 無上限
+    const used = Number(d.total && d.total.cost) || 0;
+    if (used / limit < QUOTA_NEAR) return;
+
+    const left = Math.max(0, Math.round((1 - used / limit) * 100));
+    const bar = $('quota-bar');
+    bar.innerHTML = `
+      <div class="quota-bar-title">${escapeHtml(
+        used >= limit ? t('額度已用完') : t('額度剩下約 {0}%', left))}</div>
+      <div class="quota-bar-sub">${escapeHtml(
+        t('已使用 {0} / {1}。用完之後就無法再提問，需要的話可以申請調整上限。',
+          money(used), money(limit)))}</div>
+      <div class="quota-bar-acts">
+        <button type="button" id="quota-go">${escapeHtml(t('申請額度'))}</button>
+        <button type="button" class="quota-mute" id="quota-later">${escapeHtml(t('今天不要再提醒'))}</button>
+      </div>`;
+    bar.hidden = false;
+  } catch { /* 提醒而已，壞了就當沒有 */ }
+}
+
 async function loadUsage() {
   const box = $('usage-body');
   box.innerHTML = `<div class="usage-msg">${escapeHtml(t('載入中…'))}</div>`;
   try {
-    const res = await fetch(`${state.apiBase}/api/usage`,
-      { headers: { Authorization: `Bearer ${state.token}` } });
+    // 兩個請求一起送。申請狀態失敗不該拖垮額度顯示——額度是主角，申請是附帶的，
+    // 所以它用 catch 吞掉，最多就是少一句「已送出」。
+    const [res, pending] = await Promise.all([
+      fetch(`${state.apiBase}/api/usage`,
+        { headers: { Authorization: `Bearer ${state.token}` } }),
+      quotaPending(),
+    ]);
     if (!res.ok) throw new Error(httpTrouble(res.status));
-    box.innerHTML = renderUsage(await res.json());
+    const data = await res.json();
+    state.quotaPending = pending;
+    box.innerHTML = renderUsage({ ...data, quotaPending: pending });
   } catch (e) {
     // 額度讀不到不影響提問，所以這裡只說明，不擋路。
     box.innerHTML = `<div class="usage-msg">${escapeHtml(t('讀不到額度：{0}', e.message))}</div>`;
@@ -1946,10 +2078,13 @@ function renderUsage(d) {
     : t('測試期間不歸零，顯示的是累計用量。');
 
   const days = (d.summary || []).filter(r => !since || r.date >= since);
+  // 上限未知（無上限帳號）就沒有「快滿了」這回事，pct 給 NaN 讓申請區塊自己退場。
+  const pct = (limit && Number.isFinite(limit) && limit > 0) ? (used / limit) * 100 : NaN;
   return head
     + `<div class="usage-reset">${escapeHtml(reset)}</div>`
     + renderDays(days, monthly)
-    + renderCats(d.byCategory || {}, since, used, total);
+    + renderCats(d.byCategory || {}, since, used, total)
+    + renderQuotaAsk(pct, !!d.quotaPending);
 }
 
 function nextReset() {
@@ -2036,6 +2171,45 @@ function renderCats(byCategory, since, used, total) {
       <div class="usage-sec-head"><span>${escapeHtml(t('用量來源'))}</span></div>
       ${body}
     </div>${foot}`;
+}
+
+/**
+ * 九成。這個數字跟 AI Agents Office 網站是同一個，而且必須是同一個——
+ * 兩邊對「快滿了」的定義不一致的話，使用者會在一個地方看到警告、在另一個地方
+ * 看不到，然後不知道該信哪一個。
+ */
+const QUOTA_NEAR = 0.9;
+
+/**
+ * 面板底部的申請區塊。
+ *
+ * -- 為什麼只在九成之後才出現 --
+ * 額度還很多的時候給一個「申請更多」的入口，等於在鼓勵沒有必要的請求，而每一筆
+ * 都要人工審。這個入口的價值在它出現的時機，不在它一直都在。
+ *
+ * -- 為什麼一定要寫理由 --
+ * 伺服器會擋掉空白理由（400），所以這裡的送出鈕在沒字的時候就是停用的。讓按鈕
+ * 先說「還不行」，比按下去才收到錯誤好。
+ */
+function renderQuotaAsk(pct, pending) {
+  if (pending) {
+    return `<div class="quota-pending">${escapeHtml(
+      t('已送出額度調整申請，等待管理者審核。審核結果會以電子郵件通知你。'))}</div>`;
+  }
+  if (!Number.isFinite(pct) || pct < QUOTA_NEAR * 100) return '';
+  return `
+    <div class="quota-ask">
+      <div class="quota-ask-head">${escapeHtml(t('需要更多額度？'))}</div>
+      <div class="quota-ask-sub">${escapeHtml(
+        t('寫一句用途送出，管理者審核後會調整你的上限。'))}</div>
+      <textarea id="quota-reason" rows="3" maxlength="500"
+                placeholder="${escapeHtml(t('例如：這個月要整理三份年度報告，目前的額度不夠用完。'))}"
+                aria-label="${escapeHtml(t('申請理由'))}"></textarea>
+      <div class="quota-ask-row">
+        <button type="button" id="quota-send" class="quota-send" disabled>${escapeHtml(t('送出申請'))}</button>
+        <span id="quota-note" class="quota-note">${escapeHtml(t('請先寫一句理由。'))}</span>
+      </div>
+    </div>`;
 }
 
 /** Dates in the pane are always about "how long ago", never about precision. */
@@ -2567,6 +2741,22 @@ function revealServerField(msg) {
  * email/password is whitelist-only — showing it as the default hands a PANJIT
  * employee a form that can only ever answer 帳號或密碼錯誤.
  */
+/**
+ * 這個部署是強茂版還是對外版。
+ *
+ * 伺服器的 /api/auth/mode 本來就回 deployMode，所以 AI Agents Office 不用改。
+ * 窗格自己看不出來——同一份程式碼裝在兩邊是一模一樣的，只有伺服器知道。
+ *
+ * 讀不到就留空字串：空字串不等於 'pro-panjit'，所以預設是「顯示模型選單」。
+ * 猜錯的方向要選代價小的那一邊——多一個選單比少一個功能好解釋。
+ */
+async function loadDeployMode() {
+  try {
+    const res = await fetch(`${state.apiBase}/api/auth/mode`);
+    if (res.ok) state.deployMode = String((await res.json()).deployMode || '');
+  } catch { /* 連不上的話登入畫面會自己報，這裡不要重複講一次 */ }
+}
+
 async function loadAuthMode() {
   let mode = { adLogin: false, emailLogin: true };
   try {
@@ -2579,6 +2769,8 @@ async function loadAuthMode() {
   }
   $('login-tabs').hidden = !(mode.adLogin && mode.emailLogin);
   state.loginMode = mode.adLogin ? 'ad' : 'email';
+  // 同一包資料，順手更新——登入後換了伺服器位址的話，這裡是最新的那一份。
+  state.deployMode = String(mode.deployMode || state.deployMode || '');
 
   /**
    * Google 登入由伺服器決定顯不顯示。
@@ -2721,6 +2913,7 @@ function showChat() {
   void loadTemplates();
   void loadSkills();
   void loadHandoffs();
+  void checkQuota();
   modelMenuWatchdog();
 }
 
@@ -2771,6 +2964,14 @@ function modelMenuWatchdog() {
     if (wrap && !wrap.hidden && state.models.length >= 2) return;
     // 伺服器就是只給一個模型——藏起來是對的，loadDataSources 已經講過了。
     if (state.sourcesLoaded && state.models.length === 1) return;
+    /**
+     * 強茂版本來就不該有這個選單。
+     *
+     * 少了這一行的話，看門狗會在每一台強茂的機器上、每次開啟側邊欄六秒後，掛出一條
+     * 「模型選單診斷」的橫幅——而那是**設計好的行為**，不是故障。一個會對正常狀態
+     * 喊狼來了的檢查，比沒有檢查更糟：真的壞掉時沒有人會再相信它。
+     */
+    if (state.deployMode === 'pro-panjit') return;
     /**
      * 連 showChat() 有沒有跑完都要回報。
      *
@@ -3312,6 +3513,19 @@ function renderSourceMenu() {
 function renderModelMenu() {
   const list = state.models;
   const wrap = document.querySelector('.model-wrap');
+  /**
+   * 強茂版不給選模型。
+   *
+   * ── 為什麼是藏起來而不是只給一個 ──
+   * 用哪個模型在這個部署裡是政策決定，不是使用者偏好。給一個只有一個選項的下拉
+   * 選單，等於在說「這本來是你可以決定的事」——而它不是。
+   *
+   * ── 為什麼擋在這裡而不是在伺服器只回一個模型 ──
+   * 伺服器那邊照樣回完整清單，state.model 仍然可以被設定、仍然會跟著請求送出去；
+   * 這裡拿掉的只是「使用者自己改」的入口。改伺服器的話會動到 AI Agents Office，
+   * 而這是窗格的呈現決定。
+   */
+  if (state.deployMode === 'pro-panjit') { if (wrap) wrap.hidden = true; return; }
   // One model on offer is not a choice worth a control.
   if (!list.length || list.length < 2) { if (wrap) wrap.hidden = true; return; }
   if (wrap) wrap.hidden = false;
@@ -4491,6 +4705,21 @@ Office.onReady(async (info) => {
    */
   await loadConfig();
 
+  /**
+   * 部署模式也要在分支之前讀，而且理由跟上面那段**一模一樣**。
+   *
+   * ── 為什麼不是沿用 loadAuthMode() ──
+   * loadAuthMode() 只在 showLogin() 裡被呼叫，所以「已經登入的人」這條路徑同樣
+   * 讀不到 deployMode——這正是上面那段註解描述的那個 bug，只是換了一個欄位。
+   * 強茂的人裝好之後就一直是登入狀態，於是「pro-panjit 不顯示模型選單」這件事
+   * 會在**唯一需要它生效的那些人身上**失效。
+   *
+   * ── 為什麼 await ──
+   * showChat() 裡的 renderModelMenu() 是同步的。不等的話選單會先畫出來再被收掉，
+   * 閃一下——而那一下正好是在告訴使用者「這裡本來有東西」。
+   */
+  await loadDeployMode();
+
   setLocale(state.locale);
   applyStaticText();
   // Rewrites everything the markup left in Excel's words. Before any of it is
@@ -4903,6 +5132,32 @@ ${typed}` : `/${tpl.name}`) : '';
   $('new-chat').addEventListener('click', () => { backToLive(); newConversation(); });
 
   $('account').addEventListener('click', () => { void openUsage(); });
+
+  // 面板內容每次載入都重畫，所以綁在面板上而不是綁在按鈕上——
+  // 直接綁按鈕的話，第二次載入之後監聽器就掛在一個已經被丟掉的節點上了。
+  $('usage-panel').addEventListener('click', (e) => {
+    if (e.target.closest('#quota-send')) void submitQuotaRequest();
+  });
+  $('usage-panel').addEventListener('input', (e) => {
+    if (!e.target.closest('#quota-reason')) return;
+    const btn = $('quota-send');
+    const note = $('quota-note');
+    const ok = e.target.value.trim().length > 0;
+    if (btn) btn.disabled = !ok;
+    if (note) note.textContent = ok ? '' : t('請先寫一句理由。');
+  });
+
+  $('quota-bar').addEventListener('click', (e) => {
+    if (e.target.closest('#quota-later')) {
+      muteQuotaToday();
+      $('quota-bar').hidden = true;
+      return;
+    }
+    if (e.target.closest('#quota-go')) {
+      $('quota-bar').hidden = true;
+      void openUsage();            // 申請表就在個人區裡，不另外做一個
+    }
+  });
   $('usage-refresh').addEventListener('click', () => { void loadUsage(); });
 
   // 收起來再登出。面板不收的話，下次登入進到聊天畫面時它還開著——

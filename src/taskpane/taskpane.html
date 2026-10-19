@@ -460,6 +460,20 @@
     -->
     <div id="handoff-bar" class="handoff-bar" hidden></div>
 
+    <!--
+      額度快用完的提醒。
+
+      ── 為什麼不是彈窗 ──
+      AI Agents Office 網站上這一條是跳 modal 的，那在一整頁的畫面裡合理。但 350px
+      的工作窗格裡，modal 會蓋掉整個對話——而使用者打開側邊欄是為了做事，不是為了
+      讀公告。改成一條可關掉的橫幅：看得見、但不擋路。
+
+      ── 為什麼擺在這裡 ──
+      跟交接橫幅同一層，在對話記錄上方。它講的是「這個帳號」的狀態，不是某一則
+      訊息的狀態，所以不該跟著捲動消失。
+    -->
+    <div id="quota-bar" class="quota-bar" hidden></div>
+
     <div id="log">
       <div id="empty" class="empty">
         <img class="brand-mark brand-mark-xl" src="../../assets/logo.png" alt="" />

@@ -54,9 +54,9 @@ const stubs = `
 
 const mod = await import(
   'data:text/javascript;charset=utf-8,'
-  + encodeURIComponent(`${stubs}\n${block}\nexport { renderUsage, renderDays, renderCats, money };`)
+  + encodeURIComponent(`${stubs}\n${block}\nexport { renderUsage, renderDays, renderCats, renderQuotaAsk, money, QUOTA_NEAR };`)
 );
-const { renderUsage, money } = mod;
+const { renderUsage, renderQuotaAsk, money, QUOTA_NEAR } = mod;
 
 // ── 測資 ─────────────────────────────────────────────────────────────────────
 
@@ -156,7 +156,38 @@ const noNaN = (h) => !/NaN|Infinity|undefined|\[object/.test(h);
   check('跨月：舊資料不計入來源明細', h.includes('$10.00'));
 }
 
-// 9. money() 本身
+// 9. 申請額度：只在九成之後出現
+{
+  check('門檻與網站一致（九成）', QUOTA_NEAR === 0.9, String(QUOTA_NEAR));
+  check('五成：不給申請入口', renderQuotaAsk(50, false) === '');
+  check('八成九：還不給', renderQuotaAsk(89, false) === '');
+  const at = renderQuotaAsk(90, false);
+  check('九成：出現申請區塊', at.includes('quota-ask') && at.includes('需要更多額度'));
+  check('九成：送出鈕預設停用（伺服器會擋空白理由）', at.includes('id="quota-send"') && at.includes('disabled'));
+  check('超量：照樣給入口', renderQuotaAsk(146, false).includes('quota-ask'));
+
+  // 無上限帳號沒有「快滿了」這回事，pct 會是 NaN
+  check('無上限：不給申請入口', renderQuotaAsk(NaN, false) === '');
+
+  const p = renderQuotaAsk(95, true);
+  check('已送出：改成等待審核的說明', p.includes('quota-pending') && p.includes('等待管理者審核'));
+  check('已送出：不再給第二顆送出鈕（伺服器會回 409）',
+    !p.includes('quota-send') && !p.includes('<textarea'));
+}
+
+// 10. 整張面板要把申請區塊接上
+{
+  const d = clone(normal); d.total.cost = 47.5;         // 95%
+  check('面板：九成以上帶出申請區塊', renderUsage(d).includes('quota-ask'));
+  const q = clone(d); q.quotaPending = true;
+  const h = renderUsage(q);
+  check('面板：已有待審就顯示等待中', h.includes('quota-pending') && !h.includes('quota-ask'));
+  check('面板：未達門檻不出現', !renderUsage(normal).includes('quota-ask'));
+  const noLimit = clone(d); noLimit.limit = null;
+  check('面板：無上限帳號不出現', !renderUsage(noLimit).includes('quota-ask'));
+}
+
+// 11. money() 本身
 {
   check('money：四捨五入到分', money(1.005) === '$1.00' || money(1.005) === '$1.01');
   check('money：給 null 回 $0.00', money(null) === '$0.00');

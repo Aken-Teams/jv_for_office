@@ -595,6 +595,54 @@ header .actions { display: flex; gap: 2px; flex: none; }
 .usage-signout:hover { background: #fdf3f4; color: var(--danger); }
 
 .usage-msg { padding: 16px 2px; font-size: 12px; color: var(--fg-subtle); text-align: center; }
+
+/* ── 申請額度 ─────────────────────────────────────────────────────────────── */
+
+/* 警示色，不是主色。這條橫幅講的是一個快要擋住你的限制，而主色在這個側邊欄裡
+   代表「可以動手了」——兩件相反的事不該長一樣。 */
+.quota-bar {
+  margin: 0 12px 10px; padding: 10px 11px;
+  border: 1px solid var(--warn-line); border-left-width: 3px;
+  border-radius: var(--radius); background: var(--warn-bg);
+  animation: rise 180ms ease-out;
+}
+.quota-bar-title { font-size: 12.5px; font-weight: 600; color: var(--warn-fg); }
+.quota-bar-sub { margin-top: 3px; font-size: 11.5px; color: var(--fg-muted); line-height: 1.5; }
+.quota-bar-acts { display: flex; gap: 6px; margin-top: 9px; }
+.quota-bar-acts button {
+  font-size: 12px; padding: 4px 9px; border-radius: var(--radius-sm);
+  border: 1px solid var(--warn-line); color: var(--warn-fg);
+}
+.quota-bar-acts button:hover { background: #fdf0dd; }
+/* 「今天不要再提醒」是次要選項，所以沒有框——兩顆長得一樣的鈕會讓人停下來想。 */
+.quota-bar-acts .quota-mute { border-color: transparent; color: var(--fg-muted); }
+.quota-bar-acts .quota-mute:hover { background: var(--surface-hover); color: var(--fg); }
+
+.quota-ask { margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--line); }
+.quota-ask-head { font-size: 12px; font-weight: 600; color: var(--fg); }
+.quota-ask-sub { margin-top: 3px; font-size: 11.5px; color: var(--fg-muted); line-height: 1.5; }
+.quota-ask textarea {
+  width: 100%; margin-top: 8px; padding: 7px 8px; min-height: 58px; resize: vertical;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--fg); font: inherit; font-size: 12px; line-height: 1.5;
+}
+.quota-ask textarea:focus { outline: none; border-color: var(--accent); }
+.quota-ask-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.quota-send {
+  padding: 5px 12px; border-radius: var(--radius-sm);
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 600;
+}
+.quota-send:hover:not(:disabled) { background: var(--accent-hover); }
+.quota-send:disabled { opacity: .45; }
+.quota-note { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--fg-muted); }
+
+/* 已送出：靜態說明，沒有可按的東西。重複送出伺服器會回 409，與其讓人按了才知道，
+   不如一開始就不要給那顆鈕。 */
+.quota-pending {
+  margin-top: 15px; padding: 10px 11px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  background: var(--surface); font-size: 12px; color: var(--fg-muted); line-height: 1.6;
+}
 /* The list scrolls, not the panel: the heading stays put while the rows move,
    and the same scrollbar as the transcript means there is a visible sign that
    more exists below the fold. */

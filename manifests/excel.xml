@@ -26,7 +26,7 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>b7e4f2a1-9c3d-4e58-8f21-6a0d5c4b7e93</Id>
-  <Version>1.0.50.0</Version>
+  <Version>1.0.52.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="JVision for Excel" />
