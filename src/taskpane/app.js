@@ -123,6 +123,8 @@ const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
   // 伺服器說了算；讀到之前當作對外版（顯示模型選單）。見 loadDeployMode()。
   deployMode: '',
+  // 登入者的資料，第一次打開個人區時取一次。見 whoAmI()。
+  me: null,
   /**
    * 資料來源／模型清單是不是真的拿到了。
    *
@@ -1873,6 +1875,32 @@ const USAGE_CATS = [
 
 const money = (n) => '$' + (Number(n) || 0).toFixed(2);
 
+/**
+ * 面板最上面先回答「這是誰的額度」。
+ *
+ * -- 為什麼放在最上面 --
+ * 這是個人區，身分是它的主詞。而且數字沒有身分就沒有意義——同一台電腦可能換人登入，
+ * 「本月已使用 0%」在看錯帳號的時候一樣是 0%。
+ *
+ * -- 為什麼名字和信箱都顯示 --
+ * 名字是用來認人的，信箱是用來確認的。強茂那邊同名的人不只一個，而對外版的人
+ * 多半記得住自己的信箱、未必記得自己當初填的顯示名稱。
+ */
+function renderWho(me) {
+  if (!me) return '';
+  const name = String(me.displayName || '').trim();
+  const mail = String(me.email || '').trim();
+  if (!name && !mail) return '';
+  // 只有信箱的時候，信箱就是主標——不要為了排版硬擠一個空的名字出來。
+  const top = name || mail;
+  const sub = name && mail ? mail : '';
+  return `
+    <div class="usage-who">
+      <div class="usage-who-name">${escapeHtml(top)}</div>
+      ${sub ? `<div class="usage-who-mail">${escapeHtml(sub)}</div>` : ''}
+    </div>`;
+}
+
 async function openUsage() {
   const panel = $('usage-panel');
   if (!panel.hidden) { closeUsage(); return; }
@@ -1884,6 +1912,27 @@ async function openUsage() {
 function closeUsage() {
   $('usage-panel').hidden = true;
   $('account').setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * 登入的是誰。
+ *
+ * -- 為什麼記在 state --
+ * 名字在一次登入期間不會變，而這個面板會被反覆打開。每次都多打一個請求，換來的是
+ * 同一個答案。登出時 state 會整個重置，所以不必自己清。
+ *
+ * -- 為什麼失敗回 null 而不是拋 --
+ * 讀不到名字只是少一行字，額度照樣看得到。身分不是這個面板的必要條件。
+ */
+async function whoAmI() {
+  if (state.me) return state.me;
+  try {
+    const res = await fetch(`${state.apiBase}/api/auth/me`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) return null;
+    state.me = await res.json();
+    return state.me;
+  } catch { return null; }
 }
 
 /** 這個帳號有沒有還在等審核的申請。讀不到就當作沒有——猜錯的代價只是多給一個入口。 */
@@ -2015,15 +2064,16 @@ async function loadUsage() {
   try {
     // 兩個請求一起送。申請狀態失敗不該拖垮額度顯示——額度是主角，申請是附帶的，
     // 所以它用 catch 吞掉，最多就是少一句「已送出」。
-    const [res, pending] = await Promise.all([
+    const [res, pending, me] = await Promise.all([
       fetch(`${state.apiBase}/api/usage`,
         { headers: { Authorization: `Bearer ${state.token}` } }),
       quotaPending(),
+      whoAmI(),
     ]);
     if (!res.ok) throw new Error(httpTrouble(res.status));
     const data = await res.json();
     state.quotaPending = pending;
-    box.innerHTML = renderUsage({ ...data, quotaPending: pending });
+    box.innerHTML = renderUsage({ ...data, quotaPending: pending, me });
   } catch (e) {
     // 額度讀不到不影響提問，所以這裡只說明，不擋路。
     box.innerHTML = `<div class="usage-msg">${escapeHtml(t('讀不到額度：{0}', e.message))}</div>`;
@@ -2080,7 +2130,8 @@ function renderUsage(d) {
   const days = (d.summary || []).filter(r => !since || r.date >= since);
   // 上限未知（無上限帳號）就沒有「快滿了」這回事，pct 給 NaN 讓申請區塊自己退場。
   const pct = (limit && Number.isFinite(limit) && limit > 0) ? (used / limit) * 100 : NaN;
-  return head
+  return renderWho(d.me)
+    + head
     + `<div class="usage-reset">${escapeHtml(reset)}</div>`
     + renderDays(days, monthly)
     + renderCats(d.byCategory || {}, since, used, total)

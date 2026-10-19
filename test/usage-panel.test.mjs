@@ -54,9 +54,9 @@ const stubs = `
 
 const mod = await import(
   'data:text/javascript;charset=utf-8,'
-  + encodeURIComponent(`${stubs}\n${block}\nexport { renderUsage, renderDays, renderCats, renderQuotaAsk, money, QUOTA_NEAR };`)
+  + encodeURIComponent(`${stubs}\n${block}\nexport { renderUsage, renderDays, renderCats, renderQuotaAsk, renderWho, money, QUOTA_NEAR };`)
 );
-const { renderUsage, renderQuotaAsk, money, QUOTA_NEAR } = mod;
+const { renderUsage, renderQuotaAsk, renderWho, money, QUOTA_NEAR } = mod;
 
 // ── 測資 ─────────────────────────────────────────────────────────────────────
 
@@ -187,7 +187,36 @@ const noNaN = (h) => !/NaN|Infinity|undefined|\[object/.test(h);
   check('面板：無上限帳號不出現', !renderUsage(noLimit).includes('quota-ask'));
 }
 
-// 11. money() 本身
+// 11. 帳號名稱
+{
+  const both = renderWho({ displayName: '王小明', email: 'ken@panjit.com.tw' });
+  check('有名字有信箱：兩行都顯示', both.includes('王小明') && both.includes('ken@panjit.com.tw'));
+  check('名字是主標', both.indexOf('王小明') < both.indexOf('ken@panjit.com.tw'));
+
+  // 只有信箱的時候，信箱就是主標——不要為了排版硬擠一個空的名字
+  const only = renderWho({ email: 'a@b.com' });
+  check('只有信箱：信箱當主標', only.includes('usage-who-name') && only.includes('a@b.com'));
+  check('只有信箱：不畫空的第二行', !only.includes('usage-who-mail'));
+
+  check('顯示名稱是空白字串時退回信箱',
+    renderWho({ displayName: '   ', email: 'a@b.com' }).includes('a@b.com'));
+  check('兩個都沒有：整段不畫', renderWho({ displayName: '', email: '' }) === '');
+  check('讀不到使用者：整段不畫', renderWho(null) === '');
+
+  // 名字來自資料庫，是使用者自己填的
+  const evil = renderWho({ displayName: '<img src=x onerror=alert(1)>', email: 'a@b.com' });
+  check('名字有做跳脫', !evil.includes('<img') && evil.includes('&lt;img'), evil.slice(0, 160));
+}
+
+// 12. 整張面板要把身分放在最上面
+{
+  const d = clone(normal); d.me = { displayName: '王小明', email: 'ken@panjit.com.tw' };
+  const h = renderUsage(d);
+  check('面板：身分在數字之前', h.indexOf('王小明') < h.indexOf('usage-num'), '身分是個人區的主詞');
+  check('面板：沒有 me 也畫得出來', !renderUsage(normal).includes('usage-who'));
+}
+
+// 13. money() 本身
 {
   check('money：四捨五入到分', money(1.005) === '$1.00' || money(1.005) === '$1.01');
   check('money：給 null 回 $0.00', money(null) === '$0.00');

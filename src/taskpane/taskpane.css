@@ -533,6 +533,23 @@ header .actions { display: flex; gap: 2px; flex: none; }
   animation: rise 140ms ease-out;
 }
 .usage-body { padding: 14px 14px 4px; }
+
+/* 身分區塊。底線把它跟數字分開——它們回答的是兩個問題，不該讀起來像同一段。 */
+.usage-who {
+  margin: -14px -14px 12px; padding: 11px 14px;
+  border-bottom: 1px solid var(--line); background: var(--bg-chrome);
+  border-radius: 9px 9px 0 0;
+}
+.usage-who-name {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 信箱會比名字長，而 350px 的面板裝不下大多數公司信箱。截斷而不是換行：
+   換行會把下面的數字推下去，而那是這個面板的主角。 */
+.usage-who-mail {
+  margin-top: 1px; font-size: 11.5px; color: var(--fg-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .usage-label { font-size: 11.5px; color: var(--fg-subtle); }
 
 /* 百分比是標題，因為它回答的是「還能不能用」。金額在它旁邊當註腳——
