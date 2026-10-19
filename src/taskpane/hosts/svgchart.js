@@ -510,6 +510,33 @@ function lineChart(spec, theme) {
   return out;
 }
 
+/**
+ * 一段字大約多寬。
+ *
+ * SVG 裡沒有辦法真的量字——那需要排版引擎。但不量就只能假設字一定放得下，
+ * 而這個假設在中文標籤上一定會破：一個中文字幾乎跟字級一樣寬，拉丁字母大約一半。
+ *
+ * 估得略寬一點是刻意的：寧可提早截斷，也不要疊在別的字上面。
+ */
+function textWidth(s, size) {
+  const str = String(s || '');
+  const cjk = (str.match(/[\u3000-\u9fff\uff00-\uffef]/g) || []).length;
+  return cjk * size * 0.98 + (str.length - cjk) * size * 0.54;
+}
+
+/** 放不下就截斷，並留一個刪節號說明「這裡被截了」。 */
+function clipText(s, size, room) {
+  const str = String(s || '');
+  if (room <= 0 || textWidth(str, size) <= room) return str;
+  const dots = textWidth('…', size);
+  let out = '';
+  for (const ch of str) {
+    if (textWidth(out + ch, size) + dots > room) break;
+    out += ch;
+  }
+  return out ? `${out}…` : '';
+}
+
 function pieChart(spec, theme) {
   const { labels, series } = normalise(spec);
   const data = series[0].data;
@@ -550,13 +577,32 @@ function pieChart(spec, theme) {
   });
 
   if (donut) {
-    out += `<circle cx="${n2(cx)}" cy="${n2(cy)}" r="${n2(r * 0.58)}" fill="${theme.bg || '#FFFFFF'}"/>`;
+    const hole = r * 0.58;
+    out += `<circle cx="${n2(cx)}" cy="${n2(cy)}" r="${n2(hole)}" fill="${theme.bg || '#FFFFFF'}"/>`;
     if (spec.center) {
-      out += text(cx, cy - 4, String(spec.center),
-        { size: 26, bold: true, color: theme.strong, anchor: 'middle', baseline: 'middle' });
-      if (spec.center_label) {
-        out += text(cx, cy + 20, String(spec.center_label),
-          { size: 12, color: theme.muted, anchor: 'middle', baseline: 'middle' });
+      /**
+       * 中央的字要縮到塞得進中空，不能用固定字級。
+       *
+       * ── 這是什麼問題的修正 ──
+       * 原本大數字寫死 26px。甜甜圈小一點、或者中央寫的是「≈75%」這種四個字元的
+       * 內容時，字就伸出白色圓心、壓在彩色環上——而那一圈正是整張圖的主角。
+       *
+       * 可用寬度不是中空的直徑，是它的弦長：圓裡放長方形，越靠邊能放的越窄。
+       * 取 0.86 是一個保守的內接比例，留得出上下兩行的空間。
+       */
+      const room = hole * 2 * 0.86;
+      const big = String(spec.center);
+      const sub = spec.center_label ? String(spec.center_label) : '';
+      // 兩行都要塞得下，所以取比較吃緊的那一個當縮放依據。
+      const bigSize = Math.min(26, Math.max(13, (room / textWidth(big, 26)) * 26));
+      const subSize = sub ? Math.min(12, Math.max(9, (room / textWidth(sub, 12)) * 12)) : 0;
+      // 有副標時兩行一起置中；只有一行時就正中間。
+      const shift = sub ? bigSize * 0.34 : 0;
+      out += text(cx, cy - shift, big,
+        { size: bigSize, bold: true, color: theme.strong, anchor: 'middle', baseline: 'middle' });
+      if (sub) {
+        out += text(cx, cy + bigSize * 0.62, clipText(sub, subSize, room),
+          { size: subSize, color: theme.muted, anchor: 'middle', baseline: 'middle' });
       }
     }
   }
@@ -566,12 +612,29 @@ function pieChart(spec, theme) {
   const lx = cx + r + 28;
   const lh = 26;
   let ly = cy - (labels.length * lh) / 2 + lh / 2;
+  /**
+   * 標籤往右長，百分比靠右對齊往左長——中間要有人擋，否則它們會對撞。
+   *
+   * ── 這是什麼問題的修正 ──
+   * 原本標籤沒有寬度上限。「自由遊蕩（含半放養）戶外犬」這種長度的類別名，
+   * 會直接穿過右邊那欄的百分比，畫出「自由遊蕩 (75%戶外」這種讀不出意思的東西。
+   *
+   * 截斷不是最好的結果——最好的結果是類別名短一點。但**截斷至少還讀得出前半段**，
+   * 而疊字是兩邊一起失效。
+   */
+  const pctSize = 12.5;
+  const pctRoom = Math.max(...data.map(v =>
+    textWidth(`${Math.round((v / total) * 100)}%`, pctSize)));
+  const textX = lx + 20;
+  // 12 是標籤和百分比之間的最小間隙，低於這個數字兩欄會讀成一欄。
+  const labelRoom = (f.W - 16) - pctRoom - 12 - textX;
   labels.forEach((label, i) => {
     const colour = (spec.colors || [])[i] || SERIES[i % SERIES.length];
     out += rect(lx, ly - 6, 12, 12, colour, ' rx="2"');
-    out += text(lx + 20, ly, label, { size: 12.5, color: theme.ink, baseline: 'middle' });
+    out += text(textX, ly, clipText(label, 12.5, labelRoom),
+      { size: 12.5, color: theme.ink, baseline: 'middle' });
     out += text(f.W - 16, ly, `${Math.round((data[i] / total) * 100)}%`,
-      { size: 12.5, bold: true, color: theme.strong, anchor: 'end', baseline: 'middle' });
+      { size: pctSize, bold: true, color: theme.strong, anchor: 'end', baseline: 'middle' });
     ly += lh;
   });
   return out;
