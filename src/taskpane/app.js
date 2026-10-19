@@ -1855,6 +1855,189 @@ function closeHistory() {
   $('history').setAttribute('aria-expanded', 'false');
 }
 
+// -- 個人區：額度 ------------------------------------------------------------
+
+/**
+ * 這五個類別就是伺服器 tokenTracker 的 UsageCategory，順序不是字母排序——
+ * 增益集排第一，因為使用者是從增益集裡點開這個面板的。
+ */
+const USAGE_CATS = [
+  { key: 'addin',    name: '辦公室增益集', mine: true, dot: '#107c41' },
+  { key: 'document', name: '文件產生',     dot: '#8a8886' },
+  { key: 'team',     name: 'AI 團隊',      dot: '#a8b4bd' },
+  { key: 'email',    name: '信件助手',     dot: '#c8c6c4' },
+  { key: 'km',       name: 'KM 助手',      dot: '#e1dfdd' },
+];
+
+const money = (n) => '$' + (Number(n) || 0).toFixed(2);
+
+async function openUsage() {
+  const panel = $('usage-panel');
+  if (!panel.hidden) { closeUsage(); return; }
+  panel.hidden = false;
+  $('account').setAttribute('aria-expanded', 'true');
+  await loadUsage();
+}
+
+function closeUsage() {
+  $('usage-panel').hidden = true;
+  $('account').setAttribute('aria-expanded', 'false');
+}
+
+async function loadUsage() {
+  const box = $('usage-body');
+  box.innerHTML = `<div class="usage-msg">${escapeHtml(t('載入中…'))}</div>`;
+  try {
+    const res = await fetch(`${state.apiBase}/api/usage`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error(httpTrouble(res.status));
+    box.innerHTML = renderUsage(await res.json());
+  } catch (e) {
+    // 額度讀不到不影響提問，所以這裡只說明，不擋路。
+    box.innerHTML = `<div class="usage-msg">${escapeHtml(t('讀不到額度：{0}', e.message))}</div>`;
+  }
+}
+
+/**
+ * 把 /api/usage 畫成一個面板。
+ *
+ * -- 為什麼用量和圖表要同一個時間範圍 --
+ * 伺服器的 total 在正式模式下只算當月（額度每月歸零），beta 模式算全部。summary 則
+ * 永遠是全部。兩個擺在一起而範圍不同的話，長條加起來不等於上面那個數字——使用者會
+ * 以為其中一個算錯了。所以這裡用同一個 since 去切，讓它們講同一件事。
+ */
+function renderUsage(d) {
+  const total = d.total || {};
+  const used = Number(total.cost) || 0;
+  // 伺服器對管理員回 Infinity，JSON 序列化成 null。null 是「無上限」，不是 0。
+  const limit = (d.limit === null || d.limit === undefined) ? null : Number(d.limit);
+  const monthly = !d.isBeta;
+
+  const now = new Date();
+  const since = monthly
+    ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    : '';
+
+  let head;
+  if (limit === null || !Number.isFinite(limit) || limit <= 0) {
+    head = `
+      <div class="usage-label">${escapeHtml(t(monthly ? '本月已使用' : '累計已使用'))}</div>
+      <div class="usage-pct">
+        <span class="usage-num">${escapeHtml(money(used))}</span>
+        <span class="usage-of">${escapeHtml(t('無使用上限'))}</span>
+      </div>`;
+  } else {
+    // 數字照實，長條才夾到 100%。
+    // 超額的人最想知道的是「超了多少」，把 146% 顯示成 100% 等於把那個答案藏起來；
+    // 但長條畫不出 146%，再長也只是滿格，所以寬度另外夾。
+    const pct = Math.round((used / limit) * 100);
+    const tone = pct >= 100 ? 'over' : pct >= 75 ? 'warn' : '';
+    head = `
+      <div class="usage-label">${escapeHtml(t(monthly ? '本月已使用' : '累計已使用'))}</div>
+      <div class="usage-pct">
+        <span class="usage-num">${pct}%</span>
+        <span class="usage-of">${escapeHtml(money(used))} / ${escapeHtml(money(limit))}</span>
+      </div>
+      <div class="usage-bar"><div class="usage-fill ${tone}" style="width:${Math.min(100, pct)}%"></div></div>`;
+  }
+
+  const reset = monthly
+    ? t('每月 1 日歸零。下次歸零：{0}', nextReset())
+    : t('測試期間不歸零，顯示的是累計用量。');
+
+  const days = (d.summary || []).filter(r => !since || r.date >= since);
+  return head
+    + `<div class="usage-reset">${escapeHtml(reset)}</div>`
+    + renderDays(days, monthly)
+    + renderCats(d.byCategory || {}, since, used, total);
+}
+
+function nextReset() {
+  const n = new Date();
+  const y = n.getMonth() === 11 ? n.getFullYear() + 1 : n.getFullYear();
+  const m = n.getMonth() === 11 ? 1 : n.getMonth() + 2;
+  return `${y}/${String(m).padStart(2, '0')}/01`;
+}
+
+/** 每日長條。沒有任何一天有用量就整段不畫——一排零高度的長條不是圖表。 */
+function renderDays(days, monthly) {
+  if (!days.length) return '';
+  const byDate = new Map(days.map(r => [r.date, Number(r.cost) || 0]));
+  const now = new Date();
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const today = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+
+  // 正式模式畫整個當月（含還沒到的日子，空著），beta 模式畫最後 30 天。
+  const list = [];
+  if (monthly) {
+    for (let i = 1; i <= now.getDate(); i++) {
+      list.push(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(i)}`);
+    }
+  } else {
+    list.push(...[...byDate.keys()].sort().slice(-30));
+  }
+
+  const peak = Math.max(...list.map(k => byDate.get(k) || 0), 0);
+  if (peak <= 0) return '';
+
+  const bars = list.map(k => {
+    const v = byDate.get(k) || 0;
+    // 有用量的那天至少 3px，否則「用了一點點」和「完全沒用」看起來一樣。
+    const h = v > 0 ? Math.max(3, Math.round((v / peak) * 46)) : 1;
+    const cls = k === today ? 'usage-day today' : v > 0 ? 'usage-day has' : 'usage-day';
+    return `<div class="${cls}" style="height:${h}px" title="${escapeHtml(k)} ${escapeHtml(money(v))}"></div>`;
+  }).join('');
+
+  const ax = (k) => (k ? k.slice(5).replace('-', '/') : '');
+  return `
+    <div class="usage-sec">
+      <div class="usage-sec-head">
+        <span>${escapeHtml(t('每日用量'))}</span>
+        <span>${escapeHtml(t('單日最高 {0}', money(peak)))}</span>
+      </div>
+      <div class="usage-days">${bars}</div>
+      <div class="usage-days-ax">
+        <span>${escapeHtml(ax(list[0]))}</span>
+        <span>${escapeHtml(ax(list[list.length - 1]))}</span>
+      </div>
+    </div>`;
+}
+
+/**
+ * 誰用掉的。
+ *
+ * 額度是整個帳號共用的，所以「我在 Word 裡只問了三句，為什麼用掉一半」這個問題，
+ * 只有拆開來才答得出來。完全沒用過的來源不列——列一排 $0.00 只是讓人多讀五行。
+ */
+function renderCats(byCategory, since, used, total) {
+  const rows = USAGE_CATS.map(c => {
+    const list = (byCategory[c.key] || []).filter(r => !since || r.date >= since);
+    return { ...c, cost: list.reduce((n, r) => n + (Number(r.cost) || 0), 0) };
+  }).filter(c => c.cost > 0);
+
+  const tok = Number(total.totalInput || 0) + Number(total.totalOutput || 0);
+  const runs = Number(total.totalInvocations || 0);
+  const foot = `<div class="usage-reset">${escapeHtml(
+    t('{0} 次提問 · {1} 個 token', runs.toLocaleString(), tok.toLocaleString()))}</div>`;
+
+  if (!rows.length) {
+    return `<div class="usage-sec"><div class="usage-msg">${escapeHtml(t('這段期間還沒有用量。'))}</div></div>`;
+  }
+
+  const body = rows.map(c => `
+    <div class="usage-row ${c.mine ? 'mine' : ''}">
+      <span class="usage-dot" style="background:${c.dot}"></span>
+      <span class="usage-name">${escapeHtml(t(c.name))}</span>
+      <span class="usage-val">${escapeHtml(money(c.cost))}${
+        used > 0 ? ' ' + Math.round((c.cost / used) * 100) + '%' : ''}</span>
+    </div>`).join('');
+
+  return `<div class="usage-sec">
+      <div class="usage-sec-head"><span>${escapeHtml(t('用量來源'))}</span></div>
+      ${body}
+    </div>${foot}`;
+}
+
 /** Dates in the pane are always about "how long ago", never about precision. */
 function fmtWhen(iso) {
   const d = new Date(iso);
@@ -4445,6 +4628,7 @@ ${typed}` : `/${tpl.name}`) : '';
     // menu is not what someone means when they are trying to call off a run.
     if (!$('outline-panel').hidden) { e.preventDefault(); closeOutline(); return; }
     if (!$('hist-panel').hidden) { e.preventDefault(); closeHistory(); return; }
+    if (!$('usage-panel').hidden) { e.preventDefault(); closeUsage(); return; }
     if (!$('lang-menu').hidden) { e.preventDefault(); toggleLangMenu(false); return; }
     if (!$('model-menu').hidden) { e.preventDefault(); toggleModelMenu(false); return; }
     if (!$('cmd-menu').hidden) { e.preventDefault(); closeSlash(); return; }
@@ -4668,6 +4852,9 @@ ${typed}` : `/${tpl.name}`) : '';
     if (!$('hist-panel').hidden && !e.target.closest('#hist-panel') && !e.target.closest('#history')) {
       closeHistory();
     }
+    if (!$('usage-panel').hidden && !e.target.closest('#usage-panel') && !e.target.closest('#account')) {
+      closeUsage();
+    }
     if (!$('lang-menu').hidden && !e.target.closest('#lang-menu') && !e.target.closest('#lang')) {
       toggleLangMenu(false);
     }
@@ -4715,7 +4902,12 @@ ${typed}` : `/${tpl.name}`) : '';
 
   $('new-chat').addEventListener('click', () => { backToLive(); newConversation(); });
 
-  $('logout').addEventListener('click', () => logout(''));
+  $('account').addEventListener('click', () => { void openUsage(); });
+  $('usage-refresh').addEventListener('click', () => { void loadUsage(); });
+
+  // 收起來再登出。面板不收的話，下次登入進到聊天畫面時它還開著——
+  // 而那時面板裡顯示的是上一個帳號的額度。
+  $('logout').addEventListener('click', () => { closeUsage(); logout(''); });
 
   // Citation clicks are delegated: bubbles are re-rendered on every streamed
   // chunk, so per-link handlers would be rebound dozens of times per message.

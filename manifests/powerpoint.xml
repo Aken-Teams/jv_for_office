@@ -39,7 +39,7 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>9d2b4e17-6c83-4f52-ae10-7b93c8d5e204</Id>
-  <Version>1.0.49.0</Version>
+  <Version>1.0.50.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="JVision for PowerPoint" />

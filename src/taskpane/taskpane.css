@@ -521,6 +521,80 @@ header .actions { display: flex; gap: 2px; flex: none; }
   animation: rise 140ms ease-out;
 }
 .hist-head { padding: 5px 8px 7px; font-size: 11.5px; color: var(--fg-subtle); }
+
+/* ── 個人區（額度） ───────────────────────────────────────────────────────── */
+
+/* 跟歷史紀錄同一套定位：從標頭落下、對齊側邊欄而不是對齊按鈕。350px 寬的面板
+   如果對齊一顆 30px 的鈕，數字會擠成兩行。 */
+.usage-panel {
+  position: absolute; top: 48px; left: 8px; right: 8px; z-index: 40;
+  border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--bg); box-shadow: var(--shadow);
+  animation: rise 140ms ease-out;
+}
+.usage-body { padding: 14px 14px 4px; }
+.usage-label { font-size: 11.5px; color: var(--fg-subtle); }
+
+/* 百分比是標題，因為它回答的是「還能不能用」。金額在它旁邊當註腳——
+   大多數人記不住自己的上限是多少美金，但看得懂 68%。 */
+.usage-pct { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 9px; }
+.usage-num { font-size: 27px; font-weight: 600; line-height: 1; color: var(--fg); }
+.usage-of { font-size: 12px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+.usage-bar {
+  height: 7px; border-radius: 4px; background: var(--surface); overflow: hidden;
+}
+.usage-fill {
+  height: 100%; border-radius: 4px; background: var(--accent);
+  transition: width var(--speed);
+}
+/* 顏色只在真的要緊時才變。七成以前一律是主色——把每一格都畫成警示，等於沒有警示。 */
+.usage-fill.warn { background: var(--warn-line); }
+.usage-fill.over { background: var(--danger); }
+
+.usage-reset { margin-top: 7px; font-size: 11.5px; color: var(--fg-subtle); }
+
+.usage-sec { margin-top: 15px; }
+.usage-sec-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11.5px; color: var(--fg-subtle); margin-bottom: 6px;
+}
+
+/* 每日長條。用 flex 而不是 SVG：長條數量會變（月初三根、月底三十根），
+   而 flex 會自己分配寬度，SVG 要自己算座標。 */
+.usage-days { display: flex; align-items: flex-end; gap: 2px; height: 46px; }
+.usage-day { flex: 1 1 0; min-width: 0; background: var(--accent-soft); border-radius: 2px 2px 0 0; }
+.usage-day.has { background: var(--accent); }
+/* 今天標出來，不然一排長條看不出自己站在哪裡。 */
+.usage-day.today { background: var(--fg); }
+.usage-days-ax {
+  display: flex; justify-content: space-between;
+  margin-top: 4px; font-size: 10.5px; color: var(--fg-subtle);
+}
+
+.usage-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; font-size: 12px; border-top: 1px solid var(--line);
+}
+.usage-row:first-child { border-top: 0; }
+.usage-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.usage-name { flex: 1 1 auto; min-width: 0; color: var(--fg-muted); }
+/* 增益集自己那一條用深色字——使用者點開這個面板，最想先看到的是「我在 Word 裡
+   用掉多少」，其他來源是背景。 */
+.usage-row.mine .usage-name { color: var(--fg); font-weight: 600; }
+.usage-val { flex: none; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+
+.usage-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 9px 12px; border-top: 1px solid var(--line);
+  background: var(--bg-chrome); border-radius: 0 0 9px 9px;
+}
+.usage-link { font-size: 12px; color: var(--fg-muted); padding: 3px 6px; border-radius: var(--radius-sm); }
+.usage-link:hover { background: var(--surface-hover); color: var(--fg); }
+.usage-signout { color: var(--danger); }
+.usage-signout:hover { background: #fdf3f4; color: var(--danger); }
+
+.usage-msg { padding: 16px 2px; font-size: 12px; color: var(--fg-subtle); text-align: center; }
 /* The list scrolls, not the panel: the heading stays put while the rows move,
    and the same scrollbar as the transcript means there is a visible sign that
    more exists below the fold. */

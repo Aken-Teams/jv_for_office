@@ -26,13 +26,13 @@
 
   <!-- 換一份部署（例如正式站）就換一個 Id，否則兩份會互相覆蓋 -->
   <Id>172d2d0e-7893-40e6-bf72-3e623c06709c</Id>
-  <Version>1.0.49.0</Version>
+  <Version>1.0.50.0</Version>
   <ProviderName>PANJIT</ProviderName>
   <DefaultLocale>zh-TW</DefaultLocale>
   <DisplayName DefaultValue="【本地測試】JVision for Excel" />
   <Description DefaultValue="【本地測試版本，請勿用於正式文件】在 Excel 側邊欄直接問 AI：讀懂公式、追溯假設、修正錯誤、填寫模型。" />
-  <IconUrl DefaultValue="https://localhost:3443/assets/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/icon-64.png" />
+  <IconUrl DefaultValue="https://localhost:3443/assets/localtest/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3443/assets/localtest/icon-64.png" />
   <SupportUrl DefaultValue="https://localhost:3443/" />
 
   <!-- 任務窗格可以導覽到的網域。API 的跨來源請求走 CORS，不受這裡管。
@@ -111,9 +111,9 @@
 
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3443/assets/icon-16.png" />
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3443/assets/icon-32.png" />
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3443/assets/icon-80.png" />
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3443/assets/localtest/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3443/assets/localtest/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3443/assets/localtest/icon-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3443/src/taskpane/taskpane.html" />
