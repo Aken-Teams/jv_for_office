@@ -166,8 +166,33 @@ if ($Sign) {
 }
 
 $size = [math]::Round((Get-Item $outExe).Length / 1KB, 1)
+
+# ── 交付物：檢查碼與 manifest 包 ────────────────────────────────────────────
+#
+# 這兩樣不是為了我們自己，是為了**對方的資安和 IT**：
+#
+#   · SHA-256 —— 客戶把 exe 從你的伺服器下載回去之後，要能驗證它沒被掉包。
+#     沒有這個檔的話，對方的資安多半會直接退回來問，而那一來一往是幾天。
+#
+#   · manifest 包 —— 有些客戶不讓員工自己跑 exe，而是由 IT 從 Microsoft 365
+#     系統管理中心統一部署。那條路只要三個 .xml，不要 exe。先備好，問起來就有。
+#
+# 兩個都放在 exe 旁邊，一起給出去。
+$hash = (Get-FileHash -Algorithm SHA256 $outExe).Hash.ToLower()
+$hashFile = "$outExe.sha256"
+# 用 sha256sum 的格式（雜湊 + 兩個空格 + 檔名），對方拿 certutil 或 sha256sum 都驗得了。
+"$hash  $(Split-Path -Leaf $outExe)" | Set-Content -Path $hashFile -Encoding ascii
+
+$zipName = if ($isProd) { 'JVision-manifests.zip' } else { "JVision-manifests-$channel.zip" }
+$zipPath = Join-Path $installer $zipName
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+Compress-Archive -Path (Join-Path $manifestDir '*.xml') -DestinationPath $zipPath
+
 Write-Host ""
 Write-Host "完成：$outExe（$size KB）" -ForegroundColor Green
+Write-Host "  SHA-256：$hash"
+Write-Host "  檢查碼檔：$hashFile"
+Write-Host "  manifest 包：$zipPath（給走管理中心部署的客戶）"
 if (-not $Sign) {
   Write-Host ""
   Write-Host "！這個 exe 沒有簽章。" -ForegroundColor Yellow
