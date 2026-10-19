@@ -99,12 +99,32 @@ export function cleanText(text) {
  * cleanText 只動三種東西：字面的換行、tab、被空格隔開的底線。色碼、id、範圍位址、
  * 數字都不含這些，走一遍跟沒走一樣。真正會被改到的，就是本來該被改的那些。
  */
-export function cleanArgs(value) {
+/**
+ * 程式碼不能洗。
+ *
+ * ── 這是什麼問題的修正 ──
+ * cleanText 會把字面的 `
+` 還原成真的換行——那對「模型想寫一個換行但escape 多了
+ * 一層」是對的，而文字欄位幾乎都是那種情況。
+ *
+ * 但 run_script 的 code 是**程式碼**。JavaScript 的字串字面值裡，`"a
+b"` 是合法的，
+ * 把那個 `
+` 換成真換行之後字串就跨了兩行——而 JS 不允許，整段在剖析階段就壞了。
+ *
+ * 症狀非常難認：模型說「連 try/catch 都沒執行到」，因為語法錯誤發生在執行之前。
+ * 它只好一直換寫法、拆小段、改用字元碼產生換行——那些都繞過了症狀，但問題不在它。
+ */
+const RAW_KEYS = new Set(['code']);
+
+export function cleanArgs(value, key) {
+  // 程式碼原樣交出去。它要長什麼樣是模型的事，不是我們的。
+  if (key !== undefined && RAW_KEYS.has(key)) return value;
   if (typeof value === 'string') return cleanText(value);
   if (Array.isArray(value)) return value.map((v) => cleanArgs(v));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = cleanArgs(v);
+    for (const [k, v] of Object.entries(value)) out[k] = cleanArgs(v, k);
     return out;
   }
   return value;
