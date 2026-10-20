@@ -56,8 +56,26 @@ const env = { ...DEFAULTS, ...readEnv(ENV_FILE), ...process.env };
  * 橫幅**，而不是測試區沒有警告。寧可正式區多一條橫幅被罵，也不要測試區安靜。
  */
 const channel = String(env.DEPLOY_CHANNEL || DEFAULTS.DEPLOY_CHANNEL).trim().toLowerCase();
+/**
+ * 窗格要知道自己是哪一版，否則沒辦法判斷自己是不是舊的。
+ *
+ * 從 manifest 讀，不要另外維護一個數字——manifest 的 <Version> 是 Office 真正認的
+ * 那一個，也是 npm run bump 會動的那一個。另外寫一份就是另一個會跟真相脫節的清單，
+ * 而這個專案今天已經因為那種清單壞過三次。
+ */
+function manifestVersion() {
+  for (const f of ['manifests/word.xml', 'manifests/excel.xml', 'manifests/powerpoint.xml']) {
+    try {
+      const m = fs.readFileSync(path.join(ROOT, f), 'utf-8').match(/<Version>([\d.]+)<\/Version>/);
+      if (m) return m[1];
+    } catch { /* 下一個 */ }
+  }
+  return '';
+}
+
 const config = {
   apiBase: String(env.API_BASE || DEFAULTS.API_BASE).replace(/\/+$/, ''),
+  version: manifestVersion(),
   channel,
   /** 橫幅上的字。沒設就用頻道名稱，讓部署的人可以寫「測試區（10/15 前請卸載）」。 */
   channelLabel: String(env.DEPLOY_LABEL || '').trim(),

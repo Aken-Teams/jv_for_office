@@ -143,6 +143,8 @@ const PER_USER = {
 
 const state = {
   apiBase: localStorage.getItem(LS_API_OVERRIDE) || DEFAULT_API_BASE,
+  // 這份增益集的版本，由 make-config.mjs 從 manifest 寫進 config.json。見 checkVersion()。
+  version: '',
   // 伺服器說了算；讀到之前當作對外版（顯示模型選單）。見 loadDeployMode()。
   // 這個不屬於使用者——同一台機器連的是同一套部署，換人登入也一樣。
   deployMode: '',
@@ -2097,6 +2099,54 @@ function muteQuotaToday() {
  * -- 為什麼整段用 try 包住 --
  * 這是一個提醒，不是功能。它壞掉不該影響任何人提問——所以連錯誤訊息都不顯示。
  */
+/**
+ * 這份增益集是不是舊的。
+ *
+ * ── 為什麼需要 ──
+ * 增益集是裝在每個人電腦上的，伺服器更新了它不會自己跟上。而版本落後的症狀通常
+ * 不像版本問題：某個功能「怪怪的」、某個按鈕沒反應、伺服器宣告的工具它不認得。
+ * 使用者會以為是壞了，而不是舊了。
+ *
+ * ── 為什麼只提醒不強迫 ──
+ * 更新要關掉整個 Office、跑安裝檔。打斷一個正在做簡報的人去做這件事，比讓他用
+ * 舊版做完更糟。所以是一條看得見、可以關掉的橫幅，不是擋路的對話框。
+ */
+function cmpVersion(a, b) {
+  const pa = String(a || '').split('.').map(Number);
+  const pb = String(b || '').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+async function checkVersion() {
+  try {
+    const mine = String(state.version || '');
+    // 不知道自己幾版就不要猜。舊的 config.json 沒有這個欄位，而「可能是舊版」
+    // 這種提醒會讓使用者去跑一次沒必要的安裝。
+    if (!mine || !state.token) return;
+
+    const res = await fetch(`${state.apiBase}/api/app-config/`,
+      { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) return;
+    const latest = String(((await res.json()).addinInstaller || {}).version || '');
+    if (!latest || cmpVersion(mine, latest) >= 0) return;
+
+    const bar = $('update-bar');
+    bar.innerHTML = `
+      <div class="quota-bar-title">${escapeHtml(t('有新版的增益集'))}</div>
+      <div class="quota-bar-sub">${escapeHtml(
+        t('你裝的是 {0}，目前的版本是 {1}。到 AI Agents Office 的「系統 → Office 增益集」'
+          + '下載安裝檔更新；更新前要完全關閉 Office。', mine, latest))}</div>
+      <div class="quota-bar-acts">
+        <button type="button" class="quota-mute" id="update-later">${escapeHtml(t('知道了'))}</button>
+      </div>`;
+    bar.hidden = false;
+  } catch { /* 提醒而已，壞了就當沒有 */ }
+}
+
 async function checkQuota() {
   try {
     if (!state.token || quotaMutedToday()) return;
@@ -2796,6 +2846,9 @@ async function loadConfig() {
       // 同一份程式碼部署兩次，差別只在這裡——所以橫幅也從同一個檔案來。
       if (cfg.channel) state.channel = String(cfg.channel).toLowerCase();
       if (cfg.channelLabel) state.channelLabel = String(cfg.channelLabel);
+      // 少了這一行，checkVersion() 永遠看到空字串、永遠不提醒——而且不會有任何
+      // 錯誤。寫在這裡是因為 config.json 的每一個欄位都在這裡落地。
+      if (cfg.version) state.version = String(cfg.version);
     }
   } catch { /* fall back to the default */ }
 
@@ -3042,6 +3095,7 @@ function showChat() {
   void loadSkills();
   void loadHandoffs();
   void checkQuota();
+  void checkVersion();
   modelMenuWatchdog();
 }
 
@@ -5273,6 +5327,12 @@ ${typed}` : `/${tpl.name}`) : '';
     const ok = e.target.value.trim().length > 0;
     if (btn) btn.disabled = !ok;
     if (note) note.textContent = ok ? '' : t('請先寫一句理由。');
+  });
+
+  // 關掉就是關掉，不記住——下次開側邊欄再提醒一次。更新這件事值得每次問，
+  // 而它只有一行，不擋路。
+  $('update-bar').addEventListener('click', (e) => {
+    if (e.target.closest('#update-later')) $('update-bar').hidden = true;
   });
 
   $('quota-bar').addEventListener('click', (e) => {
